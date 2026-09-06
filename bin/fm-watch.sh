@@ -56,6 +56,18 @@
 #                          for human inspection only - never an automatic
 #                          interrupt, signal, or restart of the worker or its
 #                          tool process.
+#   stale: <window> (dead worker: <task> ...)
+#                          a recorded in-flight task whose endpoint
+#                          authoritatively holds no live worker while the whole
+#                          machine is idle (load1 below 1, no other worker
+#                          process) is escalated as a DEAD WORKER regardless of
+#                          its status declaration - including a paused: wait,
+#                          because a task without a running process is not a
+#                          declared wait. The reason names the task and appends
+#                          best-effort kernel OOM evidence when the log
+#                          plausibly names this worker. One escalation per dead
+#                          stretch (state/.dead-worker-<window-key>), cleared on
+#                          recovery. Never an automatic interrupt or restart.
 #   stale: <window> (unread firstmate instruction: ...)
 #                          the steering-inbox ladder spent its delivery-attempt
 #                          budget on an idle pane without an acknowledgement
@@ -228,6 +240,14 @@ SECONDMATE_WAKE_STALL_SECS=${FM_SECONDMATE_WAKE_STALL_SECS:-60}
 # These cases re-surface once for a recheck every PAUSE_RESURFACE_SECS - far
 # longer than the wedge threshold, but finite so a forgotten hold cannot rot invisibly.
 PAUSE_RESURFACE_SECS=${FM_PAUSE_RESURFACE_SECS:-$FM_PAUSE_RESURFACE_SECS_DEFAULT}
+# The captain's dead-worker reality rule: a task recorded as in flight must have
+# a running process, and a task without a running process on an idle machine is
+# a DEAD WORKER, not a declared wait - no matter what its status line says,
+# including a paused: declaration. DEAD_WORKER_GRACE is the minimum age of a
+# task's meta before its missing endpoint may be declared dead: a fresh spawn or
+# relaunch rewrites the meta, so this gives the worker time to start before the
+# reality check would escalate.
+DEAD_WORKER_GRACE=${FM_DEAD_WORKER_GRACE:-120}
 # Consecutive event-path failures (fm_backend_wait_transition returning 2 -
 # connect/subscribe failure) before the push fast-path is disabled for the rest
 # of this watcher process and the loop reverts to pure polling (report section
@@ -953,6 +973,250 @@ clear_pause_tracking() {  # <window-key>
   clear_stale_hash_tracking "$key"
 }
 
+# --- dead-worker reality check (the captain's reality rule) -----------------
+# A task recorded as in flight must have a running process. When its endpoint
+# authoritatively holds no live worker AND the machine is idle (1-minute load
+# below 1 with no other worker process), the task is a DEAD WORKER, not a
+# declared wait - no matter what its status line says, including a paused:
+# declaration. A task without a running process is not a declared wait. The
+# check is deterministic and idempotent: one escalation per dead stretch,
+# remembered in state/.dead-worker-<window-key> and cleared the moment the
+# endpoint is live again or the task stops being in flight. It is fail-closed
+# on every other outcome: a secondmate, a legitimately stopped task
+# (done/failed/captain-held), a too-fresh spawn, a transiently unreadable
+# endpoint, or a busy machine never escalates here.
+
+# The 1-minute load average, portably: /proc/loadavg on Linux, vm.loadavg via
+# sysctl on macOS (the same two sources bin/fm-lint.sh's load display uses).
+# FM_DEAD_WORKER_LOADAVG overrides the value so tests can pin the verdict
+# deterministically; it is a production test seam in the FM_CREW_STATE_BIN
+# spirit, and unset means the real machine load. Prints nothing and returns 1
+# when no source is readable.
+machine_load1() {
+  local v
+  if [ -n "${FM_DEAD_WORKER_LOADAVG:-}" ]; then
+    printf '%s' "$FM_DEAD_WORKER_LOADAVG"
+    return 0
+  fi
+  if [ -r /proc/loadavg ]; then
+    read -r v _ < /proc/loadavg 2>/dev/null || return 1
+    [ -n "$v" ] || return 1
+    printf '%s' "$v"
+    return 0
+  fi
+  v=$(sysctl -n vm.loadavg 2>/dev/null) || return 1
+  v=${v//[{}]/}
+  read -r v _ <<EOF
+$v
+EOF
+  [ -n "$v" ] || return 1
+  printf '%s' "$v"
+}
+
+# 0 when the 1-minute load average is below 1: the load half of the machine
+# idle definition. An invalid or unreadable load is never "below 1", so the
+# caller's fail-closed path stays.
+machine_load1_below_one() {
+  local v
+  v=$(machine_load1) || return 1
+  case "$v" in
+    ''|*[!0-9.]*) return 1 ;;
+  esac
+  awk -v v="$v" 'BEGIN { exit !(v < 1) }'
+}
+
+# 0 while some OTHER in-flight task's endpoint holds a live agent: the machine
+# is not idle, so no task can be declared dead from its missing process alone.
+# Walks every recorded meta of this home; a secondmate endpoint is deliberately
+# never read for liveness (its idle pane is healthy by design), and a task whose
+# status shows a legitimate stopped state (done, failed, captain-held) holds no
+# worker either. A task whose endpoint cannot be read confidently contributes
+# nothing, so an unreadable endpoint alone never blocks the idle verdict.
+other_inflight_worker_running() {  # <exclude-task>
+  local exclude=$1 meta task kind last verb w backend alive
+  for meta in "$STATE"/*.meta; do
+    [ -e "$meta" ] || continue
+    task=$(basename "$meta"); task=${task%.meta}
+    [ "$task" != "$exclude" ] || continue
+    kind=$(fm_meta_get "$meta" kind)
+    [ "$kind" != secondmate ] || continue
+    last=$(last_status_line "$STATE/$task.status")
+    verb=$(status_line_verb "$last")
+    case "$verb" in
+      done|failed|captain-held) continue ;;
+    esac
+    w=$(fm_backend_target_of_meta "$meta")
+    [ -n "$w" ] || continue
+    backend=$(fm_backend_of_meta "$meta")
+    alive=$(fm_backend_agent_alive "$backend" "$w" 2>/dev/null || true)
+    [ "$alive" = alive ] || continue
+    return 0
+  done
+  return 1
+}
+
+# 0 while the machine is idle per the captain's definition: the 1-minute load
+# is below 1 AND no other worker process is running. The <exclude-task> is the
+# task being evaluated, so its own (already dead) endpoint never counts as a
+# worker.
+machine_is_idle() {  # <exclude-task>
+  machine_load1_below_one || return 1
+  other_inflight_worker_running "$1" && return 1
+  return 0
+}
+
+# 0 while <task> is in flight in the sense the captain's reality rule needs: a
+# spawned task whose worker is expected to be running. A task whose last status
+# line shows a legitimate stopped state (done, failed, or a verified
+# captain-held transfer) is NOT expected to hold a worker, so its missing
+# process is not a dead worker. A declared pause, decision wait, or anything
+# else stays in flight: an idle declaration never excuses a missing process.
+task_expects_live_worker() {  # <task>
+  local task=$1 last verb
+  last=$(last_status_line "$STATE/$task.status")
+  verb=$(status_line_verb "$last")
+  case "$verb" in
+    done|failed|captain-held) return 1 ;;
+  esac
+  return 0
+}
+
+# Run one kernel-log reader with a hard wall-clock bound so a hung log (a
+# journal on a stuck disk, a blocked sudo prompt) can never stall the watcher's
+# poll loop. Prints the reader's output; a reader that does not finish inside
+# the bound is killed and contributes nothing (fail-closed, because OOM evidence
+# is best-effort and the dead-worker wake itself must never wait on it). The
+# bound is a shell-level poll because GNU timeout is not on macOS by default.
+fm_kernel_log_read() {  # <reader...> -> stdout
+  local out tmp done pid i=0
+  tmp=$(mktemp "${TMPDIR:-/tmp}/fm-klog.XXXXXX") || return 1
+  done="$tmp.done"
+  # The reader runs as a background subshell that writes a completion marker
+  # when it finishes, so completion is detected by the marker, never by
+  # kill -0 (which also succeeds on an unreaped zombie and would discard a
+  # fast reader's output at the bound).
+  ( "$@" > "$tmp" 2>/dev/null; printf 'x' > "$done" ) &
+  pid=$!
+  while [ "$i" -lt 60 ]; do  # 6-second bound
+    [ -e "$done" ] && break
+    sleep 0.1
+    i=$((i + 1))
+  done
+  if [ ! -e "$done" ]; then
+    kill "$pid" 2>/dev/null || true
+    wait "$pid" 2>/dev/null || true
+    rm -f "$tmp" "$done"
+    return 1
+  fi
+  wait "$pid" 2>/dev/null || true
+  out=$(cat "$tmp" 2>/dev/null || true)
+  rm -f "$tmp" "$done"
+  [ -n "$out" ] || return 1
+  printf '%s\n' "$out"
+}
+
+# Best-effort kernel OOM evidence for a dead worker. Prints a short human
+# phrase when the kernel log shows a recent OOM kill that plausibly hit this
+# task's worker, and nothing otherwise - never invents evidence, and an
+# unreadable log is a no-op. The strongest tie is an OOM line naming this
+# task's own harness process or worktree; the tmux incident pattern (an OOM
+# kill in a tmux-spawn scope, 2026-09 pc-316) is the second tier; a plain
+# recent OOM kill is the weakest tier. The reader is a seam
+# (FM_DEAD_WORKER_KERNEL_LOG, an executable whose stdout is a kernel log) so
+# the regression test can feed a canned log; the production default reads dmesg
+# on Linux with passwordless sudo journalctl -k as the fallback, and reports
+# nothing where no kernel log is readable (including macOS). Every read is
+# bounded by fm_kernel_log_read so a hung journal can never block the watcher.
+fm_oom_evidence() {  # <task> <worktree>
+  local task=$1 wt=$2 out recent lines line proc harness
+  local reader=${FM_DEAD_WORKER_KERNEL_LOG:-}
+  if [ -n "$reader" ]; then
+    out=$(fm_kernel_log_read "$reader") || return 0
+  else
+    case "$(uname)" in
+      Linux)
+        out=$(fm_kernel_log_read dmesg) || out=$(fm_kernel_log_read sudo -n journalctl -k --since '20 minutes ago') || return 0
+        ;;
+      *) return 0 ;;
+    esac
+  fi
+  [ -n "$out" ] || return 0
+  recent=$(printf '%s\n' "$out" | tail -n 1000)
+  lines=$(printf '%s\n' "$recent" | grep -iE 'oom-kill|out of memory|killed process|oom_reaper' || true)
+  [ -n "$lines" ] || return 0
+  harness=$(fm_meta_get "$STATE/$task.meta" harness)
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    proc=$(printf '%s' "$line" | sed -n 's/.*Killed process [0-9][0-9]* (\([^)]*\)).*/\1/p' | tail -1)
+    if [ -n "$proc" ] && [ -n "$harness" ] \
+      && { [ "$proc" = "$harness" ] || printf '%s' "$proc" | grep -qF "$harness"; }; then
+      printf 'kernel OOM-killed the worker process (%s)' "$proc"
+      return 0
+    fi
+  done <<EOF
+$lines
+EOF
+  if [ -n "$wt" ] && printf '%s\n' "$lines" | grep -qF "$wt"; then
+    printf 'kernel OOM evidence names the worker worktree'
+    return 0
+  fi
+  if printf '%s\n' "$lines" | grep -qi 'tmux-spawn'; then
+    printf 'kernel reports an OOM-kill in a tmux-spawn scope (the worker window scope)'
+    return 0
+  fi
+  printf 'kernel reports a recent OOM-kill on this machine'
+}
+
+# The captain's dead-worker reality check. 0 when it escalated the task as a
+# dead worker (the enqueued wake then exits the cycle through wake()); 1 when
+# the task is not a dead worker and the caller keeps its own path. A task is a
+# dead worker exactly when it is in flight, its recorded endpoint
+# authoritatively holds no live worker, and the machine is idle - regardless of
+# what its status line declares, including a paused: wait, because a task
+# without a running process is not a declared wait. Fail-closed on every other
+# outcome: a secondmate, a legitimately stopped task, a too-fresh spawn, a
+# transiently unreadable endpoint, or a busy machine never escalates here.
+# Idempotent: one escalation per dead stretch via
+# state/.dead-worker-<window-key>, cleared the moment the endpoint is live
+# again or the task stops being in flight. The wake reason is the new clear
+# "dead worker: <task>" verdict with best-effort OOM evidence appended.
+fm_dead_worker_reality_check() {  # <window> <task> <key> <kind>
+  local win=$1 task=$2 key=$3 kind=$4 backend alive wt oom reason marker
+  [ "$kind" != secondmate ] || return 1
+  marker="$STATE/.dead-worker-$key"
+  # A too-fresh spawn or relaunch gets its grace: the worker has not had time
+  # to start, so a missing endpoint is not yet a dead worker.
+  [ "$(age_of "$STATE/$task.meta")" -ge "$DEAD_WORKER_GRACE" ] || return 1
+  if ! task_expects_live_worker "$task"; then
+    # The task finished or was verified captain-held: its worker stopping is
+    # expected, so any prior dead-worker report is stale too.
+    rm -f "$marker"
+    return 1
+  fi
+  backend=$(window_backend "$win")
+  alive=$(fm_backend_agent_alive "$backend" "$win" 2>/dev/null || true)
+  if [ "$alive" = alive ]; then
+    # A live agent: the worker is (again) running, ending any dead stretch.
+    rm -f "$marker"
+    return 1
+  fi
+  if [ "$alive" != dead ] && fm_backend_target_exists "$backend" "$win" 2>/dev/null; then
+    # No authoritative dead verdict and the recorded endpoint is present: a
+    # transient unreadable read, not a dead worker (fail-closed).
+    return 1
+  fi
+  machine_is_idle "$task" || return 1
+  [ "$(cat "$marker" 2>/dev/null || true)" = "$task" ] && return 1
+  wt=$(fm_meta_get "$STATE/$task.meta" worktree)
+  oom=$(fm_oom_evidence "$task" "$wt")
+  reason="stale: $win (dead worker: $task - no live process while the machine is idle"
+  [ -n "$oom" ] && reason="$reason; $oom"
+  reason="$reason)"
+  fm_wake_append stale "$win" "$reason" || exit 1
+  printf '%s' "$task" > "$marker"
+  wake "$reason"
+}
+
 # Reconcile a declared pause or captain-held status with authoritative crew state.
 # After fm-crew-state has fallen back to stopped or unknown, paused classification is
 # recovered only for a confidently dead ordinary crew, or for a secondmate, whose
@@ -979,6 +1243,12 @@ pause_state_class() {  # <window> <task>
         printf 'none'
         return
       fi
+      # A declared wait with an authoritatively dead agent: per the captain's
+      # reality rule a task without a running process on an idle machine is a
+      # dead worker, not a pause, so this escalates instead of absorbing. The
+      # check declines (returns 1, wake() has not exited) on a busy machine or
+      # a non-in-flight task, and then the pause absorb below still holds.
+      fm_dead_worker_reality_check "$win" "$task" "$key" "$kind" || true
     fi
     printf 'paused'
     return
@@ -996,6 +1266,10 @@ pause_state_class() {  # <window> <task>
       printf 'none'
       return
     fi
+    # Same captain's reality rule as the recent-pause branch above: an idle
+    # machine plus an authoritatively dead agent is a dead worker, not a
+    # declared wait; on a busy machine the pause absorb below still holds.
+    fm_dead_worker_reality_check "$win" "$task" "$key" "$kind" || true
   fi
   # Recover paused classification for a declared wait that authoritative crew state
   # could not name. Reaching here already proves the only two admissible cases: an
@@ -1883,7 +2157,17 @@ EOF
     if [ "$kind" = secondmate ] && ! status_is_paused_or_captain_held "$last"; then
       continue
     fi
-    tail40=$(fm_backend_capture "$(window_backend "$w")" "$w" 40 "$(window_label "$w")" 2>/dev/null) || continue
+    if ! tail40=$(fm_backend_capture "$(window_backend "$w")" "$w" 40 "$(window_label "$w")" 2>/dev/null); then
+      # The pane cannot be read: the window may be gone entirely, and a worker
+      # OOM-killed along with its window leaves no pane for the stale backbone
+      # below to classify, so today this window would be skipped forever. The
+      # dead-worker reality check decides whether this is a dead worker
+      # (authoritative dead/missing endpoint plus an idle machine) or a
+      # transient unreadable read to keep ignoring; either way this window is
+      # not stale-scanned this poll. On escalation wake() exits the cycle.
+      [ -z "$task" ] || fm_dead_worker_reality_check "$w" "$task" "$key" "$kind" || true
+      continue
+    fi
     h=$(printf '%s' "$tail40" | hash_pane)
     hf="$STATE/.hash-$key"
     cf="$STATE/.count-$key"
