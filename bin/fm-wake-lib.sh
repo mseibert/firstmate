@@ -220,14 +220,36 @@ fm_pi_extension_version() {
 # fm_pi_extension_loaded <marker> <expected-version> <session-lock>
 # True when <marker> records <expected-version> and names the session process in
 # <session-lock>, i.e. the session holding this home loaded exactly this build.
+# On failure it sets FM_PI_EXTENSION_STATE to one of:
+#   missing       - no marker, no lock, or no expected version: nothing proves
+#                   this build was ever loaded (real "not loaded" case)
+#   stale-build   - the marker exists but records a different module version
+#                   than the tracked file: the running session loaded an older
+#                   build and a harness restart is what loads the new one
+#   other-session - the marker exists at the right version but was written by a
+#                   process that is not the current session-lock owner
+# The boolean verdict is unchanged; only the failure reason is now exposed so
+# callers can tell a version-skew digest from an actually-missing extension.
+# shellcheck disable=SC2034 # FM_PI_EXTENSION_STATE is the documented out-parameter, read by bin/fm-session-start.sh
 fm_pi_extension_loaded() {
   local marker=$1 expected_version=$2 lock=$3 marker_version marker_pid lock_pid
-  [ -f "$marker" ] && [ -f "$lock" ] && [ -n "$expected_version" ] || return 1
+  FM_PI_EXTENSION_STATE=
+  if [ ! -f "$marker" ] || [ ! -f "$lock" ] || [ -z "$expected_version" ]; then
+    FM_PI_EXTENSION_STATE=missing
+    return 1
+  fi
   marker_version=$(sed -n '1p' "$marker")
   marker_pid=$(sed -n '2p' "$marker")
   lock_pid=$(sed -n '1p' "$lock")
   [ -n "$marker_pid" ] || return 1
-  [ "$marker_version" = "$expected_version" ] && [ "$marker_pid" = "$lock_pid" ]
+  if [ "$marker_version" != "$expected_version" ]; then
+    FM_PI_EXTENSION_STATE=stale-build
+    return 1
+  fi
+  if [ "$marker_pid" != "$lock_pid" ]; then
+    FM_PI_EXTENSION_STATE=other-session
+    return 1
+  fi
 }
 
 # fm_pi_extension_owns_supervision <state> <root>

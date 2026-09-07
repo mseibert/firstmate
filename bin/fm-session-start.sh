@@ -762,7 +762,11 @@ if [ "$PRIMARY_HARNESS" = pi ] || [ "$PRIMARY_HARNESS" = pi-signed ]; then
   PI_TURNEND_VERSION=$(fm_pi_extension_version "$PI_TURNEND_EXT" || printf '')
   if ! fm_pi_extension_loaded "$PI_WATCH_MARKER" "$PI_WATCH_VERSION" "$PI_LOCK" \
     || ! fm_pi_extension_loaded "$PI_TURNEND_MARKER" "$PI_TURNEND_VERSION" "$PI_LOCK"; then
-    printf 'PI_WATCH_EXTENSION: not loaded - approve Pi project trust once per clone, then restart %s so %s and %s auto-load for turn-end guard and background wake coverage; use -e %s -e %s only if project hooks are not trusted\n' "$PI_RESTART_COMMAND" "$PI_TURNEND_EXT" "$PI_EXT" "$PI_TURNEND_EXT" "$PI_EXT"
+    if [ "$FM_PI_EXTENSION_STATE" = stale-build ]; then
+      printf 'PI_WATCH_EXTENSION: module build differs from the tracked file - the running session loaded an older build and still owns supervision; restart %s so %s and %s load the current build for turn-end guard and background wake coverage\n' "$PI_RESTART_COMMAND" "$PI_TURNEND_EXT" "$PI_EXT"
+    else
+      printf 'PI_WATCH_EXTENSION: not loaded - approve Pi project trust once per clone, then restart %s so %s and %s auto-load for turn-end guard and background wake coverage; use -e %s -e %s only if project hooks are not trusted\n' "$PI_RESTART_COMMAND" "$PI_TURNEND_EXT" "$PI_EXT" "$PI_TURNEND_EXT" "$PI_EXT"
+    fi
   fi
 fi
 # omp (Oh My Pi) has no project-trust gate: it auto-discovers <cwd>/.omp/extensions
@@ -780,7 +784,11 @@ if [ "$PRIMARY_HARNESS" = omp ]; then
   OMP_TURNEND_VERSION=$(fm_pi_extension_version "$OMP_TURNEND_EXT" || printf '')
   if ! fm_pi_extension_loaded "$OMP_WATCH_MARKER" "$OMP_WATCH_VERSION" "$OMP_LOCK" \
     || ! fm_pi_extension_loaded "$OMP_TURNEND_MARKER" "$OMP_TURNEND_VERSION" "$OMP_LOCK"; then
-    printf 'OMP_WATCH_EXTENSION: not loaded - restart omp with this home as its working directory so %s and %s auto-load from .omp/extensions/ for turn-end guard and background wake coverage; pass -e %s -e %s only when omp must start from another directory, never together with auto-discovery (omp loads a file named both ways twice)\n' "$OMP_TURNEND_EXT" "$OMP_EXT" "$OMP_TURNEND_EXT" "$OMP_EXT"
+    if [ "$FM_PI_EXTENSION_STATE" = stale-build ]; then
+      printf 'OMP_WATCH_EXTENSION: module build differs from the tracked file - the running session loaded an older build and still owns supervision; restart omp so %s and %s load the current build for turn-end guard and background wake coverage\n' "$OMP_TURNEND_EXT" "$OMP_EXT"
+    else
+      printf 'OMP_WATCH_EXTENSION: not loaded - restart omp with this home as its working directory so %s and %s auto-load from .omp/extensions/ for turn-end guard and background wake coverage; pass -e %s -e %s only when omp must start from another directory, never together with auto-discovery (omp loads a file named both ways twice)\n' "$OMP_TURNEND_EXT" "$OMP_EXT" "$OMP_TURNEND_EXT" "$OMP_EXT"
+    fi
   fi
 fi
 "$SCRIPT_DIR/fm-supervision-instructions.sh" \

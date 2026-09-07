@@ -105,6 +105,30 @@ case "$CYCLE_LOG_KEEP_LINES" in ''|*[!0-9]*|0) CYCLE_LOG_KEEP_LINES=1000 ;; esac
 case "$RESTORATION_GAP_LOG_MAX_BYTES" in ''|*[!0-9]*|0) RESTORATION_GAP_LOG_MAX_BYTES=262144 ;; esac
 case "$RESTORATION_GAP_LOG_KEEP_LINES" in ''|*[!0-9]*|0) RESTORATION_GAP_LOG_KEEP_LINES=1000 ;; esac
 
+# Defense in depth against OOM pressure: hosts running firstmate have a
+# recorded OOM-kill history (including a pi worker), and the watcher is the
+# fleet's last line of supervision. Lowering oom_score_adj prefers the watcher
+# and this arm in the kernel's OOM scorer; no privileges are needed for our own
+# process or our direct children. Absent or read-only /proc (e.g. macOS) is
+# non-fatal - this is best-effort protection, never a supervision dependency.
+FM_WATCH_OOM_SCORE_ADJ=${FM_WATCH_OOM_SCORE_ADJ:--500}
+case "$FM_WATCH_OOM_SCORE_ADJ" in
+  -*|+*|[0-9]*) : ;;
+  *) FM_WATCH_OOM_SCORE_ADJ=-500 ;;
+esac
+fm_oom_protect() {
+  local target=${1:-self} adj=$FM_WATCH_OOM_SCORE_ADJ proc_file
+  if [ "$target" = self ]; then
+    proc_file=/proc/self/oom_score_adj
+  else
+    case "$target" in ''|*[!0-9]*) return 0 ;; esac
+    proc_file="/proc/$target/oom_score_adj"
+  fi
+  [ -w "$proc_file" ] || return 0
+  printf '%s\n' "$adj" > "$proc_file" 2>/dev/null || true
+}
+fm_oom_protect self
+
 # The lifecycle ledger is diagnostic evidence, not a supervision dependency.
 # Writes are bounded and best-effort so an observability failure cannot stall an
 # otherwise healthy watcher cycle.
@@ -541,6 +565,7 @@ else
   "$WATCH" >"$child_out" &
 fi
 child=$!
+fm_oom_protect "$child"
 cycle_begin "$child" started "$(fm_pid_identity "$child" 2>/dev/null || true)"
 child_done=0
 
