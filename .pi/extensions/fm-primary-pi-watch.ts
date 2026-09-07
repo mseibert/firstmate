@@ -147,6 +147,11 @@ const armReadyTimeoutMs = positiveInteger(
   process.platform === "win32" ? 35000 : 12000,
 );
 const armRetireTimeoutMs = positiveInteger("FM_WATCH_ARM_RETIRE_TIMEOUT_MS", 1000);
+// Typed marker Main sees when a delivered wake's restoration left no verified
+// successor watcher: the re-arm gap must be visible, never only inferable from
+// the arm's cycle ledger (successor=none). Every continuity-restoration failure
+// message carries it so the typed message to Main names the gap itself.
+const continuityRestorationGap = "watcher: FAILED - continuity restoration gap: ";
 const repairOnlyHint = "call fm_watch_arm_pi again only after a later notification says the cycle is missing, failed, or unhealthy";
 const shuttingDownMessage = "watcher: not armed - Pi session is shutting down";
 
@@ -888,34 +893,34 @@ export default function (pi: ExtensionAPI) {
         return { failure: "", recovery: armRecovery.get(successorChild) };
       }
       if (replacement.ok) {
-        failure = "watcher: FAILED - Pi extension could not verify a ready successor watcher";
+        failure = `${continuityRestorationGap}Pi extension could not verify a ready successor watcher`;
         if (!(await retireArm(successorChild))) {
           return {
-            failure: `${failure}\nwatcher: FAILED - Pi extension could not restore watcher continuity because the unready successor arm did not exit within ${armRetireTimeoutMs}ms`,
+            failure: `${failure}\n${continuityRestorationGap}Pi extension could not restore watcher continuity because the unready successor arm did not exit within ${armRetireTimeoutMs}ms`,
           };
         }
       } else {
         failure = /(?:read-only|no live session)/.test(replacement.message)
-          ? `watcher: FAILED - Pi extension cannot restore continuity because this session no longer owns the lock\n${replacement.message}`
-          : `watcher: FAILED - Pi extension could not start the successor watcher cycle\n${replacement.message}`;
+          ? `${continuityRestorationGap}Pi extension cannot restore continuity because this session no longer owns the lock\n${replacement.message}`
+          : `${continuityRestorationGap}Pi extension could not start the successor watcher cycle\n${replacement.message}`;
         if (/(?:read-only|no live session)/.test(replacement.message)) break;
       }
       if (attempt === retryLimit) break;
       await waitForRetry(attempt + 1);
     }
-    return { failure: `${failure}\nwatcher: FAILED - Pi extension could not restore watcher continuity after ${retryLimit} retries` };
+    return { failure: `${failure}\n${continuityRestorationGap}Pi extension could not restore watcher continuity after ${retryLimit} retries` };
   }
 
   function scheduleRetry(owner: SessionGeneration, message: string, predecessorArmPid: string): void {
     if (!generationIsLive(owner) || owner.child || owner.retryTimer) return;
     const ownership = lockOwnership();
     if (ownership !== "owned") {
-      surfaceFailure(owner, `watcher: FAILED - Pi extension cannot restore continuity because this session no longer owns the lock\n${message}`);
+      surfaceFailure(owner, `${continuityRestorationGap}Pi extension cannot restore continuity because this session no longer owns the lock\n${message}`);
       return;
     }
     owner.retryFailures += 1;
     if (owner.retryFailures > retryLimit) {
-      surfaceFailure(owner, `watcher: FAILED - Pi extension could not restore watcher continuity after ${retryLimit} retries\n${message}`);
+      surfaceFailure(owner, `${continuityRestorationGap}Pi extension could not restore watcher continuity after ${retryLimit} retries\n${message}`);
       return;
     }
     const timer = setTimeout(() => {
@@ -923,7 +928,7 @@ export default function (pi: ExtensionAPI) {
       if (!generationIsLive(owner)) return;
       const result = startArm(owner, predecessorArmPid);
       if (!result.ok) {
-        surfaceFailure(owner, `watcher: FAILED - Pi extension could not launch a continuity retry\n${result.message}`);
+        surfaceFailure(owner, `${continuityRestorationGap}Pi extension could not launch a continuity retry\n${result.message}`);
       }
     }, retryDelay(owner.retryFailures));
     timer.unref();

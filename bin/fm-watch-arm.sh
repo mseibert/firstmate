@@ -51,6 +51,14 @@
 # state/.watch-triage.log remains exclusively the watcher's absorbed-wake debug
 # log and is never written here.
 #
+# A delivered wake whose cycle ends WITHOUT a verified successor is a
+# RESTORATION GAP: the model was just woken, but no successor watcher holds the
+# singleton, so supervision is down while the wake is being handled. Every such
+# close appends one durable record to state/.restoration-gaps.log (bounded,
+# tab-separated, best-effort, exactly like the cycle ledger) so the gap is
+# immediately evidenced instead of only inferable from the cycle ledger's
+# successor=none field. The extension's typed message to Main names the same gap.
+#
 # --restart: stop ONLY this FM_HOME's watcher (the pid recorded in THIS home's
 # state/.watch.lock) and own a fresh cycle, or attach if a verified live peer
 # wins the singleton while the duplicate child stands down. It
@@ -83,9 +91,19 @@ CYCLE_LOG="$STATE/.watch-cycle-exits.log"
 CYCLE_LOG_LOCK="$STATE/.watch-cycle-exits.lock"
 CYCLE_LOG_MAX_BYTES=${FM_WATCH_CYCLE_LOG_MAX_BYTES:-262144}
 CYCLE_LOG_KEEP_LINES=${FM_WATCH_CYCLE_LOG_KEEP_LINES:-1000}
+# The restoration-gap ledger is the durable evidence of a delivered wake whose
+# cycle closed without a verified successor (see the header). Same bounded,
+# best-effort contract as the cycle ledger: an observability write failure never
+# stalls an otherwise healthy wake delivery.
+RESTORATION_GAP_LOG="$STATE/.restoration-gaps.log"
+RESTORATION_GAP_LOCK="$STATE/.restoration-gaps.lock"
+RESTORATION_GAP_LOG_MAX_BYTES=${FM_RESTORATION_GAP_LOG_MAX_BYTES:-262144}
+RESTORATION_GAP_LOG_KEEP_LINES=${FM_RESTORATION_GAP_LOG_KEEP_LINES:-1000}
 ARM_PID=${BASHPID:-$$}
 case "$CYCLE_LOG_MAX_BYTES" in ''|*[!0-9]*|0) CYCLE_LOG_MAX_BYTES=262144 ;; esac
 case "$CYCLE_LOG_KEEP_LINES" in ''|*[!0-9]*|0) CYCLE_LOG_KEEP_LINES=1000 ;; esac
+case "$RESTORATION_GAP_LOG_MAX_BYTES" in ''|*[!0-9]*|0) RESTORATION_GAP_LOG_MAX_BYTES=262144 ;; esac
+case "$RESTORATION_GAP_LOG_KEEP_LINES" in ''|*[!0-9]*|0) RESTORATION_GAP_LOG_KEEP_LINES=1000 ;; esac
 
 # The lifecycle ledger is diagnostic evidence, not a supervision dependency.
 # Writes are bounded and best-effort so an observability failure cannot stall an
@@ -182,6 +200,44 @@ cycle_log_append() {
   esac
   fm_lock_release "$CYCLE_LOG_LOCK"
   cycle_active=0
+}
+
+# Durable, bounded, best-effort evidence of a restoration gap: a delivered wake
+# whose cycle closed without a verified successor. Called exactly where the
+# arm resolves such a close; the record makes the gap immediately evidenced
+# instead of only inferable from the cycle ledger's successor=none field.
+restoration_gap_append() {  # <reason>
+  local reason=$1 beacon_age size tmp raw i
+  beacon_age=$(fm_path_age "$BEAT")
+  i=0
+  while ! fm_lock_try_acquire "$RESTORATION_GAP_LOCK"; do
+    [ "$i" -lt 20 ] || return 0
+    sleep 0.02
+    i=$((i + 1))
+  done
+  printf 'ts=%s\tarm_pid=%s\twatcher_pid=%s\treason=%s\tbeacon_age=%s\tsuccessor=none\n' \
+    "$(date +%s)" \
+    "$ARM_PID" \
+    "$(cycle_clean_field "$cycle_watcher_pid")" \
+    "$(cycle_clean_field "$reason")" \
+    "$beacon_age" >> "$RESTORATION_GAP_LOG" 2>/dev/null \
+    || { fm_lock_release "$RESTORATION_GAP_LOCK"; return 0; }
+  size=$(wc -c < "$RESTORATION_GAP_LOG" 2>/dev/null | tr -d '[:space:]')
+  case "$size" in
+    ''|*[!0-9]*) ;;
+    *)
+      if [ "$size" -ge "$RESTORATION_GAP_LOG_MAX_BYTES" ]; then
+        tmp="$RESTORATION_GAP_LOG.tmp.$ARM_PID"
+        raw="$tmp.raw"
+        tail -n "$RESTORATION_GAP_LOG_KEEP_LINES" "$RESTORATION_GAP_LOG" 2>/dev/null \
+          | tail -c "$RESTORATION_GAP_LOG_MAX_BYTES" > "$raw" 2>/dev/null \
+          && mv -f "$raw" "$tmp" 2>/dev/null \
+          && mv -f "$tmp" "$RESTORATION_GAP_LOG" 2>/dev/null
+        rm -f "$tmp" "$raw" 2>/dev/null || true
+      fi
+      ;;
+  esac
+  fm_lock_release "$RESTORATION_GAP_LOCK"
 }
 
 # A persistent adapter passes the arm pid that just closed. Once this new arm
@@ -331,6 +387,7 @@ attach_and_wait() {
     fi
     if close_unobserved_cycle; then
       cycle_log_append unknown unknown attached-delivered-wake none
+      restoration_gap_append attached-delivered-wake
       return 0
     fi
     cycle_log_append unknown unknown attached-cycle-ended none
@@ -493,6 +550,7 @@ owned_child_finished() {
   if [ "$rc" -eq 0 ] && watch_output_has_wake "$child_out"; then
     reason_type=$(watch_output_reason_type "$child_out")
     cycle_log_append "$rc" "$signal" "$reason_type" none
+    restoration_gap_append "$reason_type"
     print_watch_output "$child_out"
     rm -f "$child_out" 2>/dev/null || true
     child=
@@ -519,6 +577,7 @@ owned_child_finished() {
     child_out=
     if close_unobserved_cycle; then
       cycle_log_append "$rc" "$signal" clean-exit-delivered-wake none
+      restoration_gap_append clean-exit-delivered-wake
       return 0
     fi
     cycle_log_append "$rc" "$signal" unexpected-clean-exit none

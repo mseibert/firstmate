@@ -1246,7 +1246,7 @@ if (offers.length !== 0) {
 if (!prompt.includes("FIRSTMATE WATCHER WAKE: heartbeat\n\nwatcher: FAILED")) {
   throw new Error(`main wake lost the bare heartbeat reason: ${prompt}`);
 }
-if (!prompt.includes("watcher: FAILED - Pi extension could not restore watcher continuity after 2 retries")) {
+if (!prompt.includes("watcher: FAILED - continuity restoration gap: Pi extension could not restore watcher continuity after 2 retries")) {
   throw new Error(`main wake lost the restoration failure: ${prompt}`);
 }
 EOF
@@ -1456,7 +1456,7 @@ const rows = existsSync(process.env.FM_ARM_LOG)
 if (rows.length !== 4) throw new Error(`expected one successor plus two retries, got ${rows.length}: ${rows.join(" | ")}`);
 if (rowsAtPrompt !== 4) throw new Error(`wake arrived before restoration exhausted (${rowsAtPrompt} arm rows)`);
 if (!prompt.includes("signal: synthetic wake")) throw new Error(`original wake was lost: ${prompt}`);
-if (!prompt.includes("could not restore watcher continuity after 2 retries")) throw new Error(`missing typed restoration failure: ${prompt}`);
+if (!prompt.includes("continuity restoration gap: Pi extension could not restore watcher continuity after 2 retries")) throw new Error(`missing typed restoration failure: ${prompt}`);
 await new Promise((resolve) => setTimeout(resolve, 100));
 const stableRows = readFileSync(process.env.FM_ARM_LOG, "utf8").trim().split("\n");
 if (stableRows.length !== 4) throw new Error(`single-flight recovery launched ${stableRows.length} arms`);

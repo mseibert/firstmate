@@ -184,6 +184,10 @@ test_attached_arm_reports_the_delivered_wake() {
   expect_code 0 "$status" "an attached arm whose cycle delivered a wake must close successfully"
   grep -q 'reason=attached-delivered-wake' "$state/.watch-cycle-exits.log" \
     || fail "the delivered-wake close was not classified in the lifecycle ledger"
+  grep -q 'successor=none' "$state/.restoration-gaps.log" 2>/dev/null \
+    || fail "a delivered wake with no verified successor must write the durable restoration-gap record"
+  grep -q 'reason=attached-delivered-wake' "$state/.restoration-gaps.log" 2>/dev/null \
+    || fail "the restoration-gap record must name the delivered-wake reason"
   pass "watch-arm: an attached arm reports the wake its cycle delivered instead of a false failure"
 }
 
