@@ -32,6 +32,8 @@ If the unready arm does not retire within that bound, the adapter keeps ownershi
 When that retained arm later closes, its actual close is classified as a new supervised event without replaying the earlier fallback.
 After the configured retry bound is exhausted, it delivers the original wake with a typed continuity-restoration failure even if every successor arm hung without reporting readiness.
 This is deliberate Option B ordering: the fleet is protected before the model handles the wake whenever restoration succeeds, but the model is never left blind when it does not.
+Every continuity-restoration failure message names the **continuity restoration gap** (the typed marker in `fm-primary-pi-watch.ts`), so a delivered wake whose cycle closed without a verified successor is never silent.
+The arm layer writes the matching durable evidence: each such close appends one record to `state/.restoration-gaps.log` (bounded, tab-separated, best-effort, owned by `bin/fm-watch-arm.sh`), so the gap is immediately evidenced instead of only inferable from the cycle ledger's `successor=none` field.
 
 Claude's Stop hook starts the successor arm at the next Stop after the handling turn, rather than before notification as Pi, omp, and OpenCode do.
 The durable wake queue preserves actionable events during the residual active-turn window, and the bounded turn-end guard enforces recovery at Stop when no watcher is live and no open generation claim is still deciding, so a finished, hung, or identity-mismatched claim cannot suppress it ([`turnend-guard.md`](turnend-guard.md#harness-integrations) owns that boundary).
