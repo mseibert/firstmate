@@ -471,6 +471,59 @@ test_unsafe_secondmate_home_skipped_before_git_update() {
   pass "T11 unsafe secondmate home is not fast-forwarded"
 }
 
+# --- T12: a primary on the durable seibert/main fork line ---------------------
+# On the fork line the primary carries its own commits, so origin/main can never
+# fast-forward onto it: the update first advances the clean `main` mirror to
+# origin/main (REF-ONLY, still single-parent), then MERGES that mirror into
+# seibert/main. The line's own commit survives as a merge ancestor; a second run
+# is an already-current no-op.
+#
+# new_seibert_world <name>: new_world, then move the primary onto a seibert/main
+# fork line with one line-own commit. The commit touches a file only the line
+# carries, so it never collides with bump_origin's instruction-surface files.
+new_seibert_world() {
+  local name=$1 w
+  w=$(new_world "$name")
+  git -C "$w/main" checkout -q -b seibert/main main
+  printf 'line-own\n' > "$w/main/LINE.md"
+  git -C "$w/main" add LINE.md
+  git -C "$w/main" commit -qm line-own
+  printf '%s\n' "$w"
+}
+
+test_update_on_seibert_main_merges_mirror() {
+  local w out line_before run2
+  w=$(new_seibert_world t12)
+  line_before=$(git -C "$w/main" rev-parse HEAD)
+  bump_origin "$w" instr
+
+  out=$(run_update "$w")
+
+  assert_contains "$out" "firstmate: updated " "firstmate on the fork line was updated"
+  assert_contains "$out" "merged main" "the update reports the mirror merge"
+  assert_contains "$out" "reread-firstmate: yes" "the merge carries the instruction change"
+  # The clean main mirror was advanced REF-ONLY to origin/main (single parent).
+  [ "$(git -C "$w/main" rev-parse main)" = "$(git -C "$w/main" rev-parse origin/main)" ] \
+    || fail "main mirror did not advance to origin/main"
+  [ "$(git -C "$w/main" rev-list --parents -n1 main | wc -w | tr -d ' ')" -eq 2 ] \
+    || fail "main mirror is no longer a single-parent fast-forward"
+  # seibert/main is now a two-parent MERGE of the line's own commit and the mirror.
+  [ "$(git -C "$w/main" rev-list --parents -n1 HEAD | wc -w | tr -d ' ')" -eq 3 ] \
+    || fail "seibert/main tip is not a two-parent merge"
+  git -C "$w/main" merge-base --is-ancestor main HEAD \
+    || fail "seibert/main does not contain the fresh mirror"
+  git -C "$w/main" merge-base --is-ancestor "$line_before" HEAD \
+    || fail "the line's own commit was lost by the merge"
+  # The primary stays on the fork line, never on the mirror.
+  [ "$(git -C "$w/main" symbolic-ref --short HEAD)" = "seibert/main" ] \
+    || fail "firstmate left the seibert/main fork line"
+
+  run2=$(run_update "$w")
+  assert_contains "$run2" "firstmate: already current" \
+    "a second run on the merged line is a no-op"
+  pass "T12 a primary on the seibert/main fork line advances the mirror then merges it into the line"
+}
+
 test_updates_main_and_secondmate
 test_reread_gate_is_instruction_only
 test_bin_only_advance_restarts
@@ -485,5 +538,6 @@ test_registry_backstop_dedup_and_self_exclusion
 test_firstmate_wrong_branch_skipped
 test_firstmate_detached_head_skipped
 test_unsafe_secondmate_home_skipped_before_git_update
+test_update_on_seibert_main_merges_mirror
 
 echo "# all fm-update tests passed"

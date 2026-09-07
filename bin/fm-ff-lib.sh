@@ -16,6 +16,14 @@
 # THIS ff_target with it as the base, so the guards below stay the only copy of the
 # ancestry rules.
 #
+# The durable seibert/main fork line is where the PRIMARY checkout may sit instead
+# of the upstream default branch. The origin update path then first advances the
+# clean `main` mirror to origin/<default> as a REF-ONLY fast-forward (the mirror
+# never gets its own commits), then MERGES that mirror into seibert/main, because
+# the line's own commits make a plain fast-forward impossible. Every guard stays
+# in force: offline, dirty, broken-mirror, or unmergeable targets are skipped
+# untouched, never forced.
+#
 # A linked-worktree secondmate home already holds the primary's commit in the
 # shared object store, so its local-HEAD sync is a purely local fast-forward that
 # never touches the network. A local standalone clone moves through that path
@@ -62,11 +70,18 @@ default_branch() {
 # sync target every secondmate follows. Reads the default branch *ref* rather than
 # HEAD, so even a primary stranded on a feature branch (the worktree tangle of
 # section 8) still yields the true default-branch tip instead of propagating a
-# stray feature branch to the fleet. Echoes the commit SHA, or returns 1.
+# stray feature branch to the fleet. On the durable seibert/main fork line the
+# seibert/main branch is preferred whenever it exists, so secondmate homes follow
+# OUR line's tip rather than the upstream default branch. Echoes the commit SHA,
+# or returns 1.
 primary_head_commit() {
-  local root=$1 default
+  local root=$1 default branch
   default=$(default_branch "$root") || return 1
-  git -C "$root" rev-parse --verify --quiet "refs/heads/$default^{commit}" 2>/dev/null || return 1
+  branch=$default
+  if git -C "$root" show-ref --verify --quiet refs/heads/seibert/main; then
+    branch="seibert/main"
+  fi
+  git -C "$root" rev-parse --verify --quiet "refs/heads/$branch^{commit}" 2>/dev/null || return 1
 }
 
 resolve_path() {
@@ -275,6 +290,70 @@ live_secondmate_meta_records() {
   done
 }
 
+# Advance a checkout on the durable seibert/main fork line in origin mode (see
+# the header). The line carries its own commits, so upstream cannot be
+# fast-forwarded onto it: the clean `main` mirror - which never gets its own
+# commits - is first advanced to origin/<default> as a REF-ONLY fast-forward,
+# then that mirror is MERGED into seibert/main. Every ordinary guard stays in
+# force and the line is left untouched when any of them trips: an offline fetch,
+# a dirty working tree (checked before this helper runs), a self-modified
+# (diverged) `main` mirror, a `main` mirror checked out in another worktree, or a
+# merge that cannot complete are all skipped, never forced. Sets FF_STATUS and
+# FF_INSTR like ff_target.
+ff_line_origin() {
+  local dir=$1 label=$2 default=$3 base=$4 out before before_short after instr
+  local mirror mirror_rev mirror_base
+  mirror="refs/heads/$default"
+  mirror_rev=$(git -C "$dir" rev-parse --verify --quiet "$mirror^{commit}" 2>/dev/null) || {
+    echo "$label: skipped: cannot read $default"
+    return 0
+  }
+  mirror_base=$(git -C "$dir" rev-parse "$base" 2>/dev/null) || {
+    echo "$label: skipped: cannot read $base"
+    return 0
+  }
+  # Advance the clean mirror when it is behind. A self-modified mirror (no longer
+  # an ancestor of origin/<default>) is the diverged guard and skips; a mirror
+  # checked out in another worktree cannot move without tangling that checkout.
+  if [ "$mirror_rev" != "$mirror_base" ]; then
+    if ! git -C "$dir" merge-base --is-ancestor "$mirror" "$base" 2>/dev/null; then
+      echo "$label: skipped: $default diverged from $base"
+      return 0
+    fi
+    if [ -n "$(git -C "$dir" for-each-ref --format='%(worktreepath)' "$mirror" 2>/dev/null)" ]; then
+      echo "$label: skipped: $default is checked out in another worktree"
+      return 0
+    fi
+    if ! git -C "$dir" update-ref "$mirror" "$mirror_base" "$mirror_rev"; then
+      echo "$label: skipped: could not advance $default"
+      return 0
+    fi
+  fi
+  # The line already carrying the fresh mirror is the current case.
+  if git -C "$dir" merge-base --is-ancestor "$mirror" HEAD 2>/dev/null; then
+    FF_STATUS="current"
+    echo "$label: already current"
+    return 0
+  fi
+  before=$(git -C "$dir" rev-parse HEAD)
+  before_short=$(git -C "$dir" rev-parse --short HEAD)
+  if ! out=$(git -C "$dir" merge "$default" --no-edit 2>&1); then
+    git -C "$dir" merge --abort >/dev/null 2>&1 || true
+    echo "$label: skipped: merge of $default failed: $(first_line "$out")"
+    return 0
+  fi
+  after=$(git -C "$dir" rev-parse --short HEAD)
+  instr=$(changed_instr "$dir" "$before")
+  FF_STATUS="updated"
+  FF_INSTR="$instr"
+  if [ -n "$instr" ]; then
+    echo "$label: updated $before_short..$after (merged $default; instructions changed: $instr)"
+  else
+    echo "$label: updated $before_short..$after (merged $default)"
+  fi
+  return 0
+}
+
 # Fast-forward one target to a base. Prints its status line. Sets globals for the
 # caller:
 #   FF_STATUS = updated|current|skipped
@@ -337,13 +416,25 @@ ff_target() {
     echo "$label: skipped: detached HEAD, expected $default"
     return 0
   fi
-  if [ -n "$cur" ] && [ "$cur" != "$default" ]; then
+  # The durable seibert/main fork line is an allowed target: the primary may sit
+  # on it instead of the upstream default branch, and a home checked out on the
+  # line follows it exactly like the default branch in the local-HEAD sync.
+  if [ -n "$cur" ] && [ "$cur" != "$default" ] && [ "$cur" != "seibert/main" ]; then
     echo "$label: skipped: on $cur, expected $default"
     return 0
   fi
 
   if [ -n "$(dirty_status "$dir" "$ignore_seed_marker")" ]; then
     echo "$label: skipped: dirty working tree"
+    return 0
+  fi
+
+  # On the seibert/main fork line an origin update first advances the clean `main`
+  # mirror and then MERGES it into the line (own commits rule out a fast-forward).
+  # The local-HEAD sync needs no merge: its base is already a commit of this
+  # line, so seibert/main is fast-forwarded like the default branch below.
+  if [ "$cur" = "seibert/main" ] && [ "$base_mode" = origin ]; then
+    ff_line_origin "$dir" "$label" "$default" "$base"
     return 0
   fi
 
