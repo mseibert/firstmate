@@ -1342,6 +1342,51 @@ test_remote_launch_does_not_retarget_host_copy() {
   pass "R9 a remote launch leaves the home on the parent's commit while an ordinary spawn follows its own checkout"
 }
 
+# --- T15: primary_head_commit prefers the durable seibert/main fork line ------
+# On the fork line the primary's own commits sit on seibert/main, so the local-HEAD
+# sync target must be OUR line's tip rather than the upstream default branch -
+# otherwise secondmate homes would drift back toward origin/main.
+test_primary_head_commit_prefers_seibert_main() {
+  local w base
+  w=$(new_world seibert-line)
+  git -C "$w/main" checkout -q -b seibert/main main
+  printf 'line-own\n' >> "$w/main/README.md"
+  git -C "$w/main" add -A
+  git -C "$w/main" commit -qm line-own
+
+  base=$(primary_head_commit "$w/main")
+
+  [ "$base" = "$(git -C "$w/main" rev-parse seibert/main)" ] \
+    || fail "primary_head_commit did not prefer the seibert/main line"
+  [ "$base" != "$(git -C "$w/main" rev-parse main)" ] \
+    || fail "primary_head_commit returned the upstream main tip instead of the line"
+  pass "T15 primary_head_commit prefers the seibert/main fork line"
+}
+
+# --- T16: a local secondmate home fast-forwards to the line tip ---------------
+# The preference above is only worth anything if the shared local-HEAD sync then
+# advances a behind home onto OUR line's tip by the same clean single-parent
+# fast-forward it always used for the upstream default branch.
+test_local_sync_follows_seibert_main() {
+  local w c1 base
+  w=$(new_world seibert-local)
+  c1=$(head_of "$w/main")
+  git -C "$w/main" worktree add -q --detach "$w/sm" "$c1"
+  git -C "$w/main" checkout -q -b seibert/main main
+  printf 'line-own\n' >> "$w/main/README.md"
+  git -C "$w/main" add -A
+  git -C "$w/main" commit -qm line-own
+  base=$(primary_head_commit "$w/main")
+
+  run_ff "$w/sm" "$base"
+
+  [ "$FF_STATUS" = updated ] || fail "FF_STATUS: expected updated, got '$FF_STATUS': $FF_OUT"
+  [ "$(head_of "$w/sm")" = "$base" ] || fail "home did not fast-forward to the seibert/main line tip"
+  [ "$(git -C "$w/sm" rev-list --parents -n1 HEAD | wc -w | tr -d ' ')" -eq 2 ] \
+    || fail "line-tip advance is not a single-parent fast-forward"
+  pass "T16 a local secondmate home follows the seibert/main line tip"
+}
+
 test_ff_updated
 test_ff_current
 test_ff_dirty
@@ -1374,5 +1419,7 @@ test_remote_sync_without_target_follows_host_copy
 test_bootstrap_syncs_remote_home_to_primary_commit
 test_bootstrap_reports_outdated_host_actionably
 test_remote_launch_does_not_retarget_host_copy
+test_primary_head_commit_prefers_seibert_main
+test_local_sync_follows_seibert_main
 
 echo "# all fm-secondmate-sync tests passed"
