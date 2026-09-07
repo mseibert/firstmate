@@ -101,6 +101,31 @@ Switching harness is therefore one ordinary relaunch rather than a separate mech
   Only a positively classified state acts.
 - `fm-spawn --relaunch` independently refuses unless the recorded endpoint is positively agent-free and its shell is sitting in the recorded worktree, so a replacement can never join a live agent or start outside the copy holding the work.
 
+## Stop verification (the honest stop)
+
+[`bin/fm-stop-verify.sh`](../bin/fm-stop-verify.sh) is the reusable, tested layer that turns the control plane's `exit` into an honest stop: it requests a stop, **verifies** that the agent is really gone, escalates instead of repeating, and logs every transition distinctly. It exists for the captain's capacity-brake finding (2026-09): the stop call is a polite request a worker stuck in a long shell command only sees after that command ends, so a brake that logged "stopped" after merely *requesting* a stop read better than reality, and three identical polite requests to the same victim changed nothing.
+
+The helper is a standalone executable the capacity brake (a private `state/` script firstmate wires separately) and any other caller use. Its flow is `request -> verify -> escalate -> honestly report`, and every call ends in exactly one machine-readable outcome; only `confirmed` means the worker is stopped:
+
+| Outcome | Meaning |
+| --- | --- |
+| `confirmed` | The agent's recovery-grade state is dead/missing, so the worker is really gone (includes already-stopped). |
+| `escalated` | The polite exit was requested but the agent stayed alive, so a hard interrupt was delivered and the escalation reported; the agent is **still alive**. |
+| `cooldown` | The victim was already addressed within the cooldown window with nothing changed; reported, nothing repeated. |
+| `skipped` | The task is not a stop candidate (secondmate, done/failed/captain-held status, remote placement, or unresolvable record). |
+| `unverifiable` | The endpoint cannot be classified; fail-closed, no action taken. |
+| `failed` | The stop request could not be delivered (control-plane error or a concurrent verification already running). |
+
+Exit codes: `0` = confirmed, `1` = escalated (action taken, agent still alive), `2` = no action.
+
+The three captain requirements and how the helper satisfies them:
+
+1. **Verify, then get harder.** The polite exit (`fm-control exit`) is delivered once, then the helper polls the recovery-grade agent state for `--verify-wait` seconds. Still alive? It does **not** repeat the polite request: it delivers a hard interrupt (`fm-control interrupt`) and polls again for `--hard-wait` seconds. Still alive? `escalated`, exit 1, and a distinct event-log line.
+2. **Never the same victim on repeat.** Every unconfirmed addressing writes a durable per-victim record (`state/.stop-verify-<task>`) with its outcome and timestamp. A victim whose last addressing was unconfirmed and whose agent is still alive is in **cooldown** for `--cooldown` seconds: a re-call reports `cooldown` and does nothing. A call with several candidates addresses the first not-in-cooldown one and reports the rest; when every candidate is in cooldown it reports all of them instead of repeating. After the cooldown expires, a re-addressing goes **straight to the harder interrupt**, never the polite exit again.
+3. **Honest event log.** Every transition appends a distinct line (`requested`, `confirmed`, `escalated`, `unconfirmed`, `cooldown`, `skipped`, `unverifiable`, `failed`) to the durable event log (`state/.stop-verify.log` by default). History never reads "stopped" for a request.
+
+Fail-closed boundaries: only recovery-grade dead/missing proves a stop; an unclassifiable endpoint is never interrupted; the request always goes through the verified control plane; a concurrent addressing of the same task is refused through a per-task lock; a no-mistakes gate agent is refused. Deterministic test seams are `FM_STOP_VERIFY_CONTROL` (the control-plane binary), `FM_STOP_VERIFY_STATE_BIN` (the agent-state reader), and the `FM_STOP_VERIFY_*` defaults.
+
 ## Capability matrix
 
 Backend capability comes from each adapter's real surface, not from a policy choice.
@@ -120,4 +145,5 @@ The empirical basis for each adapter's value is the `harness-adapters` skill's v
 
 - `tests/fm-control.test.sh` - the adapter contract for every verified harness, the backend capability matrix, exact-id scoping, the closed verb list, the busy, idle, dead, and idempotent lifecycle cases, and marker non-regression, all against a stubbed session provider.
 - `tests/fm-control-relaunch.test.sh` - the relaunch transaction: identity preservation, harness switching, the progress note, checkpoint refusals, and rollback after a failed launch.
+- `tests/fm-stop-verify.test.sh` - the honest stop: request vs confirmation in the event log, verify-then-escalate with the hard interrupt, the victim cooldown and no-repeat rule, the cooldown-expired straight-to-interrupt path, non-candidate skips, the unverifiable fail-closed paths, the concurrent-refusal lock, and `--list`, all against deterministic seams.
 - `tests/fm-control-herdr-smoke.test.sh` - the second state-verified backend against the real herdr binary, on an isolated throwaway lab session.
