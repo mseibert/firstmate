@@ -37,6 +37,12 @@ mkdir -p "$FAKEBIN"
 REAL_MOVER="$ROOT/bin/backends/herdr-workspace-move.py"
 export REAL_HERDR REAL_TREEHOUSE REAL_MOVER HERDR_CALL_LOG TREEHOUSE_CALL_LOG TREEHOUSE_LOCK_DIR MOVE_CALL_LOG FOCUS_AUDIT_LOG HERDR_ORIGINAL_PATH HERDR_LAB_HELPER
 export ACTIVE_SEEDED_CONTROL POST_CREATE_ABORT_CONTROL TMP_ROOT
+# The fixture homes run no real watcher and CI hosts detect no agent harness,
+# so the guard's supervision model would read persistent and print the
+# "watcher still down" banner on every guarded command, even with a fresh
+# beat. Model the between-turn watcher (a fresh beat is the healthy state);
+# refresh_test_home_beats keeps those beats fresh below.
+export FM_SUPERVISION_MODEL=autoarm
 
 # Log every production-adapter call, remove its already-validated trailing
 # session flag, and send the operation through the lab helper so that helper
@@ -406,8 +412,25 @@ Verify projected workspace behavior for $id.
 EOF
 }
 
+# Every fixture home runs no real watcher, but the guarded scripts the suite
+# drives (fm-spawn, fm-teardown) consult each home's watcher beat before
+# acting. A beat that goes stale beyond the guard grace makes every later
+# guarded command print the "watcher still down" banner into stderr, which
+# then masquerades as the cause of an unrelated failure. Keep the beats fresh
+# so the autoarm model above sees the healthy between-turn state and the
+# guard stays silent, exactly as a real between-turn watcher would.
+refresh_test_home_beats() {
+  local h
+  for h in "${HOME_DIR:-}" "${SECOND_HOME_A:-}" "${SECOND_HOME_B:-}"; do
+    [ -n "$h" ] || continue
+    mkdir -p "$h/state"
+    touch "$h/state/.last-watcher-beat"
+  done
+}
+
 spawn_task() {  # <id> <home> <project>
   local id=$1 home=$2 project=$3
+  refresh_test_home_beats
   FM_GATE_REFUSE_BYPASS=1 FM_SPAWN_NO_GUARD=1 FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
     "$ROOT/bin/fm-spawn.sh" "$id" "$project" "sh -c 'while :; do sleep 60; done'" --mode no-mistakes --yolo off --backend herdr
 }
@@ -433,12 +456,14 @@ finish_concurrent_expected_abort() {  # <id> <status> <stdout> <stderr>
 
 spawn_secondmate_task() {
   local id=$1 home=$2
+  refresh_test_home_beats
   FM_GATE_REFUSE_BYPASS=1 FM_SPAWN_NO_GUARD=1 FM_HOME="$HOME_DIR" FM_ROOT_OVERRIDE="$ROOT" \
     "$ROOT/bin/fm-spawn.sh" "$id" "$home" "sh -c 'while :; do sleep 60; done'" --secondmate --backend herdr
 }
 
 teardown_task() {  # <id> <home>
   local id=$1 home=$2
+  refresh_test_home_beats
   FM_GATE_REFUSE_BYPASS=1 FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
     FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
     FM_CONFIG_OVERRIDE="$home/config" \
@@ -1188,8 +1213,41 @@ teardown_task aflat "$SECOND_HOME_A" > "$TMP_ROOT/aflat-teardown.out" 2> "$TMP_R
   || fail "flat cross-home contention fixture teardown failed"
 pass "real Herdr lab: session lock contention from a secondmate home falls back flat with no journal"
 
+# Release the Treehouse slot claim on each still-live multi-home task record
+# without removing the record. The recovery fixtures below restart the whole
+# session, which stops those workers: their panes die, Treehouse frees their
+# pool slots, and a recovery fixture's treehouse get can be handed one of
+# those exact freed slots. A retained live worktree= path would then make the
+# teardown slot-ownership guard refuse to release either record (the exact
+# resume-wave-primary/p1 collision this suite flaked on), while the final
+# exact-pane cleanup assertions still need the records and fm-teardown's
+# endpoint validation requires a nonempty worktree=. Repoint the claim at a
+# deliberately absent sentinel path so teardown skips slot ownership and slot
+# return, and the real worktrees are returned at the very end by cleanup_all,
+# which recorded them when each task spawned.
+release_multi_home_slot_claims() {
+  local pair id home meta tmp
+  for pair in \
+    "p1:$HOME_DIR" "p2:$HOME_DIR" "pcw:$HOME_DIR" \
+    "a1:$SECOND_HOME_A" "a2:$SECOND_HOME_A" "acw:$SECOND_HOME_A" \
+    "b1:$SECOND_HOME_B" "b2:$SECOND_HOME_B" "bcw:$SECOND_HOME_B"; do
+    id=${pair%%:*}
+    home=${pair#*:}
+    meta="$home/state/$id.meta"
+    [ -f "$meta" ] || fail "multi-home fixture $id lost its record before recovery"
+    tmp="$meta.release-slot.$$"
+    sed "s|^worktree=.*|worktree=<released-for-recovery>|" "$meta" > "$tmp"
+    mv "$tmp" "$meta"
+  done
+}
+release_multi_home_slot_claims
+
 # Same-identity recovery replaces only one exact agent-free husk in its
-# original projected workspace.
+# original projected workspace. These full-session restarts also stop the
+# earlier multi-home workers whose restored panes are retained for the final
+# exact-pane cleanup assertions; their slot claims were released above so a
+# recovery fixture that is re-allocated one of their freed slots cannot
+# collide with a retained record.
 # Exercise both the leading fm- identity style seen in Hi Bit work and the
 # project-name identity style used by Wheelhouse work.
 for RESTART_ID in fm-hibit-resume-r1 wheelhouse-healing-r1; do
