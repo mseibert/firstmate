@@ -22,6 +22,7 @@
 # Deterministic seams exercised here: FM_DEAD_WORKER_LOADAVG pins the machine
 # load, FM_DEAD_WORKER_KERNEL_LOG points the OOM reader at a canned kernel log,
 # and FM_DEAD_WORKER_GRACE bounds the spawn freshness grace.
+# shellcheck disable=SC2030,SC2031,SC2329 # this test's whole point is overriding the watcher's backend readers and load seam inside ( ) subshells, invoked indirectly by the sourced functions under test
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -76,8 +77,9 @@ wake_count() {
 
 # --- machine load: the machine-idle half -------------------------------------
 
-machine_load1_below_one
-[ $? -eq 0 ] || fail "a load1 of 0.10 must count as machine idle"
+if ! machine_load1_below_one; then
+  fail "a load1 of 0.10 must count as machine idle"
+fi
 pass "dead-worker: load1 below 1 counts as machine idle"
 
 ( export FM_DEAD_WORKER_LOADAVG=1.00; machine_load1_below_one ) \

@@ -1005,7 +1005,7 @@ machine_load1() {
     return 0
   fi
   v=$(sysctl -n vm.loadavg 2>/dev/null) || return 1
-  v=${v//[{}]/}
+  v=$(printf '%s' "$v" | tr -d '{}')
   read -r v _ <<EOF
 $v
 EOF
@@ -1088,29 +1088,29 @@ task_expects_live_worker() {  # <task>
 # is best-effort and the dead-worker wake itself must never wait on it). The
 # bound is a shell-level poll because GNU timeout is not on macOS by default.
 fm_kernel_log_read() {  # <reader...> -> stdout
-  local out tmp done pid i=0
+  local out tmp marker pid i=0
   tmp=$(mktemp "${TMPDIR:-/tmp}/fm-klog.XXXXXX") || return 1
-  done="$tmp.done"
+  marker="$tmp.done"
   # The reader runs as a background subshell that writes a completion marker
   # when it finishes, so completion is detected by the marker, never by
   # kill -0 (which also succeeds on an unreaped zombie and would discard a
   # fast reader's output at the bound).
-  ( "$@" > "$tmp" 2>/dev/null; printf 'x' > "$done" ) &
+  ( "$@" > "$tmp" 2>/dev/null; printf 'x' > "$marker" ) &
   pid=$!
   while [ "$i" -lt 60 ]; do  # 6-second bound
-    [ -e "$done" ] && break
+    [ -e "$marker" ] && break
     sleep 0.1
     i=$((i + 1))
   done
-  if [ ! -e "$done" ]; then
+  if [ ! -e "$marker" ]; then
     kill "$pid" 2>/dev/null || true
     wait "$pid" 2>/dev/null || true
-    rm -f "$tmp" "$done"
+    rm -f "$tmp" "$marker"
     return 1
   fi
   wait "$pid" 2>/dev/null || true
   out=$(cat "$tmp" 2>/dev/null || true)
-  rm -f "$tmp" "$done"
+  rm -f "$tmp" "$marker"
   [ -n "$out" ] || return 1
   printf '%s\n' "$out"
 }
