@@ -835,6 +835,62 @@ test_stale_captain_held_classifies_pause() {
   pass "a captain-held transfer classifies as pause, not as a wedge candidate"
 }
 
+# A worker-declared done-pending-verify (done, awaiting verification) is the
+# third expected-idle declaration: the idle pane is EXPECTED, so classify_stale
+# returns the pause action and the wait is rechecked on the long cadence, never
+# aged as a wedge. It is not captain-relevant, so it must never take the terminal
+# escalate path either.
+test_stale_done_pending_verify_classifies_pause() {
+  local dir state out reason
+  dir=$(make_supercase stale-done-pending)
+  state="$dir/state"
+  reason='done-pending-verify: PR offen - CI gruen, KEIN Merge (captain verifies)'
+  status_is_captain_relevant "$reason" && fail "a done-pending-verify line became captain-relevant"
+  printf '%s\n' "$reason" > "$state/delivered-d9.status"
+  out=$(FM_STATE_OVERRIDE="$state" classify_stale "sess:fm-delivered-d9" "$state")
+  case "$out" in pause\|*"awaiting verification"*) ;;
+    *) fail "done-pending-verify did not classify as an awaiting-verification pause: $out" ;;
+  esac
+  pass "a done-pending-verify declaration classifies as an awaiting-verification pause, not a wedge candidate"
+}
+
+# Away-mode housekeeping must re-surface a past-window done-pending-verify wait
+# as an awaiting-verification recheck (never a possible wedge) and keep its pause
+# marker repeating, instead of dropping the marker the way the pre-fix else arm
+# did; and a status append that stops declaring the wait must restore ordinary
+# wedge detection.
+test_housekeeping_done_pending_verify_resurfaces_as_recheck() {
+  local dir state fakebin key win task pane out
+  dir=$(make_supercase housekeeping-done-pending)
+  state="$dir/state"; fakebin="$dir/fakebin"; pane="$dir/pane.txt"
+  win="sess:fm-delivered-d10"; task=delivered-d10
+  key=$(printf '%s' "$task" | tr '.:/' '___')
+  printf 'window=%s\nkind=ship\nbackend=tmux\n' "$win" > "$state/$task.meta"
+  printf 'idle bare shell after delivery\n' > "$pane"
+  printf 'done-pending-verify: PR offen - CI gruen, KEIN Merge (captain verifies)\n' > "$state/$task.status"
+  echo $(( $(date +%s) - 5000 )) > "$state/.subsuper-paused-$key"
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$win" FM_FAKE_TMUX_CAPTURE="$pane" \
+    FM_STATE_OVERRIDE="$state" FM_ESCALATE_BATCH_SECS=999999 FM_PAUSE_RESURFACE_SECS=3600 \
+    housekeeping "$state"
+  [ -s "$state/.subsuper-escalations" ] || fail "a past-window done-pending-verify wait never re-surfaced"
+  grep -F "awaiting verification" "$state/.subsuper-escalations" >/dev/null \
+    || fail "the done-pending-verify recheck did not name verification: $(cat "$state/.subsuper-escalations")"
+  grep -F "possible wedge" "$state/.subsuper-escalations" >/dev/null \
+    && fail "the done-pending-verify recheck was mislabeled a possible wedge"
+  [ -e "$state/.subsuper-paused-$key" ] || fail "the done-pending-verify recheck dropped its pause marker (should repeat the window)"
+
+  # A status append that stops declaring the wait ends the routing and restores
+  # ordinary stale aging.
+  printf 'working: the verification wait ended, resuming\n' >> "$state/$task.status"
+  : > "$state/.subsuper-escalations"
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$win" FM_FAKE_TMUX_CAPTURE="$pane" \
+    FM_STATE_OVERRIDE="$state" FM_ESCALATE_BATCH_SECS=999999 FM_PAUSE_RESURFACE_SECS=3600 \
+    housekeeping "$state"
+  [ ! -e "$state/.subsuper-paused-$key" ] \
+    || fail "pause tracking survived a status append that no longer declares the wait"
+  pass "housekeeping re-surfaces a done-pending-verify wait as an awaiting-verification recheck and restores wedge detection on resume"
+}
+
 # handle_wake on a paused stale records a pause marker, drops any pre-existing wedge
 # marker (so a working->paused pane is not still wedge-aged), and does NOT escalate
 # on the wake itself - the recheck is housekeeping's job on the long cadence.
@@ -2629,6 +2685,8 @@ test_stale_terminal_escalates
 test_stale_actionable_wait_escalates_and_keeps_pause_cadence
 test_stale_paused_classifies_pause
 test_stale_captain_held_classifies_pause
+test_stale_done_pending_verify_classifies_pause
+test_housekeeping_done_pending_verify_resurfaces_as_recheck
 test_handle_wake_paused_records_pause_marker
 test_handle_wake_paused_signal_records_pause_marker
 test_handle_wake_terminal_signal_clears_pause_tracking

@@ -90,7 +90,36 @@ FM_CLASSIFY_CAPTAIN_RE_DEFAULT='done:|needs-decision:|blocked:|failed:|PR ready|
 # drift between the two consumers. FM_CLASSIFY_PAUSED_VERB overrides it.
 FM_CLASSIFY_PAUSED_VERB_DEFAULT='paused'
 
-# Bounded re-surface cadence for a declared pause or a verified captain hold.
+# The worker-declared done-awaiting-verification verb. A crew appends
+#   done-pending-verify: <what finished, what is being verified>
+# to declare it has delivered its work and is now parked awaiting firstmate/captain
+# verification - the expected idle of a finished-but-not-yet-confirmed task (an
+# idle pane at a bare shell prompt with no agent is the normal parked state, NOT a
+# wedge). It is a declared-wait sibling of paused:/captain-held: (both supervisors
+# absorb it on the long re-surface cadence instead of wedge-escalating an
+# intentionally idle pane), and it is deliberately NOT in the captain-relevant set
+# above: the verification wait is not work to keep surfacing on every pane tick -
+# the worker's own status append already reached firstmate through the no-verb
+# signal path once. The distinction lives in the TASK state (this status verb, or
+# the authoritative parked current state), never in the pane command: a bare zsh
+# prompt says nothing on its own (same lesson as fm-guard-deadworker). This
+# constant is the ONE definition of the verb; both consumers read it here
+# (status_is_done_pending_verify) rather than hardcoding the literal.
+# FM_CLASSIFY_DONE_PENDING_VERIFY_VERB overrides it.
+FM_CLASSIFY_DONE_PENDING_VERIFY_VERB_DEFAULT='done-pending-verify'
+
+# 0 if a status line's leading verb is the worker-declared done-awaiting-
+# verification verb. The same pure leading-verb read as status_is_paused, so a
+# reason mentioning the verb in prose never false-matches.
+status_is_done_pending_verify() {  # <status-line>
+  local line=$1 verb
+  [ -n "$line" ] || return 1
+  verb=$(status_line_verb "$line")
+  [ "$verb" = "${FM_CLASSIFY_DONE_PENDING_VERIFY_VERB:-$FM_CLASSIFY_DONE_PENDING_VERIFY_VERB_DEFAULT}" ]
+}
+
+# Bounded re-surface cadence for a declared pause, a verified captain hold, or a
+# done-pending-verify wait.
 # Far longer than the wedge threshold (FM_STALE_ESCALATE_SECS, default 240s), it
 # avoids nagging a deliberate wait while ensuring a forgotten hold cannot rot
 # invisibly - it re-surfaces once for a recheck every window. One hour by default;
@@ -173,16 +202,19 @@ status_is_captain_held() {  # <status-line>
   [ "$verb" = "${FM_CLASSIFY_CAPTAIN_HELD_VERB:-$FM_CLASSIFY_CAPTAIN_HELD_VERB_DEFAULT}" ]
 }
 
-# 0 if a status line declares either an external-wait pause or a verified
-# captain-held transfer.
-# Both declarations can intentionally leave a crew's endpoint idle, so both
+# 0 if a status line declares an expected-idle wait: an external-wait pause, a
+# verified captain-held transfer, or a worker-declared done-pending-verify.
+# All three can intentionally leave a crew's endpoint idle, so both
 # supervisors give them one cadence: the away-mode daemon defers the wedge and
 # ages a pause marker instead, and the watcher applies its bounded pause cadence
 # once pause_state_class has admitted the wait (fm-watch.sh owns which liveness
-# evidence each kind of crew must supply for that).
+# evidence each kind of crew must supply for that). The recheck wording still has
+# to know WHICH verb it is naming, so each supervisor reads the per-verb
+# predicates (status_is_captain_held / status_is_paused /
+# status_is_done_pending_verify) rather than this combined predicate alone.
 status_is_paused_or_captain_held() {  # <status-line>
   local line=$1
-  status_is_paused "$line" || status_is_captain_held "$line"
+  status_is_paused "$line" || status_is_captain_held "$line" || status_is_done_pending_verify "$line"
 }
 
 # --- durable keyed decisions ------------------------------------------------
@@ -1750,9 +1782,12 @@ status_span_has_actionable() {  # <status-file> <start-offset>
 #   working - an actively-running no-mistakes step (running/fixing/ci) or a busy
 #             pane; the crew is legitimately mid-work on a static-looking pane
 #             (e.g. waiting on CI);
-#   paused  - the crew's authoritative current state is a declared external-wait
-#             pause (paused:), which is EXPECTED to idle;
-#   none    - neither, so the wake must surface (a stopped/finished/parked/failed/
+#   paused  - the crew's authoritative current state is an expected idle: a
+#             declared external-wait pause (paused:), or the parked state of a
+#             crew waiting on a supervisor (a no-mistakes run parked at a gate,
+#             or a done-pending-verify log read as parked), which is EXPECTED to
+#             idle;
+#   none    - neither, so the wake must surface (a stopped/finished/failed/
 #             torn-down/unknown crew, or an unreadable verdict).
 # One fm-crew-state.sh read serves BOTH absorb reasons at once. Reading the state
 # authoritatively (not the status log) is what keeps run-step precedence: a crew
@@ -1766,7 +1801,7 @@ crew_absorb_class() {  # <id>
   line=$("$FM_CREW_STATE_BIN" "$id" 2>/dev/null) || true
   case "$line" in state:*) ;; *) printf 'none'; return ;; esac
   state=${line#state: }; state=${state%% *}
-  if [ "$state" = paused ]; then printf 'paused'; return; fi
+  if [ "$state" = paused ] || [ "$state" = parked ]; then printf 'paused'; return; fi
   if [ "$state" = working ]; then
     src=${line#*source: }; src=${src%% *}
     case "$src" in run-step|pane) printf 'working'; return ;; esac
@@ -1788,7 +1823,9 @@ crew_is_provably_working() {  # <id>
   [ "$(crew_absorb_class "$1")" = working ]
 }
 
-# 0 if crew <id>'s authoritative current state is a declared external-wait pause.
+# 0 if crew <id>'s authoritative current state is an expected idle: a declared
+# external-wait pause, or the parked state of a crew waiting on a supervisor
+# (a run parked at a gate, or a done-pending-verify log read as parked).
 # The stale path absorbs such a crew (on a long re-surface cadence) instead of
 # escalating a possible wedge.
 crew_is_paused() {  # <id>
