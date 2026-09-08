@@ -105,7 +105,7 @@ Switching harness is therefore one ordinary relaunch rather than a separate mech
 
 [`bin/fm-stop-verify.sh`](../bin/fm-stop-verify.sh) is the reusable, tested layer that turns the control plane's `exit` into an honest stop: it requests a stop, **verifies** that the agent is really gone, escalates instead of repeating, and logs every transition distinctly. It exists for the captain's capacity-brake finding (2026-09): the stop call is a polite request a worker stuck in a long shell command only sees after that command ends, so a brake that logged "stopped" after merely *requesting* a stop read better than reality, and three identical polite requests to the same victim changed nothing.
 
-The helper is a standalone executable the capacity brake (a private `state/` script firstmate wires separately) and any other caller use. Its flow is `request -> verify -> escalate -> honestly report`, and every call ends in exactly one machine-readable outcome; only `confirmed` means the worker is stopped:
+The helper is a standalone executable the capacity brake (a private `state/` script firstmate wires separately) and any other caller use. The brake loop itself is hardened separately: `bin/fm-capacity-brake-arm.sh` runs it under a tracked systemd --user unit with `Restart=always` and arms a beat-age self-report check ([configuration.md](configuration.md#capacity-brake-systemd-arming)). Its flow is `request -> verify -> escalate -> honestly report`, and every call ends in exactly one machine-readable outcome; only `confirmed` means the worker is stopped:
 
 | Outcome | Meaning |
 | --- | --- |

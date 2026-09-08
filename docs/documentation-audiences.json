@@ -337,6 +337,10 @@
       "audience": "operator-example"
     },
     {
+      "path": "docs/examples/systemd/firstmate-capacity-brake.service",
+      "audience": "operator-example"
+    },
+    {
       "path": "docs/examples/watched-tools.json",
       "audience": "operator-example"
     },
