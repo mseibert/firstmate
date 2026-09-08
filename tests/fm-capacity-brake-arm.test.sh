@@ -35,7 +35,6 @@ set -u
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 ARM="$ROOT/bin/fm-capacity-brake-arm.sh"
-REGISTER="$ROOT/bin/fm-check-register.sh"
 TMP_ROOT=$(fm_test_tmproot fm-capacity-brake-arm)
 UNIT_NAME=firstmate-capacity-brake.service
 
