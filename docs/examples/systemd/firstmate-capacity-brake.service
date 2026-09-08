@@ -1,0 +1,26 @@
+# firstmate-capacity-brake.service - systemd --user unit for the capacity brake
+#
+# Tracked TEMPLATE, not a live unit. The capacity brake (state/capacity-brake.sh)
+# is a private per-home loop; this unit makes it survive the next crash, reboot,
+# or cgroup cleanup with Restart=always, so it can no longer die silently the way
+# the Paseo restart of 2026-09-07 left it dead for 17 hours.
+#
+# bin/fm-capacity-brake-arm.sh renders this template by substituting @FM_HOME@
+# with the resolved operational home and installs the result at
+# ~/.config/systemd/user/firstmate-capacity-brake.service. Do not install or
+# edit this file by hand; the arm helper owns the installed copy.
+[Unit]
+Description=Firstmate capacity brake (memory and load self-brake loop)
+After=default.target
+
+[Service]
+Type=simple
+ExecStart=@FM_HOME@/state/capacity-brake.sh
+WorkingDirectory=@FM_HOME@
+Environment=HOME=%h
+Environment=PATH=/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target

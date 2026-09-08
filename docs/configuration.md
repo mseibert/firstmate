@@ -531,6 +531,24 @@ The sweep must finish inside `FM_CHECK_TIMEOUT` (default 30), because a run the 
 So a budget larger than that timeout allows is cut down to what fits instead of being refused, and the cut is reported in the report line.
 A budget that is not a whole number from 1 to 120 is still refused outright.
 
+## Capacity brake systemd arming
+
+The capacity brake (`state/capacity-brake.sh`, a private per-home loop) ran as a naked bash pid with no systemd unit and no self-report, so the Paseo restart of 2026-09-07 that emptied its cgroup left it dead for 17 hours unnoticed.
+The watcher has a liveness beacon; the brake had none, and that asymmetry was the gap.
+[`bin/fm-capacity-brake-arm.sh`](../bin/fm-capacity-brake-arm.sh) is the tracked hardening: it installs the brake under a tracked systemd --user unit with `Restart=always` and arms a beat-age self-report check.
+
+This section is the operator-facing owner of the arming contract; the script's own header owns the exact commands and mechanics.
+The tracked unit TEMPLATE is [`docs/examples/systemd/firstmate-capacity-brake.service`](examples/systemd/firstmate-capacity-brake.service), with `Restart=always` so the brake survives the next crash, reboot, or cgroup cleanup.
+The template is never installed by hand; the arm helper renders it (substituting `@FM_HOME@`) and installs the result at `~/.config/systemd/user/firstmate-capacity-brake.service`.
+
+The private application step for this home - running `bin/fm-capacity-brake-arm.sh arm`, which installs and starts the unit and replaces the current naked loop - is a firstmate post-step after this hardening lands, not part of the tracked change.
+Re-running arm against a home whose unit is already active confirms and changes nothing, so there is never a second brake process.
+The helper replaces a naked loop only when the recorded lock pid really is the capacity brake, and stops safely rather than starting a second copy when that loop will not exit within `FM_CAPACITY_BRAKE_STOP_WAIT` seconds (default 30, above the brake's 20-second loop interval because bash defers a trapped TERM until the foreground sleep returns).
+
+`bin/fm-capacity-brake-arm.sh check` prints one line when `state/.capacity-brake-beat` is older than `FM_CAPACITY_BRAKE_BEAT_GRACE` seconds (default 300) or absent, and nothing while the brake is beating.
+`arm` also writes `state/capacity-brake.check.sh` and binds it with `bin/fm-check-register.sh`, so the existing watcher polls it on its normal cadence and turns that line into a `check:` wake - a dead loop is immediately visible instead of silent.
+`status` prints the unit state, beat age, and check registration; `disarm` stops and disables the unit, removes the installed unit file, and unregisters the check.
+
 ## Relay (.env)
 
 Relay lets a firstmate instance answer public mentions and act on normal reversible mention requests through firstmate's normal lifecycle.
@@ -943,6 +961,12 @@ FM_STOP_VERIFY_COOLDOWN=300  # seconds a victim whose stop is unconfirmed stays 
 FM_STOP_VERIFY_VERIFY_WAIT=15  # seconds to poll the recovery-grade agent state after the polite exit before escalating with a hard interrupt
 FM_STOP_VERIFY_HARD_WAIT=15  # seconds to poll after the hard interrupt before declaring the stop escalated/unconfirmed
 FM_STOP_VERIFY_POLL=1       # stop-verification agent-state poll interval in seconds
+FM_CAPACITY_BRAKE_SYSTEMCTL=  # capacity-brake arming: systemctl binary (default: systemctl)
+FM_CAPACITY_BRAKE_UNIT_DIR=   # capacity-brake arming: systemd --user unit install directory (default: $HOME/.config/systemd/user)
+FM_CAPACITY_BRAKE_TEMPLATE=   # capacity-brake arming: tracked unit template path (default: <repo>/docs/examples/systemd/firstmate-capacity-brake.service)
+FM_CAPACITY_BRAKE_UNIT=       # capacity-brake arming: installed unit name (default: firstmate-capacity-brake.service)
+FM_CAPACITY_BRAKE_BEAT_GRACE= # capacity-brake beat-age alarm threshold in seconds (default: 300)
+FM_CAPACITY_BRAKE_STOP_WAIT=  # bounded seconds to wait for the naked capacity-brake loop to exit (default: 30)
 FM_SECONDMATE_WAKE_STALL_SECS=60   # minimum age of the oldest valid foreign wake-queue row before an endpoint-recorded local secondmate produces one durable parent wake-loop-stall notification; zero or invalid values use 60
 FM_WEDGE_DEMAND_INSPECT_COUNT=3    # consecutive provably-working stale escalations on the same unchanged pane before demand-deep-inspection is added
 FM_WORKTREE_WRITE_PRUNE='.git node_modules .venv venv __pycache__ .mypy_cache .pytest_cache .ruff_cache .tox target dist build .next .cache vendor'   # directory names the wedge detector's task-worktree write probe skips; the default keeps .git out so a supervisor's own read-only git command can never look like crew progress; set it to the empty string to prune nothing, which widens the probe to the whole depth-bounded tree rather than disabling it
