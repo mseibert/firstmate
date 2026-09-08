@@ -5,6 +5,12 @@
 # receives. Both paths must hand the worker the same contract: a promoted
 # no-mistakes worker that never received the ask-user escalation rule or the
 # `--yes` ban is the exact delivery hole this single owner exists to close.
+# The direct-PR and no-mistakes blocks both anchor the verdict-head ordering
+# through one shared block: the rebase onto the current main is the last code
+# step before the verdict is requested, the branch stays frozen until the
+# verdict covers the head, and every verdict request is preceded by a target-base
+# check and a mergeable check. local-only never requests a verdict and carries
+# no such block.
 # fm_dod_block <no-mistakes|direct-PR|local-only> <task-id> prints the block on
 # stdout with no trailing blank line. The caller validates the mode; an unknown
 # mode is refused rather than silently rendered as the pipeline contract.
@@ -190,6 +196,35 @@ fm_ask_user_escalation_block() {  # <data-dir> <task-id>
 EOF
 }
 
+# Shared verdict-head ordering for every ship mode that requests a review
+# verdict (direct-PR and no-mistakes; local-only never requests one). A verdict
+# only covers the head it was computed on, so the rebase onto the current main
+# is the last code step before the verdict is requested, the branch stays frozen
+# until the verdict covers the head, and every verdict request is preceded by a
+# target-base check (the intended integration branch, never the default) and a
+# mergeable check. The description parameter names how the mode requests the
+# verdict; the ordering itself stays a single definition so the two modes cannot
+# drift apart. Emitted with a trailing blank line so callers can chain it into
+# their definition-of-done heredocs.
+fm_verdict_ordering_block() {  # <verdict-request-description>
+  local verdict_request=$1
+  cat <<EOF
+A review verdict only covers the branch head it was computed on, so order the loop so every verdict lands on the final mergeable head.
+Three of the last five fleet PRs shipped a verdict older than their head, because a commit or rebase landed after the verdict and invalidated it.
+Enforce that ordering structurally instead of by discipline:
+
+1. Implement the change and apply every fix. Make no further code changes after this step.
+2. Rebase onto the current main as the LAST code step, so the branch is up to date and mergeable.
+3. Request the verdict only after that rebase: $verdict_request.
+4. Freeze the branch until the verdict has landed and is verified to cover your head: after step 3, make no commits and run no rebase until the verdict's timestamp is newer than the branch head it must cover.
+
+Before every verdict request, check the PR's target base first: it must be the project's intended integration branch, never the default branch.
+On the firstmate fork that base is seibert/main, and a PR pointed at main trips the red "PR must be raised via no-mistakes" check - the early warning for a wrong base, not a broken check.
+Correct a wrong base before requesting anything, then check that the branch is mergeable onto the current main; if it is not (main has moved), rebase first, then request the verdict.
+
+EOF
+}
+
 fm_dod_block() {  # <mode> <task-id>
   local mode=$1 id=$2
   case "$mode" in
@@ -198,6 +233,9 @@ fm_dod_block() {  # <mode> <task-id>
 # Definition of done
 Delivery contract: mode=direct-PR
 This task ships **direct-PR**: you raise the PR yourself, without the no-mistakes pipeline.
+EOF
+      fm_verdict_ordering_block "when your task's instructions call for a review verdict, request it once the branch is pushed and the PR is open"
+      cat <<EOF
 The task is complete only when committed on your branch.
 When it is implemented and committed, push your branch and open a PR with \`gh-axi\`, then append \`done: PR {url}\` to the status file and stop.
 Do NOT run /no-mistakes. The configured merge authority decides whether to merge the PR; firstmate relays the outcome.
@@ -221,7 +259,9 @@ Delivery contract: mode=no-mistakes
 The task is complete only when committed on your branch.
 When you believe it is complete, append \`done: {summary}\` to the status file and stop.
 Firstmate will then instruct you to run /no-mistakes to validate and ship a PR.
-
+EOF
+      fm_verdict_ordering_block "start or continue the no-mistakes run that computes the review verdict against the branch head"
+      cat <<EOF
 You drive no-mistakes by responding to its gates, not by implementing fixes.
 Follow the guidance no-mistakes itself provides for the mechanics: it loads when you invoke /no-mistakes, and \`no-mistakes axi run --help\` plus the \`help\` lines in each \`axi\` response are authoritative and version-matched to the installed binary.
 When starting no-mistakes, pass \`--intent\` as only this brief's \`## Captain's intent\` subsection plus any later words the captain actually said.

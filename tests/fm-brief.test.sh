@@ -372,6 +372,74 @@ test_no_mistakes_dod_wording() {
   pass "fm-brief.sh: no-mistakes DOD keeps its apostrophe prose and bans --yes outright"
 }
 
+# The direct-PR and no-mistakes DODs anchor the verdict-head ordering through
+# one shared block: a verdict only covers the head it was computed on, so the
+# rebase onto the current main is the last code step before the verdict is
+# requested, the branch stays frozen until the verdict covers the head, and
+# every verdict request is preceded by a target-base check and a mergeable
+# check. local-only never requests a verdict and must stay free of it.
+test_verdict_head_ordering_in_verdict_modes() {
+  local home id brief mode verdict_request
+  home="$TMP_ROOT/ordering-home"
+  mkdir -p "$home/data"
+
+  for mode in no-mistakes direct-PR; do
+    case "$mode" in
+      no-mistakes)
+        id="brief-ordering-nm"
+        verdict_request="start or continue the no-mistakes run that computes the review verdict against the branch head"
+        ;;
+      direct-PR)
+        id="brief-ordering-dpr"
+        verdict_request="request it once the branch is pushed and the PR is open"
+        ;;
+    esac
+    FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode "$mode" >/dev/null 2>&1
+    brief="$home/data/$id/brief.md"
+    assert_present "$brief" "$mode brief was not scaffolded"
+    assert_grep "A review verdict only covers the branch head it was computed on" "$brief" \
+      "$mode DOD must state that a verdict only covers the head it was computed on"
+    assert_grep "Three of the last five fleet PRs shipped a verdict older than their head" "$brief" \
+      "$mode DOD must carry the fleet evidence that motivated the ordering"
+    assert_grep "Enforce that ordering structurally instead of by discipline" "$brief" \
+      "$mode DOD must present the ordering as a structural rule, not a discipline hint"
+    assert_grep "1. Implement the change and apply every fix. Make no further code changes after this step." "$brief" \
+      "$mode DOD must open the ordering with implement-and-fix as step 1"
+    assert_grep "2. Rebase onto the current main as the LAST code step" "$brief" \
+      "$mode DOD must make the rebase the last code step"
+    assert_grep "3. Request the verdict only after that rebase" "$brief" \
+      "$mode DOD must order the verdict request after the rebase"
+    assert_grep "4. Freeze the branch until the verdict has landed and is verified to cover your head" "$brief" \
+      "$mode DOD must freeze the branch after the verdict request"
+    assert_grep "the verdict's timestamp is newer than the branch head it must cover" "$brief" \
+      "$mode DOD must require the verdict timestamp to be newer than the head"
+    assert_grep "Before every verdict request, check the PR's target base first" "$brief" \
+      "$mode DOD must check the PR target base before every verdict request"
+    assert_grep "it must be the project's intended integration branch, never the default branch" "$brief" \
+      "$mode DOD must require the intended integration branch as the PR base"
+    assert_grep "On the firstmate fork that base is seibert/main" "$brief" \
+      "$mode DOD must name the firstmate fork's seibert/main base"
+    assert_grep "the early warning for a wrong base, not a broken check" "$brief" \
+      "$mode DOD must frame the red no-mistakes check as a wrong-base early warning"
+    assert_grep "Correct a wrong base before requesting anything, then check that the branch is mergeable onto the current main" "$brief" \
+      "$mode DOD must correct the base before the mergeable check"
+    assert_grep "if it is not (main has moved), rebase first, then request the verdict" "$brief" \
+      "$mode DOD must rebase before requesting when main has moved"
+    assert_grep "$verdict_request" "$brief" \
+      "$mode DOD must describe how that mode requests the verdict"
+  done
+
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" brief-ordering-local-only some-proj --mode local-only >/dev/null 2>&1
+  brief="$home/data/brief-ordering-local-only/brief.md"
+  assert_no_grep "verdict" "$brief" \
+    "local-only brief must not carry the verdict-head ordering"
+  assert_no_grep "as the LAST code step" "$brief" \
+    "local-only brief must not carry the rebase-last step"
+  assert_no_grep "Freeze the branch" "$brief" \
+    "local-only brief must not carry the branch freeze"
+  pass "fm-brief.sh: direct-PR and no-mistakes DODs share the verdict-head ordering; local-only stays free of it"
+}
+
 test_ask_user_escalation_format() {
   local home id brief mode other_id other_brief
   home="$TMP_ROOT/ask-user-home"
@@ -878,6 +946,7 @@ test_ship_mode_is_explicit_not_registry
 test_delivery_flags_are_refused_where_they_do_not_apply
 test_faster_paths_use_configured_authority_without_stacked_review
 test_no_mistakes_dod_wording
+test_verdict_head_ordering_in_verdict_modes
 test_ask_user_escalation_format
 test_ship_project_memory_wording
 test_herdr_lab_contract_is_explicit_and_complete
