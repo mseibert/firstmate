@@ -113,11 +113,16 @@ resolve_home() {
 # otherwise, so it composes with the watcher state-check contract: the watcher
 # turns that line into a check wake and the beat stays silent while healthy.
 action_check() {
-  local age
+  local age mtime
   if [ -e "$BEAT" ] && [ ! -L "$BEAT" ]; then
-    age=$(( $(date +%s) - $(fm_cap_stat_mtime "$BEAT") ))
-    if [ "$age" -ge "$GRACE" ]; then
-      printf 'capacity-brake: beat %ss old (> %ss) - brake loop not beating; bin/fm-capacity-brake-arm.sh status\n' "$age" "$GRACE"
+    mtime=$(fm_cap_stat_mtime "$BEAT")
+    if [ -n "$mtime" ]; then
+      age=$(( $(date +%s) - mtime ))
+      if [ "$age" -ge "$GRACE" ]; then
+        printf 'capacity-brake: beat %ss old (> %ss) - brake loop not beating; bin/fm-capacity-brake-arm.sh status\n' "$age" "$GRACE"
+      fi
+    else
+      printf 'capacity-brake: beat %s unreadable - brake loop not beating; bin/fm-capacity-brake-arm.sh status\n' "$BEAT"
     fi
   else
     printf 'capacity-brake: no beat at %s - brake loop not running; bin/fm-capacity-brake-arm.sh status\n' "$BEAT"
@@ -321,7 +326,7 @@ action_arm() {
   [ -d "$STATE" ] && [ ! -L "$STATE" ] || { error "state directory is unavailable: $STATE"; return 1; }
 
   unit_state=$("$SYSTEMCTL" --user is-active "$UNIT" 2>/dev/null || true)
-  if [ "$unit_state" = active ]; then
+  if [ "$unit_state" = active ] || [ "$unit_state" = activating ]; then
     # Already under systemd: the lock's live pid (if any) is the unit's own
     # process, so re-arming must not touch it - that is the no-double-process
     # contract. Ensure the beat check is armed and confirm.
@@ -388,8 +393,13 @@ action_status() {
   printf 'capacity-brake status:\n'
   printf '  unit:        %s (%s)\n' "$UNIT" "$unit_state"
   if [ -e "$BEAT" ] && [ ! -L "$BEAT" ]; then
-    age=$(( $(date +%s) - $(fm_cap_stat_mtime "$BEAT") ))
-    printf '  beat:        %s - %ss old\n' "$BEAT" "$age"
+    mtime=$(fm_cap_stat_mtime "$BEAT")
+    if [ -n "$mtime" ]; then
+      age=$(( $(date +%s) - mtime ))
+      printf '  beat:        %s - %ss old\n' "$BEAT" "$age"
+    else
+      printf '  beat:        %s - unreadable (assume not beating)\n' "$BEAT"
+    fi
   else
     printf '  beat:        %s - absent (not beating)\n' "$BEAT"
   fi
