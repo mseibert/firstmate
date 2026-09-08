@@ -152,6 +152,12 @@ const armRetireTimeoutMs = positiveInteger("FM_WATCH_ARM_RETIRE_TIMEOUT_MS", 100
 // the arm's cycle ledger (successor=none). Every continuity-restoration failure
 // message carries it so the typed message to Main names the gap itself.
 const continuityRestorationGap = "watcher: FAILED - continuity restoration gap: ";
+// Bound on a supervision-branch settlement before the watcher falls back to
+// main delivery. The branch's own turn can legitimately run long (a full model
+// turn), so the fallback is suppressed while the branch still holds its
+// per-wake row grant; this bound only guarantees a wake is never held by a
+// settlement that can no longer be reached.
+const branchSettlementTimeoutMs = positiveInteger("FM_WATCH_BRANCH_SETTLEMENT_TIMEOUT_MS", 15000);
 const repairOnlyHint = "call fm_watch_arm_pi again only after a later notification says the cycle is missing, failed, or unhealthy";
 const shuttingDownMessage = "watcher: not armed - Pi session is shutting down";
 
@@ -217,13 +223,18 @@ function pidAlive(pid: string): boolean {
   }
 }
 
-function lockOwnership(): LockOwnership {
-  let lockPid = "";
+// The exact session-lock owner, or "" when the lock is absent or unreadable.
+function sessionLockPid(): string {
   try {
-    lockPid = readFileSync(`${state}/.lock`, "utf8").trim();
+    return readFileSync(`${state}/.lock`, "utf8").trim();
   } catch {
-    return "missing";
+    return "";
   }
+}
+
+function lockOwnership(): LockOwnership {
+  const lockPid = sessionLockPid();
+  if (!lockPid) return "missing";
   if (!/^[0-9]+$/.test(lockPid) || lockPid === "1") return "other";
   let pid = String(process.pid);
   for (let i = 0; i < 8; i += 1) {
@@ -234,8 +245,12 @@ function lockOwnership(): LockOwnership {
   return pidAlive(lockPid) ? "other" : "missing";
 }
 
+// The loaded marker is written only by the exact lock-owning session process.
+// A short-lived descendant of the session shares lock ownership through its
+// ancestor chain, so the previous check let it overwrite the marker with a pid
+// that dies with it and made every later digest check report "not loaded".
 function markLoaded(): void {
-  if (lockOwnership() === "other") return;
+  if (sessionLockPid() !== String(process.pid)) return;
   mkdirSync(state, { recursive: true });
   writeFileSync(marker, `${extensionVersion}\n${process.pid}\n`);
 }
@@ -636,6 +651,66 @@ export default function (pi: ExtensionAPI) {
     return offer.accepted ? offer.settlement : null;
   }
 
+  // True while the supervision branch is actively handling a wake: its
+  // per-wake row grant is published (state/.branch-eligible-owner names a live
+  // owner and state/.branch-eligible-rows holds at least one sequence number).
+  // The branch releases both when its settlement settles, so while either is
+  // absent it is not working and a pending settlement must fall back to main.
+  // Mirrors the owner-evidence shape bin/fm-wake-grant.sh validates.
+  function branchOwnsWakeGrant(): boolean {
+    try {
+      const owner = readFileSync(`${state}/.branch-eligible-owner`, "utf8").split(/\r?\n/);
+      if (owner.length < 3 || owner[0] !== "fm-branch-eligible-owner-v1") return false;
+      const pid = owner[1];
+      if (!/^[0-9]+$/.test(pid) || pid === "1" || !pidAlive(pid)) return false;
+      const rows = readFileSync(`${state}/.branch-eligible-rows`, "utf8").split(/\r?\n/);
+      return rows.some((line) => /^[0-9]+$/.test(line));
+    } catch {
+      return false;
+    }
+  }
+
+  // Background monitor for a wake the supervision branch accepted. The
+  // restoration loop never blocks on a branch turn (a full model turn), so a
+  // second wake in a burst gets its successor started while the first
+  // settlement is still pending. The durable wake queue already holds the
+  // event and the branch consumes it from there, so the loop claims the wake
+  // optimistically the moment the branch owns it; this monitor only bounds the
+  // settlement: when it rejects, or times out while the branch is no longer
+  // holding its per-wake row grant, the wake falls back to the main delivery
+  // path. The per-actor queue claim keeps both actors from handling the same
+  // rows (docs/watcher-continuity.md "Per-actor acknowledgement").
+  function monitorBranchSettlement(
+    owner: SessionGeneration,
+    message: string,
+    pending: PendingActionableClose,
+    settlement: Promise<void>,
+  ): void {
+    let finished = false;
+    const fallbackToMain = (): void => {
+      if (finished) return;
+      finished = true;
+      clearTimeout(timer);
+      void sendWake(owner, message, pending).catch(() => {});
+    };
+    const timer = setTimeout(() => {
+      if (finished) return;
+      if (branchOwnsWakeGrant()) return; // branch mid-handling; it settles or rejects on its own
+      fallbackToMain();
+    }, branchSettlementTimeoutMs);
+    timer.unref();
+    void settlement.then(
+      () => {
+        if (finished) return;
+        finished = true;
+        clearTimeout(timer);
+      },
+      () => {
+        fallbackToMain();
+      },
+    );
+  }
+
   async function deliverActionableWake(
     owner: SessionGeneration,
     message: string,
@@ -657,10 +732,11 @@ export default function (pi: ExtensionAPI) {
     if (!repairFailed) {
       const branchDelivery = offerWakeToBranch(message);
       if (branchDelivery) {
-        try {
-          await branchDelivery;
-          return true;
-        } catch {}
+        // De-serialize: hand the settlement to the background monitor instead
+        // of awaiting it here, so the loop starts the next pending's successor
+        // immediately (the burst invariant).
+        monitorBranchSettlement(owner, message, pending, branchDelivery);
+        return true;
       }
     }
     return await sendWake(owner, message, pending);

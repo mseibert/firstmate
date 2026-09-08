@@ -2085,15 +2085,22 @@ EOF
   pass "Pi session transitions auto-arm through a generation owner across /new /resume /fork/reload, stale callbacks, and quit"
 }
 
-test_pi_session_replacement_carries_inflight_actionable_close() {
-  local repo home plugin log marker_root trigger stop out status
-  repo="$TMP_ROOT/pi-session-replacement-handoff-root"
-  home="$TMP_ROOT/pi-session-replacement-handoff-home"
-  log="$TMP_ROOT/pi-session-replacement-handoff.log"
-  marker_root="$TMP_ROOT/pi-session-replacement-handoff-markers"
-  trigger="$TMP_ROOT/pi-session-replacement-handoff.trigger"
-  stop="$TMP_ROOT/pi-session-replacement-handoff.stop"
-  mkdir -p "$repo/bin" "$home/state" "$home/config" "$marker_root"
+# The 2026-09-07 watcher-outage regression: the restoration loop was a serial
+# single-flight that awaited each branch settlement (a full model turn) before
+# it could start the successor for the next pending wake. A second quick wake
+# in a burst therefore had no live successor while the first settlement was
+# still pending - a window with no watcher at all. Restoration is de-serialized
+# now: the second wake gets its successor started while the first branch
+# settlement is still pending, and the durable wake queue holds every event for
+# the branch to consume.
+test_pi_burst_second_wake_starts_successor_before_first_settlement() {
+  local repo home plugin log trigger stop out status
+  repo="$TMP_ROOT/pi-burst-de-serialized-root"
+  home="$TMP_ROOT/pi-burst-de-serialized-home"
+  log="$TMP_ROOT/pi-burst-de-serialized.log"
+  trigger="$TMP_ROOT/pi-burst-de-serialized.trigger"
+  stop="$TMP_ROOT/pi-burst-de-serialized.stop"
+  mkdir -p "$repo/bin" "$home/state" "$home/config"
   install_pi_watch_extension_fixture "$repo"
   plugin="$repo/.pi/extensions/fm-primary-pi-watch.ts"
   cat > "$repo/bin/fm-watch-arm.sh" <<'SH'
@@ -2102,19 +2109,19 @@ if [ "${1:-}" = --handling-delivered ]; then
   printf 'confirmed generation=%s watcher=%s\n' "$2" "$4" >> "${FM_ARM_LOG:?}"
   exit 0
 fi
-marker=$(mktemp "${FM_MARKER_ROOT:?}/arm.XXXXXX") || exit 1
-cleanup() { rm -f "$marker"; }
-trap cleanup EXIT
+printf 'arm=%s\n' "$$" >> "${FM_ARM_LOG:?}"
+count=$(grep -c '^arm=' "$FM_ARM_LOG")
+if [ "$count" -eq 1 ]; then
+  printf 'watcher: started pid=%s (beacon fresh)\n' "$$"
+  printf 'signal: burst first wake\n'
+  exit 0
+fi
+printf 'watcher: started pid=%s (beacon fresh) recovery-generation=fixture-generation\n' "$$"
 trap 'exit 0' TERM INT
-printf 'arm pid=%s marker=%s\n' "$$" "$marker" >> "${FM_ARM_LOG:?}"
-printf 'watcher: started pid=%s (beacon fresh) recovery-generation=replacement-fixture\n' "$$"
 while :; do
   if [ -e "$FM_TRIGGER_FILE" ]; then
-    outcome=$(cat "$FM_TRIGGER_FILE")
     rm -f "$FM_TRIGGER_FILE"
-    printf 'signal: '
-    sleep 0.02
-    printf '%s\n' "$outcome"
+    printf 'signal: burst second wake\n'
     exit 0
   fi
   [ ! -e "$FM_STOP_FILE" ] || exit 0
@@ -2122,19 +2129,130 @@ while :; do
 done
 SH
   chmod +x "$repo/bin/fm-watch-arm.sh"
-  out=$(PLUGIN="$plugin" FM_HOME="$home" FM_ROOT_OVERRIDE="$repo" FM_ARM_LOG="$log" FM_MARKER_ROOT="$marker_root" FM_TRIGGER_FILE="$trigger" FM_STOP_FILE="$stop" node --input-type=module 2>&1 <<'EOF'
+  out=$(PLUGIN="$plugin" FM_HOME="$home" FM_ROOT_OVERRIDE="$repo" FM_ARM_LOG="$log" FM_TRIGGER_FILE="$trigger" FM_STOP_FILE="$stop" node --input-type=module 2>&1 <<'EOF'
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
-let releaseOldDelivery = () => {};
-const oldDeliveryRelease = new Promise((resolve) => {
-  releaseOldDelivery = resolve;
-});
-let oldDeliveryStarted = false;
+let tool = null;
+const settlements = [];
+let branchAccepts = 0;
+const prompts = [];
+const pi = {
+  on() {},
+  registerCommand() {},
+  registerTool(candidate) {
+    if (candidate.name === "fm_watch_arm_pi") tool = candidate;
+  },
+  sendUserMessage: async (message) => {
+    prompts.push(message);
+  },
+  events: {
+    on() {},
+    emit(event, data) {
+      if (event !== "fm-branch-supervision:dispatch") return;
+      let release = () => {};
+      const settlement = new Promise((resolve) => {
+        release = resolve;
+      });
+      branchAccepts += 1;
+      settlements.push({ release, settlement });
+      data.accept(settlement);
+    },
+  },
+};
+const arms = () => existsSync(process.env.FM_ARM_LOG)
+  ? readFileSync(process.env.FM_ARM_LOG, "utf8").split("\n").filter((row) => row.startsWith("arm=")).length
+  : 0;
+async function waitFor(pred, label) {
+  for (let i = 0; i < 500; i += 1) {
+    if (pred()) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(`timeout waiting for ${label}`);
+}
 
-function makePi(blockDelivery = false) {
+writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
+writeFileSync(`${process.env.FM_HOME}/state/burst-task.meta`, "project=/projects/burst-task\nwindow=fm-burst-task\n");
+writeFileSync(`${process.env.FM_HOME}/state/.wake-queue`, "1\t1\tsignal\tburst-task.status\tsignal: burst first wake\n");
+const mod = await import(pathToFileURL(process.env.PLUGIN).href);
+mod.default(pi);
+await tool.execute("initial-arm", {}, undefined, undefined, {});
+// First wake: its successor (arm 2) must be live before its branch settlement
+// is offered, and the wake itself must stay on the branch.
+await waitFor(() => arms() >= 2 && branchAccepts >= 1, "first wake successor and branch acceptance");
+if (prompts.length !== 0) throw new Error(`first branch-owned wake reached main: ${prompts.join(" | ")}`);
+// Second wake arrives while the first settlement is still pending (we never
+// released it). Its own successor (arm 3) must start before that settlement
+// ends - the burst invariant the 2026-09-07 outage broke.
+writeFileSync(process.env.FM_TRIGGER_FILE, "trigger\n");
+await waitFor(() => arms() >= 3 && branchAccepts >= 2, "second wake successor while the first settlement is pending");
+if (settlements.length < 1) throw new Error("first branch settlement was not recorded");
+await new Promise((resolve) => setTimeout(resolve, 200));
+if (arms() !== 3) throw new Error(`successor chain must stay exactly one live arm: ${arms()} arms`);
+if (prompts.length !== 0) throw new Error(`second branch-owned wake reached main: ${prompts.join(" | ")}`);
+// Releasing both settlements afterwards must not disturb the live successor.
+settlements.forEach((entry) => entry.release());
+await new Promise((resolve) => setTimeout(resolve, 100));
+if (arms() !== 3) throw new Error(`settled branch deliveries disturbed the live successor: ${arms()} arms`);
+writeFileSync(process.env.FM_STOP_FILE, "stop\n");
+process.exit(0);
+EOF
+)
+  status=$?
+  expect_code 0 "$status" "Pi burst second wake must get its successor before the first branch settlement ends"
+  [ -z "$out" ] || fail "Pi burst de-serialized test printed output: $out"
+  pass "Pi starts a burst's second successor before the first branch settlement ends"
+}
+
+# A wake the branch accepted is owned by the branch the moment the offer is
+# accepted, so the claim settles optimistically and a session replacement never
+# replays it to main - the branch consumes it from the durable wake queue. The
+# replacement only arms its own generation.
+test_pi_session_replacement_never_replays_branch_owned_wakes() {
+  local repo home plugin log trigger stop out status
+  repo="$TMP_ROOT/pi-session-replacement-handoff-root"
+  home="$TMP_ROOT/pi-session-replacement-handoff-home"
+  log="$TMP_ROOT/pi-session-replacement-handoff.log"
+  trigger="$TMP_ROOT/pi-session-replacement-handoff.trigger"
+  stop="$TMP_ROOT/pi-session-replacement-handoff.stop"
+  mkdir -p "$repo/bin" "$home/state" "$home/config"
+  install_pi_watch_extension_fixture "$repo"
+  plugin="$repo/.pi/extensions/fm-primary-pi-watch.ts"
+  cat > "$repo/bin/fm-watch-arm.sh" <<'SH'
+#!/usr/bin/env bash
+if [ "${1:-}" = --handling-delivered ]; then
+  printf 'confirmed generation=%s watcher=%s\n' "$2" "$4" >> "${FM_ARM_LOG:?}"
+  exit 0
+fi
+printf 'arm=%s\n' "$$" >> "${FM_ARM_LOG:?}"
+count=$(grep -c '^arm=' "$FM_ARM_LOG")
+if [ "$count" -eq 1 ]; then
+  printf 'watcher: started pid=%s (beacon fresh)\n' "$$"
+  printf 'signal: replacement-race actionable outcome\n'
+  exit 0
+fi
+printf 'watcher: started pid=%s (beacon fresh) recovery-generation=replacement-fixture\n' "$$"
+trap 'exit 0' TERM INT
+while :; do
+  if [ -e "$FM_TRIGGER_FILE" ]; then
+    rm -f "$FM_TRIGGER_FILE"
+    printf 'signal: replacement-successor actionable outcome\n'
+    exit 0
+  fi
+  [ ! -e "$FM_STOP_FILE" ] || exit 0
+  sleep 0.02
+done
+SH
+  chmod +x "$repo/bin/fm-watch-arm.sh"
+  out=$(PLUGIN="$plugin" FM_HOME="$home" FM_ROOT_OVERRIDE="$repo" FM_ARM_LOG="$log" FM_TRIGGER_FILE="$trigger" FM_STOP_FILE="$stop" node --input-type=module 2>&1 <<'EOF'
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { pathToFileURL } from "node:url";
+
+const settlements = [];
+let branchAccepts = 0;
+
+function makePi() {
   const handlers = new Map();
-  const eventHandlers = new Map();
   let tool = null;
   const prompts = [];
   const pi = {
@@ -2149,44 +2267,42 @@ function makePi(blockDelivery = false) {
       prompts.push(message);
     },
     events: {
-      on(event, handler) {
-        eventHandlers.set(event, [...(eventHandlers.get(event) ?? []), handler]);
-      },
+      on() {},
       emit(event, data) {
-        if (blockDelivery && event === "fm-branch-supervision:dispatch") {
-          oldDeliveryStarted = true;
-          data.accept(oldDeliveryRelease);
-        }
-        for (const handler of eventHandlers.get(event) ?? []) handler(data);
+        if (event !== "fm-branch-supervision:dispatch") return;
+        let release = () => {};
+        const settlement = new Promise((resolve) => {
+          release = resolve;
+        });
+        branchAccepts += 1;
+        settlements.push({ release, settlement });
+        data.accept(settlement);
       },
     },
   };
   return { pi, handlers, getTool: () => tool, prompts };
 }
 
-function pidAlive(pid) {
-  try {
-    process.kill(Number(pid), 0);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 function armRows() {
-  if (!existsSync(process.env.FM_ARM_LOG)) return [];
-  return readFileSync(process.env.FM_ARM_LOG, "utf8")
-    .trim()
-    .split(/\n/)
-    .filter((row) => row.startsWith("arm "))
-    .map((row) => {
-      const match = /pid=(\d+) marker=(\S+)/.exec(row);
-      return match ? { pid: match[1], marker: match[2] } : { pid: "", marker: "" };
-    });
+  if (!existsSync(process.env.FM_ARM_LOG)) return 0;
+  return readFileSync(process.env.FM_ARM_LOG, "utf8").split("\n").filter((row) => row.startsWith("arm=")).length;
 }
 
-function liveArms() {
-  return armRows().filter((arm) => arm.pid && arm.marker && existsSync(arm.marker) && pidAlive(arm.pid));
+function liveArmPids() {
+  if (!existsSync(process.env.FM_ARM_LOG)) return [];
+  const pids = [];
+  for (const row of readFileSync(process.env.FM_ARM_LOG, "utf8").split("\n")) {
+    if (!row.startsWith("arm=")) continue;
+    const pid = Number(row.slice(4));
+    if (!Number.isFinite(pid) || pid <= 0) continue;
+    try {
+      process.kill(pid, 0);
+      pids.push(String(pid));
+    } catch {
+      // already gone
+    }
+  }
+  return pids;
 }
 
 async function waitFor(pred, label, attempts = 500) {
@@ -2201,80 +2317,61 @@ writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
 writeFileSync(`${process.env.FM_HOME}/state/replacement-race.meta`, "project=/projects/replacement-race\nwindow=fm-replacement-race\n");
 writeFileSync(`${process.env.FM_HOME}/state/.wake-queue`, "1\t1\tsignal\treplacement-race.status\tsignal: replacement-race actionable outcome\n");
 const mod = await import(pathToFileURL(process.env.PLUGIN).href);
-const previous = makePi(true);
+const previous = makePi();
 mod.default(previous.pi);
 const initial = await previous.getTool().execute("initial-arm", {}, undefined, undefined, {});
 if (!initial.details?.ok || !String(initial.details.message).includes("started Pi extension arm child")) {
   throw new Error(`initial arm failed: ${JSON.stringify(initial.details)}`);
 }
-await waitFor(() => liveArms().length === 1, "initial live arm");
-
-writeFileSync(process.env.FM_TRIGGER_FILE, "replacement-race actionable outcome\n");
-await waitFor(() => oldDeliveryStarted, "old-session accepted branch delivery");
+await waitFor(() => armRows() >= 1 && liveArmPids().length === 1, "initial live arm");
+// First wake goes to the branch; its successor is live before the settlement.
+await waitFor(() => armRows() >= 2 && branchAccepts >= 1, "first wake successor and branch acceptance");
 if (previous.prompts.length !== 0) {
   throw new Error(`accepted old-session branch wake reached main: ${previous.prompts.join(" | ")}`);
 }
-await waitFor(() => liveArms().length === 1 && armRows().length >= 2, "old-session successor");
-writeFileSync(process.env.FM_TRIGGER_FILE, "replacement-successor actionable outcome\n");
-await waitFor(() => liveArms().length === 0, "mid-delivery successor actionable close");
+// Second wake: its successor starts while the first settlement is still
+// pending (the de-serialized burst invariant), and it too stays on the branch.
+writeFileSync(process.env.FM_TRIGGER_FILE, "replacement-successor\n");
+await waitFor(() => armRows() >= 3 && branchAccepts >= 2, "second wake successor while the first settlement is pending");
+if (previous.prompts.length !== 0) {
+  throw new Error(`accepted second old-session branch wake reached main: ${previous.prompts.join(" | ")}`);
+}
+await new Promise((resolve) => setTimeout(resolve, 150));
+if (liveArmPids().length !== 1) {
+  throw new Error(`expected exactly one live successor during the blocked settlements: ${JSON.stringify(liveArmPids())}`);
+}
 
+// Replace the session while both branch settlements are still pending. Both
+// wakes are branch-owned (optimistically settled), so the replacement must arm
+// cleanly and never replay them to main.
 await previous.handlers.get("session_shutdown")?.({ type: "session_shutdown", reason: "new" }, {});
-await waitFor(() => liveArms().length === 0, "retired old-session successor");
+await waitFor(() => liveArmPids().length === 0, "retired old-session successor");
 
-const replacement = makePi(false);
-const replacementMod = await import(`${pathToFileURL(process.env.PLUGIN).href}?replacement=durable-handoff`);
+const replacement = makePi();
+const replacementMod = await import(`${pathToFileURL(process.env.PLUGIN).href}?replacement=branch-owned`);
 replacementMod.default(replacement.pi);
-const replacementStart = replacement.handlers.get("session_start")?.({
-  type: "session_start",
-  reason: "new",
-  previousSessionFile: "/tmp/previous.jsonl",
-}, {});
-await new Promise((resolve) => setTimeout(resolve, 50));
-await waitFor(() => liveArms().length === 1 && armRows().length >= 3, "replacement arm before old delivery settlement");
+await replacement.handlers.get("session_start")?.({ type: "session_start", reason: "new" }, {});
+await waitFor(() => armRows() >= 4 && liveArmPids().length === 1, "replacement live arm");
 if (replacement.prompts.some((message) => message.includes("signal: replacement-race actionable outcome"))) {
-  throw new Error(`replacement raced the accepted old-session delivery: ${replacement.prompts.join(" | ")}`);
+  throw new Error(`replacement replayed the branch-owned first wake: ${replacement.prompts.join(" | ")}`);
 }
-writeFileSync(
-  `${process.env.FM_HOME}/state/extensions/pi-primary-watch/session-replacement-actionable.json`,
-  "{malformed handoff\n",
-);
-releaseOldDelivery();
-await replacementStart;
-await waitFor(
-  () => replacement.prompts.some((message) => message.includes("signal: replacement-successor actionable outcome")),
-  "replacement-session successor actionable delivery",
-);
-if (replacement.prompts.some((message) => message.includes("signal: replacement-race actionable outcome"))) {
-  throw new Error(`settled old-session branch delivery was replayed: ${replacement.prompts.join(" | ")}`);
+if (replacement.prompts.some((message) => message.includes("signal: replacement-successor actionable outcome"))) {
+  throw new Error(`replacement replayed the branch-owned second wake: ${replacement.prompts.join(" | ")}`);
 }
-if (replacement.prompts.filter((message) => message.includes("signal: replacement-successor actionable outcome")).length !== 1) {
-  throw new Error(`replacement session did not receive exactly one carried successor outcome: ${replacement.prompts.join(" | ")}`);
-}
-if (!replacement.prompts.some((message) => message.includes("could not clear a delivered replacement-session actionable wake"))) {
-  throw new Error(`handoff cleanup failure was not surfaced: ${replacement.prompts.join(" | ")}`);
-}
-await new Promise((resolve) => setTimeout(resolve, 700));
-if (replacement.prompts.filter((message) => message.includes("could not clear a delivered replacement-session actionable wake")).length !== 1) {
-  throw new Error(`persistent handoff cleanup failure repeated alerts: ${replacement.prompts.join(" | ")}`);
-}
-await waitFor(() => liveArms().length === 1 && armRows().length >= 3, "replacement live arm");
-const redundant = await replacement.getTool().execute("replacement-redundant", {}, undefined, undefined, {});
-if (!redundant.details?.ok || !String(redundant.details.message).includes("unchanged")) {
-  throw new Error(`replacement did not retain automatic arm ownership: ${JSON.stringify(redundant.details)}`);
-}
-
+// Releasing the old settlements afterwards must not disturb the replacement.
+settlements.forEach((entry) => entry.release());
 await new Promise((resolve) => setTimeout(resolve, 100));
-if (liveArms().length !== 1) {
-  throw new Error(`old delivery completion disturbed replacement ownership: ${JSON.stringify(liveArms())}`);
+if (liveArmPids().length !== 1) {
+  throw new Error(`old delivery completion disturbed replacement ownership: ${JSON.stringify(liveArmPids())}`);
 }
 writeFileSync(process.env.FM_STOP_FILE, "stop\n");
 process.exit(0);
 EOF
 )
   status=$?
-  expect_code 0 "$status" "Pi session replacement must auto-arm and carry an in-flight actionable close"
-  [ -z "$out" ] || fail "Pi session-replacement handoff test printed output: $out"
-  pass "Pi session replacement auto-arms and carries its in-flight actionable close"
+  expect_code 0 "$status" "Pi session replacement must never replay branch-owned wakes"
+  [ -z "$out" ] || fail "Pi session-replacement branch-owned test printed output: $out"
+  pass "Pi session replacement never replays branch-owned wakes"
 }
 
 test_pi_streaming_followup_is_replayed_after_replacement() {
@@ -2499,10 +2596,11 @@ EOF
 }
 
 # A verified successor can die while the wake it was started for is still
-# being delivered (a branch turn can take minutes). Its failure close arrives
-# while the pipeline is busy, so the ordinary retry path must be deferred to
-# the end of that delivery rather than skipped, or the live generation is left
-# with no watcher and no retry.
+# being settled by the branch (a branch turn can take minutes). Because
+# delivery is de-serialized, the restoration loop has already moved on when
+# that close arrives, so the verified successor's bounded retry starts
+# immediately instead of being held by the settlement - the fleet is never
+# left with no watcher while the branch finishes.
 test_pi_successor_failure_during_delivery_is_retried_after_delivery() {
   local repo home plugin log stop out status
   repo="$TMP_ROOT/pi-successor-dies-mid-delivery-root"
@@ -2578,13 +2676,15 @@ mod.default(pi);
 await tool.execute("initial-arm", {}, undefined, undefined, {});
 await waitFor(() => branchAccepted, "branch accepted the wake behind a verified successor");
 if (arms() !== 2) throw new Error(`expected the verified successor before delivery, got ${arms()} arms`);
-// The successor dies while the branch still holds the delivery.
+// The successor dies while the branch still holds the delivery settlement.
+// Its retry must start immediately - it must not wait for the settlement.
 await new Promise((resolve) => setTimeout(resolve, 300));
-if (arms() !== 2) throw new Error(`a retry launched while the delivery was still in flight: ${arms()} arms`);
-releaseBranch();
-await waitFor(() => arms() === 3, "a retry watcher after the delivery settled");
+if (arms() !== 3) throw new Error(`the verified successor's retry did not start while the settlement was pending: ${arms()} arms`);
 await new Promise((resolve) => setTimeout(resolve, 150));
-if (arms() !== 3) throw new Error(`the deferred retry was not single-flight: ${arms()} arms`);
+if (arms() !== 3) throw new Error(`the immediate retry was not single-flight: ${arms()} arms`);
+releaseBranch();
+await new Promise((resolve) => setTimeout(resolve, 100));
+if (arms() !== 3) throw new Error(`the settled delivery disturbed the retried watcher: ${arms()} arms`);
 if (prompts.length !== 0) throw new Error(`a bounded retry surfaced a failure prompt: ${prompts.join(" | ")}`);
 writeFileSync(process.env.FM_STOP_FILE, "stop\n");
 process.exit(0);
@@ -2593,7 +2693,7 @@ EOF
   status=$?
   expect_code 0 "$status" "Pi must retry a verified successor that failed during wake delivery"
   [ -z "$out" ] || fail "Pi successor-dies-mid-delivery test printed output: $out"
-  pass "Pi retries a verified successor that failed during wake delivery once that delivery settles"
+  pass "Pi retries a verified successor that failed during wake delivery without waiting for the settlement"
 }
 
 test_pi_late_retiring_actionable_reaches_replacement() {
@@ -3997,7 +4097,8 @@ test_pi_established_empty_close_honors_retry_limit
 test_pi_actionable_close_rechecks_session_lock
 test_pi_arm_distinguishes_session_lock_ownership
 test_pi_session_transition_generation_owner
-test_pi_session_replacement_carries_inflight_actionable_close
+test_pi_burst_second_wake_starts_successor_before_first_settlement
+test_pi_session_replacement_never_replays_branch_owned_wakes
 test_pi_streaming_followup_is_replayed_after_replacement
 test_pi_streaming_time_delivery_keeps_the_successor_chain
 test_pi_successor_failure_during_delivery_is_retried_after_delivery

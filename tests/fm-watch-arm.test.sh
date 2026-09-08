@@ -803,6 +803,51 @@ test_downtime_marker_does_not_follow_symlink() {
   pass "watch-arm: downtime marker publication does not follow symlinks"
 }
 
+# Defense in depth against OOM pressure: the arm lowers oom_score_adj on its own
+# forked watcher child (and on itself) so the kernel prefers other processes
+# when memory is tight. The watcher is the fleet's last line of supervision and
+# must never be the OOM killer's pick. Requires Linux /proc AND a kernel that
+# permits lowering an own child's oom_score_adj; containers and hardened
+# kernels can deny even self-lowering (EPERM), so the case probes first and
+# skips there.
+test_arm_protects_watcher_and_itself_from_oom_killer() {
+  local dir home state fakebin armout watcher_pid adj probe i
+  [ -d /proc ] || { echo "skip: oom_score_adj is Linux-only"; return 0; }
+  sleep 0.5 &
+  probe=$!
+  if ! printf '%s\n' -500 > "/proc/$probe/oom_score_adj" 2>/dev/null; then
+    kill "$probe" 2>/dev/null || true
+    wait "$probe" 2>/dev/null || true
+    echo "skip: kernel denies oom_score_adj writes (container or hardened policy)"
+    return 0
+  fi
+  kill "$probe" 2>/dev/null || true
+  wait "$probe" 2>/dev/null || true
+  dir=$(make_case arm-oom-protection)
+  home="$dir/home"
+  state="$dir/state"
+  fakebin="$dir/fakebin"
+  armout="$dir/arm.out"
+  mkdir -p "$home/data"
+  start_rearm_arm "$home" "$state" "$fakebin" "$armout"
+  i=0
+  while [ "$i" -lt 60 ]; do
+    watcher_pid=$(cat "$state/.watch.lock/pid" 2>/dev/null || true)
+    [ -n "$watcher_pid" ] && [ -r "/proc/$watcher_pid/oom_score_adj" ] && break
+    sleep 0.1
+    i=$((i + 1))
+  done
+  [ -n "$watcher_pid" ] && [ -r "/proc/$watcher_pid/oom_score_adj" ] \
+    || fail "arm did not start a watcher child: $(cat "$armout")"
+  adj=$(cat "/proc/$watcher_pid/oom_score_adj" 2>/dev/null || true)
+  [ "$adj" = -500 ] || fail "watcher child oom_score_adj was not lowered (got $adj)"
+  adj=$(cat "/proc/$ARM_PID/oom_score_adj" 2>/dev/null || true)
+  [ "$adj" = -500 ] || fail "arm process oom_score_adj was not lowered (got $adj)"
+  kill -TERM "$ARM_PID" 2>/dev/null || true
+  wait_for_exit "$ARM_PID" 60
+  pass "watch-arm: the arm and its forked watcher are protected from the OOM killer"
+}
+
 test_attached_arm_reports_the_delivered_wake
 test_attached_arm_reports_the_delivered_wake_after_drain
 test_attached_arm_still_fails_on_a_wake_it_did_not_deliver
@@ -817,3 +862,4 @@ test_markerless_legacy_queue_is_recovered_on_arm
 test_handling_window_close_keeps_the_acknowledgement_valid
 test_moved_generation_acknowledgement_is_self_healing
 test_downtime_marker_does_not_follow_symlink
+test_arm_protects_watcher_and_itself_from_oom_killer

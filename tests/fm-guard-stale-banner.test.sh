@@ -139,6 +139,64 @@ $haystack
 EOF
 }
 
+# fm_pi_extension_loaded must distinguish why a home's extension proof failed:
+# a marker recording an older build (stale-build: restart to load the new one)
+# is a different diagnosis from no marker at all (missing) or a marker written
+# by a process that is not the session-lock owner (other-session). The boolean
+# verdict is unchanged; only the reason is exposed to the digest.
+test_pi_extension_loaded_reports_failure_reason() {
+  local dir home root marker lock version state
+  dir=$(make_guard_case ext-loaded-reason)
+  home=$(case_home "$dir")
+  root=$(case_root "$dir")
+  marker="$home/state/.pi-watch-extension-loaded"
+  lock="$home/state/.lock"
+  mkdir -p "$root/.pi/extensions"
+  printf '// watch fixture\n' > "$root/.pi/extensions/fm-primary-pi-watch.ts"
+  version=$(FM_STATE_OVERRIDE="$home/state" bash -c '. "$1"; fm_pi_extension_version "$2"' \
+    _ "$ROOT/bin/fm-wake-lib.sh" "$root/.pi/extensions/fm-primary-pi-watch.ts") \
+    || fail "could not compute the fixture extension version"
+  pi_loaded_state() {  # <marker> <version> <lock>
+    FM_STATE_OVERRIDE="$home/state" bash -c '
+      . "$1"
+      fm_pi_extension_loaded "$2" "$3" "$4" || true
+      printf "%s" "$FM_PI_EXTENSION_STATE"
+    ' _ "$ROOT/bin/fm-wake-lib.sh" "$1" "$2" "$3"
+  }
+
+  # No marker at all: nothing proves this build was loaded - the real
+  # "not loaded" case.
+  printf '4242\n' > "$lock"
+  state=$(pi_loaded_state "$marker" "$version" "$lock")
+  [ "$state" = missing ] || fail "absent marker classified as '$state', expected missing"
+
+  # Marker records an older build than the tracked file: the session loaded an
+  # old module and a restart is what loads the new one - never "not loaded".
+  printf '%s\n4242\n' "sha256:0000000000000000000000000000000000000000000000000000000000000000" > "$marker"
+  state=$(pi_loaded_state "$marker" "$version" "$lock")
+  [ "$state" = stale-build ] || fail "older-build marker classified as '$state', expected stale-build"
+
+  # Marker records the current build but was written by a process that is not
+  # the session-lock owner (a short-lived descendant clobbered it).
+  printf '%s\n4242\n' "$version" > "$marker"
+  printf '1234\n' > "$lock"
+  state=$(pi_loaded_state "$marker" "$version" "$lock")
+  [ "$state" = other-session ] || fail "foreign-pid marker classified as '$state', expected other-session"
+
+  # Exact match: loaded, and no failure reason is left behind.
+  printf '%s\n1234\n' "$version" > "$marker"
+  state=$(pi_loaded_state "$marker" "$version" "$lock")
+  [ -z "$state" ] || fail "loaded marker left failure state '$state'"
+  if FM_STATE_OVERRIDE="$home/state" bash -c '. "$1"; fm_pi_extension_loaded "$2" "$3" "$4"' \
+    _ "$ROOT/bin/fm-wake-lib.sh" "$marker" "$version" "$lock"; then
+    :
+  else
+    fail "exact-match marker did not return success"
+  fi
+
+  pass "fm_pi_extension_loaded distinguishes stale-build from not loaded"
+}
+
 test_first_stale_call_prints_full_banner() {
   local dir out
   dir=$(make_guard_case first-stale)
@@ -753,3 +811,4 @@ test_read_only_before_writable_does_not_consume_full_banner
 test_read_only_during_episode_observes_without_mutating_marker
 test_healthy_read_only_does_not_clear_marker
 test_read_only_never_mutates_stale_banner_state_files
+test_pi_extension_loaded_reports_failure_reason

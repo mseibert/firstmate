@@ -2496,7 +2496,10 @@ EOF
   kill "$holder_pid" 2>/dev/null || true
   wait "$holder_pid" 2>/dev/null || true
 
-  assert_contains "$out" "PI_WATCH_EXTENSION: not loaded" "pi diagnostic trusted a stale loaded marker"
+  assert_contains "$out" "PI_WATCH_EXTENSION: module build differs from the tracked file" \
+    "pi diagnostic trusted a stale loaded marker"
+  assert_not_contains "$out" "PI_WATCH_EXTENSION: not loaded" \
+    "a stale-build marker was mislabeled as not loaded"
 
   pass "session start rejects stale Pi loaded markers"
 }

@@ -204,13 +204,18 @@ function pidAlive(pid: string): boolean {
   }
 }
 
-function lockOwnership(): LockOwnership {
-  let lockPid = "";
+// The exact session-lock owner, or "" when the lock is absent or unreadable.
+function sessionLockPid(): string {
   try {
-    lockPid = readFileSync(`${state}/.lock`, "utf8").trim();
+    return readFileSync(`${state}/.lock`, "utf8").trim();
   } catch {
-    return "missing";
+    return "";
   }
+}
+
+function lockOwnership(): LockOwnership {
+  const lockPid = sessionLockPid();
+  if (!lockPid) return "missing";
   if (!/^[0-9]+$/.test(lockPid) || lockPid === "1") return "other";
   let pid = String(process.pid);
   for (let i = 0; i < 8; i += 1) {
@@ -221,8 +226,12 @@ function lockOwnership(): LockOwnership {
   return pidAlive(lockPid) ? "other" : "missing";
 }
 
+// The loaded marker is written only by the exact lock-owning session process.
+// A short-lived descendant of the session shares lock ownership through its
+// ancestor chain, so the previous check let it overwrite the marker with a pid
+// that dies with it and made every later digest check report "not loaded".
 function markLoaded(): void {
-  if (lockOwnership() === "other") return;
+  if (sessionLockPid() !== String(process.pid)) return;
   mkdirSync(state, { recursive: true });
   writeFileSync(marker, `${extensionVersion}\n${process.pid}\n`);
 }
