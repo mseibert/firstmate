@@ -41,12 +41,20 @@
 #                          the run step cannot show; that deferral still
 #                          re-surfaces once per PAUSE_RESURFACE_SECS, and a pane
 #                          that writes nothing keeps the unchanged schedule.
+#                          A crew that is intentionally parked is absorbed on the
+#                          same long cadence, never as a wedge: a done-pending-verify
+#                          status verb (the worker-declared done-awaiting-
+#                          verification state) or an authoritative parked current
+#                          state (a run parked at a gate) both name an EXPECTED
+#                          idle pane, decided from the TASK state, never from the
+#                          pane command - a bare shell prompt alone says nothing.
 #                          A genuinely busy pane
 #                          (window_is_busy true) is exempt from the above, but
 #                          only up to BUSY_TURN_MAX_SECS with no completed turn
 #                          (state/<id>.turn-ended, or the spawn record before any
 #                          turn completes). Past that bound, a declared external
-#                          wait or verified captain-held transfer uses the long
+#                          wait, verified captain-held transfer, or
+#                          done-pending-verify wait uses the long
 #                          pause recheck cadence (under afk it is instead handed
 #                          to the daemon as this plain reason, once per
 #                          declaration; busy_turn_bound_check owns that handoff);
@@ -868,12 +876,14 @@ busy_turn_over_age() {  # <task>
 # the stale suppressor to <hash> and flags the key paused.
 #
 # The recheck names WHICH human the declared wait is on, because that is the whole
-# point of a recheck the captain reads: an external dependency for paused:, and the
-# captain themself for a verified hold. Only the captain-held verb takes the second
-# wording; a caller that reached the bounded cadence off pause tracking alone, with
-# no declaring verb left on the log, keeps the external-wait wording it always had.
+# point of a recheck the captain reads: an external dependency for paused:, the
+# captain themself for a verified hold, and firstmate/captain verification for
+# done-pending-verify. Only those verbs take their own wording; a caller that
+# reached the bounded cadence off pause tracking alone, with no declaring verb
+# left on the log (an authoritative parked state such as a run parked at a gate),
+# keeps the parked-at-the-supervisor wording it now has.
 handle_paused_stale() {  # <window> <task> <hash>
-  local win=$1 task=$2 h=$3 key statusf mtime age detail reason declaration
+  local win=$1 task=$2 h=$3 key statusf mtime age detail reason declaration last
   key=$(window_key "$win")
   printf '%s' "$h" > "$STATE/.stale-$key"
   : > "$STATE/.paused-$key"
@@ -883,12 +893,19 @@ handle_paused_stale() {  # <window> <task> <hash>
   mtime=$(stat_mtime "$statusf")
   case "$mtime" in ''|*[!0-9]*) mtime=$(date +%s) ;; esac
   age=$(( $(date +%s) - mtime ))
-  if status_is_captain_held "$(last_status_line "$statusf")"; then
+  last=$(last_status_line "$statusf")
+  if status_is_captain_held "$last"; then
     detail="captain-held, awaiting the captain"
     reason="captain-held ${age}s, awaiting the captain - verified hold transfer, rechecked on a long cadence not a wedge; answer the held decision or release the hold"
-  else
+  elif status_is_done_pending_verify "$last"; then
+    detail="done, awaiting verification"
+    reason="done-pending-verify ${age}s, awaiting verification - declared done, rechecked on a long cadence not a wedge; verify the delivered work and clean up or resume the task"
+  elif status_is_paused "$last"; then
     detail="paused, awaiting external"
     reason="paused ${age}s, awaiting external - declared pause, rechecked on a long cadence not a wedge; confirm the wait still holds"
+  else
+    detail="parked, awaiting the supervisor"
+    reason="parked ${age}s, awaiting the supervisor - authoritative parked state, rechecked on a long cadence not a wedge; resume or resolve the parked task"
   fi
   declaration="declared:$(fm_wake_signal_sig "$statusf" || true)"
   resurface_absorbed "$win" "$STATE/.paused-resurfaced-$key" "$age" "stale: $win ($reason)" "$declaration"
@@ -1067,16 +1084,19 @@ machine_is_idle() {  # <exclude-task>
 
 # 0 while <task> is in flight in the sense the captain's reality rule needs: a
 # spawned task whose worker is expected to be running. A task whose last status
-# line shows a legitimate stopped state (done, failed, or a verified
-# captain-held transfer) is NOT expected to hold a worker, so its missing
-# process is not a dead worker. A declared pause, decision wait, or anything
+# line shows a legitimate stopped state (done, failed, a verified
+# captain-held transfer, or the worker-declared done-pending-verify wait) is NOT
+# expected to hold a worker, so its missing process is not a dead worker. A
+# done-pending-verify worker has already delivered its work and parks without an
+# agent by design (the expected parked state), so its agent exiting is exactly
+# as legitimate as a done: worker's. A declared pause, decision wait, or anything
 # else stays in flight: an idle declaration never excuses a missing process.
 task_expects_live_worker() {  # <task>
   local task=$1 last verb
   last=$(last_status_line "$STATE/$task.status")
   verb=$(status_line_verb "$last")
   case "$verb" in
-    done|failed|captain-held) return 1 ;;
+    done|failed|captain-held|done-pending-verify) return 1 ;;
   esac
   return 0
 }

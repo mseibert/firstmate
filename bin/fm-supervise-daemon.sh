@@ -44,8 +44,9 @@
 #   - Bounded wedge latency: a stale pane without a declared wait is escalated
 #     only after it has been idle for STALE_ESCALATE_SECS
 #     (configurable), rechecked once. A wedged crewmate is therefore detected
-#     within STALE_ESCALATE_SECS + a tick, never lost. A declared wait - either a
-#     paused: external wait or a verified captain-held transfer, per
+#     within STALE_ESCALATE_SECS + a tick, never lost. A declared wait - a
+#     paused: external wait, a verified captain-held transfer, or a worker-
+#     declared done-pending-verify, per
 #     fm-classify-lib.sh's combined predicate - instead gets its own longer
 #     PAUSE_RESURFACE_SECS recheck, never a wedge escalation, whether its pane
 #     reads idle or busy; only a status append that stops declaring the wait
@@ -416,13 +417,20 @@ classify_stale() {  # <window> <state> [<span-record> <span-status>]
     return
   fi
   if [ -n "$last" ] && status_is_paused_or_captain_held "$last"; then
-    # A DECLARED external-wait pause or a verified captain-held transfer
-    # (fm-classify-lib.sh owns which declarations qualify): an idle pane is
+    # A declared expected-idle wait (an external-wait pause, a verified
+    # captain-held transfer, or a worker-declared done-pending-verify;
+    # fm-classify-lib.sh owns which declarations qualify): an idle pane is
     # EXPECTED, so this is not a wedge. The caller records a pause marker (long
     # re-surface cadence in housekeeping) rather than a wedge stale marker. Cheap:
     # reuses the status line already read, no fm-crew-state.sh call, mirroring the
     # daemon's existing status-log classification.
-    printf 'pause|paused (awaiting external), rechecked on a long cadence: %s' "$last"
+    if status_is_captain_held "$last"; then
+      printf 'pause|captain-held (awaiting the captain), rechecked on a long cadence: %s' "$last"
+    elif status_is_done_pending_verify "$last"; then
+      printf 'pause|done-pending-verify (awaiting verification), rechecked on a long cadence: %s' "$last"
+    else
+      printf 'pause|paused (awaiting external), rechecked on a long cadence: %s' "$last"
+    fi
     return
   fi
   if [ -n "$last" ] && status_is_captain_relevant "$last"; then
@@ -1074,14 +1082,17 @@ housekeeping() {  # <state>
   done
 
   # (2b) pause re-surface recheck. A declared wait is waiting, not wedged (fm-classify-lib.sh's
-  # status_is_paused_or_captain_held owns which declarations qualify), so it is
+  # status_is_paused_or_captain_held owns which declarations qualify: an external-wait
+  # pause, a verified captain-held transfer, or a worker-declared done-pending-verify), so it is
   # rechecked on a much longer cadence than a wedge (PAUSE_RESURFACE_SECS) and never
-  # escalated as one - but it MUST re-surface, so neither a forgotten pause nor a
-  # forgotten captain hold can rot invisibly. Past the window: gone -> drop; still
+  # escalated as one - but it MUST re-surface, so neither a forgotten pause, a
+  # forgotten captain hold, nor a forgotten done-pending-verify can rot invisibly.
+  # Past the window: gone -> drop; still
   # declaring the wait -> escalate a recheck digest and reset the marker so the window
   # repeats. The digest names WHICH human the wait is on, because the captain is the
-  # one reading it: an external dependency for a paused: declaration, and the captain
-  # themself for a verified hold transfer.
+  # one reading it: an external dependency for a paused: declaration, the captain
+  # themself for a verified hold transfer, and firstmate/captain verification for
+  # a done-pending-verify declaration.
   # Pane busy state does NOT end the wait. A declared wait can legitimately hold a
   # pane busy - a worker parked on a long foreground call it keeps live for as long
   # as the wait lasts - so reading busy as "the crew resumed" retires the window of
@@ -1117,6 +1128,10 @@ housekeeping() {  # <state>
         last=$(last_status_line "$state/$task.status")
         if [ -n "$last" ] && status_is_captain_held "$last"; then
           if escalate_add "$state" "captain-held ${age}s (awaiting the captain, answer the held decision or release the hold): $win"; then
+            _now > "$marker"
+          fi
+        elif [ -n "$last" ] && status_is_done_pending_verify "$last"; then
+          if escalate_add "$state" "done-pending-verify ${age}s (awaiting verification, recheck whether the delivered work still waits): $win"; then
             _now > "$marker"
           fi
         elif [ -n "$last" ] && status_is_paused "$last"; then

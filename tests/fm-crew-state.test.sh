@@ -1417,6 +1417,28 @@ test_no_run_idle_pane_uses_log() {
   pass "no run + idle pane uses the status-log verb"
 }
 
+# (g2) no run + idle pane + a done-pending-verify log -> parked. The
+# worker-declared done-awaiting-verification verb names an expected idle: a
+# delivered-but-not-yet-confirmed task waiting on firstmate/captain verification,
+# exactly like a crew parked at a gate. It must never read as unknown, which is
+# what left the stale path unable to tell parked from hung before this fix.
+test_no_run_idle_pane_done_pending_verify_is_parked() {
+  reset_fakes
+  local d; d=$(new_case idle-done-pending)
+  make_repo_on_branch "$d/wt" fm/feat-dpv
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-dpv.meta" "window=fm:fm-feat-dpv" "worktree=$d/wt" "kind=ship" "harness=claude"
+  printf 'done-pending-verify: PR offen - CI gruen, KEIN Merge (captain verifies)\n' > "$d/state/feat-dpv.status"
+  FM_FAKE_AXI_STATUS=""
+  FM_FAKE_BUSY=0
+  arm_idle_record "$d/state" feat-dpv
+  local out; out=$(run_crew_state "$d" feat-dpv)
+  assert_contains "$out" "state: parked" "done-pending-verify log -> parked"
+  assert_contains "$out" "source: status-log" "idle pane -> status-log source"
+  assert_not_contains "$out" "state: unknown" "a done-pending-verify log read as unknown"
+  pass "no run + idle pane + done-pending-verify log reports parked"
+}
+
 test_no_run_idle_pane_uses_keyed_log() {
   reset_fakes
   local d; d=$(new_case keyed-idle)
@@ -2276,6 +2298,7 @@ test_no_run_herdr_husk_dead_still_reads_gone
 test_no_run_herdr_idle_agent_status_outranked_by_record
 test_no_run_herdr_idle_agent_status_and_idle_record_stays_idle
 test_no_run_idle_pane_uses_log
+test_no_run_idle_pane_done_pending_verify_is_parked
 test_no_run_idle_pane_uses_keyed_log
 test_no_run_idle_pane_paused
 test_no_run_idle_pane_custom_paused_verb

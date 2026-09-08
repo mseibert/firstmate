@@ -111,7 +111,8 @@ expects exp-empty "" yes
 expects exp-done "done: PR https://github.com/example/repo/pull/1" no
 expects exp-failed "failed: validation went red" no
 expects exp-held "captain-held [key=route]: tracked by task-decision-route" no
-pass "dead-worker: paused, working, needs-decision and empty status still expect a live worker; done, failed and captain-held do not"
+expects exp-dpv "done-pending-verify: delivered, awaiting verification" no
+pass "dead-worker: paused, working, needs-decision and empty status still expect a live worker; done, failed, captain-held and done-pending-verify do not"
 
 # --- OOM evidence: the wake reason must name the cause when the kernel log does
 
@@ -246,6 +247,21 @@ printf 'done: PR https://github.com/example/repo/pull/1\n' > "$STATE_DIR/dw-done
 ) && fail "a task that reported done must never escalate as a dead worker"
 [ "$(wake_count)" = 0 ] || fail "a done task must not wake"
 pass "dead-worker: a task that reported done is not expected to hold a worker"
+
+# A done-pending-verify worker parks without an agent BY DESIGN (the expected
+# parked state of a delivered-but-unconfirmed task), so a dead endpoint on an
+# idle machine must never escalate it as a dead worker - exactly like done:.
+reset_state
+mk_meta dw-dpv "tmux:win-dpv"
+backdate dw-dpv
+printf 'done-pending-verify: PR offen - CI gruen, KEIN Merge (captain verifies)\n' > "$STATE_DIR/dw-dpv.status"
+(
+  fm_backend_agent_alive() { printf 'dead'; }
+  fm_dead_worker_reality_check "tmux:win-dpv" dw-dpv "$(window_key "tmux:win-dpv")" ship
+) && fail "a done-pending-verify worker must never escalate as a dead worker (its agent exiting is expected)"
+[ "$(wake_count)" = 0 ] || fail "a done-pending-verify worker must not wake: $(cat "$WAKE_LOG")"
+[ ! -e "$STATE_DIR/.dead-worker-tmux_win-dpv" ] || fail "a done-pending-verify worker must leave no dead-worker marker"
+pass "dead-worker: a done-pending-verify worker is not a dead worker (expected parked state)"
 
 reset_state
 mk_meta dw-unknown "tmux:win-unknown"

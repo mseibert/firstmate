@@ -443,6 +443,38 @@ test_status_is_paused_classifier() {
   pass "status_is_paused: only the leading paused verb matches, paused is not captain-relevant, and the two declared-wait verbs stay separable"
 }
 
+# status_is_done_pending_verify: the worker-declared done-awaiting-verification
+# verb. A crew that finished its work and is waiting on firstmate/captain
+# verification is deliberately parked, so the stale path must absorb its idle
+# pane instead of wedge-escalating it. Matches only the verb before the first
+# colon, stays OUT of the captain-relevant set (the verification wait is not new
+# work to keep surfacing), and joins the bounded-idle family so both supervisors
+# recheck it on the long PAUSE_RESURFACE_SECS cadence instead of as a wedge.
+test_status_is_done_pending_verify_classifier() {
+  status_is_done_pending_verify 'done-pending-verify: PR ready for review' \
+    || fail "done-pending-verify verb not recognized"
+  status_is_done_pending_verify '  done-pending-verify:   spaced note' \
+    || fail "leading-space done-pending-verify verb not recognized"
+  status_is_done_pending_verify 'paused: holding until the pending verify clears' \
+    && fail "a paused line mentioning the phrase false-matched"
+  status_is_done_pending_verify 'working: done-pending-verify appears in prose' \
+    && fail "a working line mentioning the phrase false-matched"
+  status_is_done_pending_verify 'done: shipped' && fail "done classified as done-pending-verify"
+  status_is_done_pending_verify '' && fail "empty line classified as done-pending-verify"
+  # The verification wait is an expected idle, not work to keep surfacing, so it
+  # must NOT be captain-relevant: making it so would re-fire it on every new pane
+  # hash and on every heartbeat scan.
+  status_is_captain_relevant 'done-pending-verify: PR offen - CI gruen' \
+    && fail "done-pending-verify is captain-relevant (should not be)"
+  status_is_captain_relevant 'done-pending-verify: tests pass, ready to review' \
+    && fail "a done-pending-verify prose token made the line captain-relevant"
+  status_is_paused_or_captain_held 'done-pending-verify: PR ready' \
+    || fail "done-pending-verify not recognized by the bounded-idle classifier"
+  status_is_paused_or_captain_held 'working: still going' \
+    && fail "a working line joined the bounded-idle classifier"
+  pass "status_is_done_pending_verify: only the leading verb matches, it is not captain-relevant, and it joins the bounded-idle family"
+}
+
 # crew_absorb_class: the single fm-crew-state.sh read that returns BOTH absorb
 # reasons - working (active run/busy pane), paused (declared external wait), or none
 # (surface it) - so the watcher's stale path gets both for one bounded call.
@@ -460,6 +492,15 @@ test_crew_absorb_class_classifier() {
   [ "$(crew_absorb_class a)" = paused ] || fail "declared pause not classed paused"
   crew_is_paused a || fail "crew_is_paused did not recognize a paused verdict"
   ! crew_is_provably_working a || fail "a paused crew was treated as provably working"
+  # An authoritative parked state - a run parked at a gate, or a
+  # done-pending-verify log read as parked - is the same expected idle: it must
+  # take the declared-wait absorb class so the stale path never wedge-escalates it.
+  FM_FAKE_CREW_STATE='state: parked · source: run-step · parked at review'
+  [ "$(crew_absorb_class a)" = paused ] || fail "parked run not classed paused"
+  crew_is_paused a || fail "crew_is_paused did not recognize a parked verdict"
+  ! crew_is_provably_working a || fail "a parked crew was treated as provably working"
+  FM_FAKE_CREW_STATE='state: parked · source: status-log · done-pending-verify'
+  [ "$(crew_absorb_class a)" = paused ] || fail "a done-pending-verify log read as parked was not classed paused"
   FM_FAKE_CREW_STATE='state: working · source: status-log · working: compiling'
   [ "$(crew_absorb_class a)" = none ] || fail "stale working: status-log classed absorbable"
   FM_FAKE_CREW_STATE='state: unknown · source: none · worktree gone'
@@ -2037,6 +2078,145 @@ test_nonterminal_stale_paused_absorbed_then_resurfaced() {
   FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" 2>/dev/null || fail "drain after the paused re-surface failed"
   grep "$(printf '\tstale\t')" "$drain_out" | grep -F "$window" >/dev/null || fail "paused re-surface was not queued"
   pass "a declared pause is absorbed on first sight, then re-surfaced as a recheck past the threshold, never wedge-escalated"
+}
+
+# --- non-terminal stale, worker DECLARED done-pending-verify: absorbed, re-surfaced on a long
+#     cadence, never wedge-escalated ------------------------------------------
+# The captain-reported fleet case: a worker that delivered its work writes
+# `done-pending-verify:` and parks on an idle bare shell (no agent, pane at the
+# prompt - the EXPECTED parked state). The watcher cannot tell parked from hung
+# from the pane, so the distinction must come from the TASK state: the
+# done-pending-verify status verb is an expected idle, admitted to the bounded
+# declared-wait cadence exactly like paused:. Before this fix each new pane hash
+# re-surfaced it and the same-hash wedge timer escalated it as a possible wedge
+# every STALE_ESCALATE_SECS for the whole verification wait.
+test_done_pending_verify_stale_absorbed_then_resurfaced() {
+  local dir state fakebin out drain_out capture_file window key pane_hash sig pid back statusf
+  dir=$(make_case nonterminal-stale-done-pending); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; drain_out="$dir/drain.out"; capture_file="$dir/pane.txt"
+  window="test:fm-delivered"
+  printf 'idle bare shell after delivery' > "$capture_file"
+  printf 'window=%s\nkind=ship\nharness=grok\nbackend=tmux\n' "$window" > "$state/delivered.meta"
+  statusf="$state/delivered.status"
+  # The worker's own done-awaiting-verification declaration (not captain-relevant),
+  # .seen-* primed so the signal scan does not pre-empt the stale path.
+  printf 'done-pending-verify: PR offen - CI gruen, KEIN Merge (captain verifies)\n' > "$statusf"
+  sig=$(seen_sig "$statusf"); printf '%s' "$sig" > "$state/.seen-delivered_status"
+  key=$(printf '%s' "$window" | tr ':/.' '___')
+  pane_hash=$(hash_text "idle bare shell after delivery")
+  printf '%s' "$pane_hash" > "$state/.hash-$key"
+  printf '1\n' > "$state/.count-$key"
+  # The authoritative read agrees: fm-crew-state maps the done-pending-verify log
+  # to the parked state, and the pane holds only a bare shell (agent dead).
+  export FM_FAKE_CREW_STATE='state: parked · source: status-log · done-pending-verify'
+
+  # Phase A: a fresh done-pending-verify (status file just written) under a high
+  # re-surface threshold is absorbed - no wake, no wedge timer, no queue entry.
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_FAKE_TMUX_CURRENT_COMMAND=zsh \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_PAUSE_RESURFACE_SECS=999 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  if ! wait_poll_cycle "$state" "$pid"; then
+    reap "$pid"; fail "watcher exited for a fresh done-pending-verify (should absorb): $(cat "$out")"
+  fi
+  [ ! -s "$out" ] || fail "fresh done-pending-verify stale printed a wake reason during absorb"
+  [ ! -s "$state/.wake-queue" ] || fail "fresh done-pending-verify stale enqueued a wake during absorb"
+  [ "$(cat "$state/.stale-$key" 2>/dev/null || true)" = "$pane_hash" ] || fail "stale suppressor not advanced on done-pending-verify absorb"
+  [ -e "$state/.paused-$key" ] || fail "paused flag not recorded on done-pending-verify absorb"
+  [ ! -e "$state/.stale-since-$key" ] || fail "a done-pending-verify absorb must not start the wedge timer"
+  reap "$pid"
+  ack_stopped_cycle "$state" || fail "could not acknowledge the intentional done-pending-verify phase-A stop"
+
+  # Phase B: age the status file past the (now normal) threshold and confirm the
+  # bounded recheck re-surfaces as an awaiting-verification recheck - never a
+  # possible wedge, exactly once per window.
+  back=$(( $(date +%s) - 500 ))
+  if [ "$(uname)" = Darwin ]; then touch -mt "$(date -r "$back" '+%Y%m%d%H%M.%S')" "$statusf"
+  else touch -m -d "@$back" "$statusf"; fi
+  sig=$(seen_sig "$statusf"); printf '%s' "$sig" > "$state/.seen-delivered_status"
+  : > "$out"
+  printf 'idle bare shell after delivery (token 2)' > "$capture_file"
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_FAKE_TMUX_CURRENT_COMMAND=zsh \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_PAUSE_RESURFACE_SECS=240 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  wait_for_exit "$pid" 100 || fail "watcher did not re-surface a done-pending-verify wait past the threshold"
+  grep -F "stale: $window" "$out" >/dev/null || fail "re-surface did not print a stale wake"
+  grep -F "awaiting verification" "$out" >/dev/null || fail "re-surface was not labeled a done-pending-verify/awaiting-verification recheck"
+  grep -F "possible wedge" "$out" >/dev/null && fail "a done-pending-verify wait was mislabeled a possible wedge"
+  [ -e "$state/.paused-resurfaced-$key" ] || fail "the done-pending-verify re-surface throttle marker was not recorded"
+  [ ! -e "$state/.stale-since-$key" ] || fail "a done-pending-verify re-surface must not use the wedge timer"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" 2>/dev/null || fail "drain after the done-pending-verify re-surface failed"
+  grep "$(printf '\tstale\t')" "$drain_out" | grep -F "$window" >/dev/null || fail "done-pending-verify re-surface was not queued"
+  pass "a done-pending-verify wait is absorbed on first sight, then re-surfaced as a verification recheck past the threshold, never wedge-escalated"
+}
+
+# --- non-terminal stale, AUTHORITATIVE parked current state: absorbed ---------
+# A crew whose no-mistakes run is parked at a gate (awaiting_approval/fix_review)
+# is the other expected-parked case. The run-step says parked even though the
+# status log's last line may still be an ordinary `working:` (the sparse-reporting
+# contract). The task state decides: an authoritative parked current state is
+# admitted to the bounded cadence, so the idle pane is absorbed instead of being
+# wedge-escalated on the same schedule a genuinely hung worker would hit. A hung
+# worker still reports unknown/none from fm-crew-state.sh and surfaces at once
+# (test_nonterminal_stale_not_working_surfaced pins that unchanged contract).
+test_authoritative_parked_stale_absorbed() {
+  local dir state fakebin out capture_file statusf window key pane_hash sig pid back
+  dir=$(make_case parked-stale-runstep); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; capture_file="$dir/pane.txt"; statusf="$state/gated.status"
+  window="test:fm-gated"
+  printf 'idle prompt at the gate' > "$capture_file"
+  printf 'window=%s\nkind=ship\nharness=grok\nbackend=tmux\n' "$window" > "$state/gated.meta"
+  # Ordinary last line - nothing declares the wait, so only the authoritative
+  # parked run-step can carry it. .seen-* primed so the signal scan stays quiet.
+  printf 'working: waiting on the review gate\n' > "$statusf"
+  sig=$(seen_sig "$statusf"); printf '%s' "$sig" > "$state/.seen-gated_status"
+  key=$(printf '%s' "$window" | tr ':/.' '___')
+  pane_hash=$(hash_text "idle prompt at the gate")
+  printf '%s' "$pane_hash" > "$state/.hash-$key"
+  printf '1\n' > "$state/.count-$key"
+  # The run is parked at a gate (awaiting approval/fix-review), agent gone.
+  export FM_FAKE_CREW_STATE='state: parked · source: run-step · parked at review'
+
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_FAKE_TMUX_CURRENT_COMMAND=zsh \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_PAUSE_RESURFACE_SECS=999 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  if ! wait_poll_cycle "$state" "$pid"; then
+    reap "$pid"; fail "watcher exited for an authoritative parked stale (should absorb): $(cat "$out")"
+  fi
+  [ ! -s "$out" ] || fail "authoritative parked stale printed a wake reason during absorb"
+  [ ! -s "$state/.wake-queue" ] || fail "authoritative parked stale enqueued a wake during absorb"
+  [ "$(cat "$state/.stale-$key" 2>/dev/null || true)" = "$pane_hash" ] || fail "stale suppressor not advanced on parked absorb"
+  [ -e "$state/.paused-$key" ] || fail "paused flag not recorded on parked absorb"
+  [ ! -e "$state/.stale-since-$key" ] || fail "a parked absorb must not start the wedge timer"
+  reap "$pid"
+  ack_stopped_cycle "$state" || fail "could not acknowledge the intentional parked phase-A stop"
+
+  # Same idle pane, high wedge threshold, no status change: still absorbed after
+  # many polls - no stale wake ever fires for the parked worker.
+  back=$(( $(date +%s) - 500 ))
+  if [ "$(uname)" = Darwin ]; then touch -mt "$(date -r "$back" '+%Y%m%d%H%M.%S')" "$statusf"
+  else touch -m -d "@$back" "$statusf"; fi
+  sig=$(seen_sig "$statusf"); printf '%s' "$sig" > "$state/.seen-gated_status"
+  : > "$out"
+  : > "$state/.wake-queue"
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_FAKE_TMUX_CURRENT_COMMAND=zsh FM_STALE_ESCALATE_SECS=999 \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_PAUSE_RESURFACE_SECS=999 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  if ! wait_poll_cycle "$state" "$pid"; then
+    reap "$pid"; fail "watcher exited for a parked stale on a later poll (should keep absorbing): $(cat "$out")"
+  fi
+  [ ! -s "$out" ] || fail "a parked stale fired a wake on a later unchanged poll"
+  [ ! -s "$state/.wake-queue" ] || fail "a parked stale enqueued a wake on a later unchanged poll"
+  reap "$pid"
+  ack_stopped_cycle "$state" || fail "could not acknowledge the intentional parked phase-B stop"
+  pass "an authoritative parked current state is absorbed and never stale-wakes; the wedge schedule stays for genuinely hung crews"
 }
 
 # A captain-held crew can leave a stable backend endpoint after its agent exits.
@@ -4110,6 +4290,7 @@ test_stale_is_terminal_classifier
 test_classifier_primitives
 test_crew_is_provably_working_classifier
 test_status_is_paused_classifier
+test_status_is_done_pending_verify_classifier
 test_crew_absorb_class_classifier
 test_crew_worktree_written_since_classifier
 test_empty_write_prune_widens_the_probe
@@ -4170,6 +4351,8 @@ test_afk_busy_declared_pause_hands_off_plain_stale
 test_afk_busy_declared_pause_ticking_pane_hands_off_once
 test_nonterminal_stale_not_working_surfaced
 test_nonterminal_stale_paused_absorbed_then_resurfaced
+test_done_pending_verify_stale_absorbed_then_resurfaced
+test_authoritative_parked_stale_absorbed
 test_exited_declared_pause_is_bounded_but_live_gate_surfaces
 test_absorbed_replacement_wait_does_not_inherit_the_old_throttle
 test_live_declared_wait_churn_honors_the_resurface_throttle

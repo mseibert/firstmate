@@ -162,19 +162,23 @@ log_last_line() {
 # the deliberate-external-wait verb (fm-classify-lib.sh's FM_CLASSIFY_PAUSED_VERB):
 # a crew with no active run and an idle pane that declared a known external wait
 # reports `paused` distinctly, so a supervisor reading this sees a declared pause
-# and its reason rather than a wedge-suspect idle.
+# and its reason rather than a wedge-suspect idle. `done-pending-verify` (the
+# worker-declared done-awaiting-verification verb) maps to `parked`: a crew that
+# finished its work and is waiting on firstmate/captain verification is parked,
+# exactly like a crew parked at a gate - an expected idle, never a wedge.
 map_log_state() {  # <line>
   if status_is_paused "$1"; then
     echo paused
     return
   fi
   case "$(status_line_verb "$1")" in
-    working)        echo working ;;
-    needs-decision) echo parked ;;
-    blocked)        echo blocked ;;
-    done)           echo "done" ;;
-    failed)         echo failed ;;
-    *)              echo unknown ;;
+    working)             echo working ;;
+    needs-decision)      echo parked ;;
+    done-pending-verify) echo parked ;;
+    blocked)             echo blocked ;;
+    done)                echo "done" ;;
+    failed)              echo failed ;;
+    *)                   echo unknown ;;
   esac
 }
 
