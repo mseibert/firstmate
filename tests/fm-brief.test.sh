@@ -413,6 +413,10 @@ test_verdict_head_ordering_in_verdict_modes() {
       "$mode DOD must freeze the branch after the verdict request"
     assert_grep "the verdict's timestamp is newer than the branch head it must cover" "$brief" \
       "$mode DOD must require the verdict timestamp to be newer than the head"
+    assert_grep "updated_at des crabd-Tracking-Kommentars" "$brief" \
+      "$mode DOD must teach the Forgejo updated_at verdict timestamp rule"
+    assert_grep "Auf GitHub ist es umgekehrt" "$brief" \
+      "$mode DOD must note that GitHub counts the newest comment verdict instead"
     assert_grep "Before every verdict request, check the PR's target base first" "$brief" \
       "$mode DOD must check the PR target base before every verdict request"
     assert_grep "it must be the project's intended integration branch, never the default branch" "$brief" \
