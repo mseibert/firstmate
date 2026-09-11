@@ -21,6 +21,8 @@
 #   - orphan status logs whose task meta has already disappeared
 #   - per-task endpoint-liveness lines for a live and a dead recorded target,
 #     tmux and herdr both
+#   - the bounded read-only backlog read-check section, including a stale
+#     In-flight row with a gone endpoint
 #   - composition: the script invokes the real fm-lock.sh/fm-bootstrap.sh/
 #     fm-wake-drain.sh (their real, distinctive output appears verbatim), it
 #     does not reimplement their logic
@@ -292,9 +294,11 @@ SH
 
 # make_fake_tmux <fakebin> <live-target>: display-message succeeds only for
 # the given "session:window" target - the exact primitive
-# fm_backend_target_exists uses for a tmux endpoint liveness read.
+# fm_backend_target_exists uses for a tmux endpoint liveness read - and
+# list-windows reports the live target's window name so the recovery-grade
+# classifier (fm_backend_agent_state) can tell a live window from a gone one.
 make_fake_tmux() {
-  local fakebin=$1 live=$2
+  local fakebin=$1 live=$2 window=${2#*:}
   cat > "$fakebin/tmux" <<SH
 #!/usr/bin/env bash
 set -u
@@ -308,6 +312,11 @@ case "\${1:-}" in
     done
     [ "\$target" = "$live" ] && { printf '%%1\n'; exit 0; }
     exit 1
+    ;;
+  list-windows)
+    printf 'main\n'
+    [ -n "$window" ] && printf '%s\n' "$window"
+    exit 0
     ;;
 esac
 exit 1
@@ -1360,6 +1369,36 @@ EOF
   assert_contains "$out" "endpoint: dead (backend=herdr window=sess:p-dead)" "dead herdr endpoint not reported dead"
 
   pass "herdr endpoint liveness is reported per task: alive for a live pane, dead for a gone one"
+}
+
+# The digest must surface a terminal In-flight row whose endpoint is gone, so a
+# stale row is visible at session start instead of only when a human re-reads
+# the backlog.
+test_backlog_readcheck_digest_section() {
+  local rec root home fakebin out
+  rec=$(new_world readcheck)
+  IFS='|' read -r root home fakebin <<EOF
+$rec
+EOF
+  make_fake_toolchain "$fakebin"
+  make_fake_ps_claude "$fakebin"
+  make_fake_tmux "$fakebin" "fm-sess:live-window"
+
+  {
+    printf '# Backlog\n\n## In flight\n'
+    printf -- '- [ ] stale-1 - test item\n'
+    printf '\n## Queued\n'
+  } > "$home/data/backlog.md"
+  printf 'window=fm-sess:dead-window\nkind=ship\n' > "$home/state/stale-1.meta"
+  printf 'done: PR https://example.invalid/x\n' > "$home/state/stale-1.status"
+
+  out=$(run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+  assert_contains "$out" "Backlog read-check (terminal In-flight rows and shared worktree slots)" \
+    "the fleet-state digest lost the backlog read-check section"
+  assert_contains "$out" "STALE_INFLIGHT: stale-1 (done)" \
+    "the digest did not surface the stale In-flight row"
+
+  pass "the session-start digest surfaces the read-only backlog read-check findings"
 }
 
 # --- composition: real scripts run, not reimplemented ------------------------
@@ -2650,6 +2689,7 @@ test_status_tail_line_cap
 test_orphan_status_logs_are_printed
 test_endpoint_liveness_tmux
 test_endpoint_liveness_herdr
+test_backlog_readcheck_digest_section
 test_composition_invokes_real_scripts
 test_branch_outcome_replay_respects_captain_barrier_and_lease_sweep
 test_non_pi_session_start_leaves_branch_state_untouched
