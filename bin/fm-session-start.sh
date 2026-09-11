@@ -45,7 +45,9 @@
 #                       represented by the two digests below.
 #   6. fleet digest   - a compact data/backlog.md identity/metadata listing,
 #                       every state/*.meta, a bounded state/*.status tail,
-#                       state/.afk, and a cheap per-task endpoint-liveness read:
+#                       state/.afk, a cheap per-task endpoint-liveness read,
+#                       and a bounded read-only backlog read-check
+#                       (bin/fm-backlog-readcheck.sh):
 #                       read-only, always runs.
 #   7. network checks - the result of the deferred network stage started back at
 #                       step 1, harvested WITHOUT waiting for it.
@@ -865,6 +867,13 @@ for meta in "$STATE"/*.meta; do
   fi
 done
 [ "$META_FOUND" -eq 1 ] || printf '(none)\n'
+
+subsection "Backlog read-check (terminal In-flight rows and shared worktree slots)"
+printf 'Read-only audit; the row transition stays firstmate decision. STALE_INFLIGHT = terminal worker with a gone endpoint; SHARED_SLOT = two terminal records on one worktree.\n'
+READCHECK=$(FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" FM_DATA_OVERRIDE="$DATA" \
+  "$SCRIPT_DIR/fm-backlog-readcheck.sh" --digest 2>/dev/null) || READCHECK=
+[ -n "$READCHECK" ] || READCHECK='(read-check unavailable)'
+printf '%s\n' "$READCHECK"
 
 subsection "Orphan status logs (state/*.status without matching .meta)"
 ORPHAN_STATUS_FOUND=0
