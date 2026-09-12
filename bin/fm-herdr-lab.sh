@@ -23,7 +23,22 @@
 # destructive call.
 # Provision records the running default session as a fleet-state tripwire and
 # teardown requires that record to be identical afterward.
+# A cancelled provision signals only the process whose start identity was
+# recorded when it was launched, so a recycled pid is never signalled.
 set -u
+
+FM_HERDR_LAB_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Load the shared pid-identity owner only when a cancellation actually needs it.
+# Sourcing the wake library initializes its state paths in the calling shell, and
+# a caller that sources this helper first and then re-sources the wake library
+# under a different state would keep the lab-time paths; bin/fm-afk-return.sh
+# loads it lazily for the same reason.
+fm_herdr_lab_require_pid_identity() {
+  command -v fm_pid_start_matches >/dev/null 2>&1 && return 0
+  # shellcheck source=bin/fm-wake-lib.sh
+  . "$FM_HERDR_LAB_SCRIPT_DIR/fm-wake-lib.sh"
+}
 
 fm_herdr_lab_error() {
   echo "fm-herdr-lab: $*" >&2
@@ -153,24 +168,29 @@ fm_herdr_lab_cli() { # <session> <herdr arguments...>
   fm_herdr_lab_raw "$name" "$@"
 }
 
-fm_herdr_lab_cancel_provision() { # <pid>
-  local pid=$1 attempt=0
-  if kill -0 "$pid" 2>/dev/null; then
+fm_herdr_lab_cancel_provision() { # <pid> <start-identity>
+  local pid=$1 start=${2:-} attempt=0
+  fm_herdr_lab_require_pid_identity || return 1
+  # Only the proven launch is signalled and reaped. Waiting outside this branch
+  # would block forever on a live child whose identity could not be proven,
+  # while a recycled pid is never this shell's child and needs no wait.
+  if fm_pid_start_matches "$pid" "$start"; then
     kill -TERM "$pid" 2>/dev/null || true
-    while kill -0 "$pid" 2>/dev/null && [ "$attempt" -lt 10 ]; do
+    while fm_pid_start_matches "$pid" "$start" && [ "$attempt" -lt 10 ]; do
       sleep 0.1
       attempt=$((attempt + 1))
     done
-    if kill -0 "$pid" 2>/dev/null; then
+    if fm_pid_start_matches "$pid" "$start"; then
       kill -KILL "$pid" 2>/dev/null || true
     fi
+    wait "$pid" 2>/dev/null || true
   fi
-  wait "$pid" 2>/dev/null || true
 }
 
 fm_herdr_lab_provision() { # <session>
-  local name=$1 sessions tripwire running attempt server_pid max_attempts timeout_seconds
+  local name=$1 sessions tripwire running attempt server_pid server_start max_attempts timeout_seconds
   fm_herdr_lab_validate_name "$name" || return 1
+  fm_herdr_lab_require_pid_identity || return 1
   command -v herdr >/dev/null 2>&1 || { fm_herdr_lab_error "herdr is required"; return 1; }
   command -v jq >/dev/null 2>&1 || { fm_herdr_lab_error "jq is required"; return 1; }
 
@@ -197,6 +217,9 @@ fm_herdr_lab_provision() { # <session>
   fi
   fm_herdr_lab_raw "$name" server >/dev/null 2>&1 &
   server_pid=$!
+  # Recorded before the first poll: the pid alone stops identifying this launch
+  # once a pid-space wrap can hand the same number to another process.
+  server_start=$(fm_pid_start "$server_pid" 2>/dev/null || true)
   attempt=0
   max_attempts=300
   timeout_seconds=60
@@ -204,7 +227,7 @@ fm_herdr_lab_provision() { # <session>
     running=$(fm_herdr_lab_cli "$name" status --json 2>/dev/null | jq -r '.server.running // false' 2>/dev/null) || running=false
     if [ "$running" = true ]; then
       fm_herdr_lab_refuse_if_default "$name" || {
-        fm_herdr_lab_cancel_provision "$server_pid"
+        fm_herdr_lab_cancel_provision "$server_pid" "$server_start"
         return 1
       }
       return 0
@@ -212,7 +235,7 @@ fm_herdr_lab_provision() { # <session>
     sleep 0.2
     attempt=$((attempt + 1))
   done
-  fm_herdr_lab_cancel_provision "$server_pid"
+  fm_herdr_lab_cancel_provision "$server_pid" "$server_start"
   fm_herdr_lab_error "lab session '$name' did not report running within $timeout_seconds seconds"
   return 1
 }

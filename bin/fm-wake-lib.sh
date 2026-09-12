@@ -90,6 +90,78 @@ fm_pid_identity() {
   printf '%s\n' "$out" | sed 's/^[[:space:]]*//'
 }
 
+# fm_pid_start <pid>
+# Print a start-time identity for a live process, or fail when it cannot be
+# read. Field 22 of /proc/<pid>/stat is clock ticks since boot, so it survives
+# the wall-clock steps that re-render ps lstart, and unlike a command line it
+# is unchanged by an exec; ps -o lstart= is the portable fallback where no
+# Linux-compatible /proc is available. A caller that records this value at
+# process start can later tell a surviving process from a recycled pid with the
+# same number, which is the whole point: after a pid-space wrap kill -0 alone
+# says nothing about identity.
+fm_pid_start() {
+  local pid=$1 proc_root stat_line starttime out
+  local -a stat_fields
+  case "$pid" in
+    ''|*[!0-9]*) return 1 ;;
+  esac
+  proc_root=${FM_PROC_ROOT_OVERRIDE:-/proc}
+  if [ -r "$proc_root/$pid/stat" ]; then
+    stat_line=$(cat "$proc_root/$pid/stat" 2>/dev/null) || return 1
+    read -r -a stat_fields <<< "${stat_line##*)}"
+    [ "${#stat_fields[@]}" -ge 20 ] || return 1
+    starttime=${stat_fields[19]}
+    case "$starttime" in
+      ''|*[!0-9]*) return 1 ;;
+    esac
+    printf 'starttime=%s\n' "$starttime"
+    return 0
+  fi
+  # Pin LC_ALL=C for the same locale-invariance reason as fm_pid_identity,
+  # and COLUMNS the way fm_pending_reply_pid_identity does so a BSD ps cannot
+  # truncate the start time.
+  out=$(COLUMNS=10000 LC_ALL=C ps -p "$pid" -o lstart= 2>/dev/null) || return 1
+  out=$(printf '%s' "$out" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
+  [ -n "$out" ] || return 1
+  printf 'lstart=%s\n' "$out"
+}
+
+# fm_pid_start_matches <pid> <recorded-start>
+# True only when the live process with <pid> still carries exactly the recorded
+# start-time identity. A recycled pid, a dead pid, an unreadable identity, and
+# an empty recorded value all answer false, so callers signal or reclaim only on
+# a proven match.
+fm_pid_start_matches() {
+  local current
+  [ -n "${2:-}" ] || return 1
+  current=$(fm_pid_start "$1") || return 1
+  [ "$current" = "$2" ]
+}
+
+# fm_pid_cmdline <pid>
+# Print a process's command line as one space-separated line, or fail when it
+# cannot be read. Linux-compatible /proc is preferred; ps -o command= is the
+# portable fallback. Callers must treat failure as "not identifiable" and never
+# as a positive identity.
+fm_pid_cmdline() {
+  local pid=$1 proc_root out
+  case "$pid" in
+    ''|*[!0-9]*) return 1 ;;
+  esac
+  proc_root=${FM_PROC_ROOT_OVERRIDE:-/proc}
+  if [ -r "$proc_root/$pid/cmdline" ]; then
+    out=$(tr '\0' ' ' < "$proc_root/$pid/cmdline" 2>/dev/null) || return 1
+    [ -n "${out// /}" ] || return 1
+    printf '%s\n' "$out"
+    return 0
+  fi
+  # COLUMNS keeps a BSD ps from truncating the command line before the token a
+  # caller matches on, the same way fm_pending_reply_pid_identity reads it.
+  out=$(COLUMNS=10000 LC_ALL=C ps -p "$pid" -o command= 2>/dev/null) || return 1
+  [ -n "${out// /}" ] || return 1
+  printf '%s\n' "$out"
+}
+
 fm_path_mtime() {
   if [ "$_FM_UNAME" = Darwin ]; then
     stat -f %m "$1" 2>/dev/null

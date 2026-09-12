@@ -1039,6 +1039,83 @@ test_proc_pid_identity_ignores_wall_clock_and_detects_pid_reuse() {
   pass "/proc process identity detects pid reuse"
 }
 
+test_pid_start_identity_rejects_a_recycled_pid() {
+  local dir state proc_root pid recorded rc
+  dir=$(make_case pid-start-identity)
+  state="$dir/state"
+  proc_root="$dir/proc"
+  pid=4242
+  mkdir -p "$proc_root"
+  write_fake_proc_identity "$proc_root" "$pid" 987654
+
+  recorded=$(FM_PROC_ROOT_OVERRIDE="$proc_root" FM_STATE_OVERRIDE="$state" bash -c '. "$1"; fm_pid_start "$2"' _ "$LIB" "$pid") \
+    || fail "could not read the fake process start identity"
+  [ "$recorded" = 'starttime=987654' ] \
+    || fail "start identity did not carry /proc field 22 ('$recorded')"
+  FM_PROC_ROOT_OVERRIDE="$proc_root" FM_STATE_OVERRIDE="$state" bash -c \
+    '. "$1"; fm_pid_start_matches "$2" "$3"' _ "$LIB" "$pid" "$recorded" \
+    || fail "a live pid with its recorded start time was rejected"
+
+  # The pid counter wrapped and the same number now names another process: the
+  # recorded start time no longer matches, so it must count as dead.
+  write_fake_proc_identity "$proc_root" "$pid" 987655
+  rc=0
+  FM_PROC_ROOT_OVERRIDE="$proc_root" FM_STATE_OVERRIDE="$state" bash -c \
+    '. "$1"; fm_pid_start_matches "$2" "$3"' _ "$LIB" "$pid" "$recorded" || rc=$?
+  [ "$rc" -ne 0 ] || fail "a recycled pid with an older recorded start time was treated as the same process"
+
+  # No recorded identity and no readable process answer false, never a match.
+  rc=0
+  FM_PROC_ROOT_OVERRIDE="$proc_root" FM_STATE_OVERRIDE="$state" bash -c \
+    '. "$1"; fm_pid_start_matches "$2" ""' _ "$LIB" "$pid" || rc=$?
+  [ "$rc" -ne 0 ] || fail "an empty recorded start identity was treated as a match"
+  rc=0
+  FM_PROC_ROOT_OVERRIDE="$proc_root" FM_STATE_OVERRIDE="$state" bash -c \
+    '. "$1"; fm_pid_start_matches "$2" "starttime=987654"' _ "$LIB" 99999999 || rc=$?
+  [ "$rc" -ne 0 ] || fail "an unreadable process was treated as a match"
+  pass "pid start identity rejects a recycled pid and accepts the recorded process"
+}
+
+test_pid_helpers_use_the_portable_ps_fallback() {
+  local dir pid fakebin no_proc fallback rc
+  dir=$(make_case pid-ps-fallback)
+  pid=4242
+  no_proc="$dir/no-proc"
+  fakebin="$dir/fake-ps"
+  mkdir -p "$fakebin"
+  cat > "$fakebin/ps" <<'SH'
+#!/usr/bin/env bash
+case "$*" in
+  *'-o command='*) printf 'bash /path/fm-herdr-lab.sh provision\n' ;;
+  *) printf 'Mon Jul 28 20:00:00 2026\n' ;;
+esac
+SH
+  chmod +x "$fakebin/ps"
+
+  fallback=$(PATH="$fakebin:$PATH" FM_PROC_ROOT_OVERRIDE="$no_proc" bash -c '. "$1"; fm_pid_start "$2"' _ "$LIB" "$pid") \
+    || fail "the portable ps fallback produced no start identity"
+  [ "$fallback" = 'lstart=Mon Jul 28 20:00:00 2026' ] \
+    || fail "unexpected portable fallback start identity ('$fallback')"
+  PATH="$fakebin:$PATH" FM_PROC_ROOT_OVERRIDE="$no_proc" bash -c \
+    '. "$1"; fm_pid_start_matches "$2" "$3"' _ "$LIB" "$pid" "$fallback" \
+    || fail "the portable fallback identity did not match itself"
+  rc=0
+  PATH="$fakebin:$PATH" FM_PROC_ROOT_OVERRIDE="$no_proc" bash -c \
+    '. "$1"; fm_pid_start_matches "$2" "$3"' _ "$LIB" "$pid" 'lstart=Mon Jul 28 20:00:01 2026' || rc=$?
+  [ "$rc" -ne 0 ] || fail "the portable fallback accepted a different start time"
+  [ "$(PATH="$fakebin:$PATH" FM_PROC_ROOT_OVERRIDE="$no_proc" bash -c '. "$1"; fm_pid_cmdline "$2"' _ "$LIB" "$pid")" = 'bash /path/fm-herdr-lab.sh provision' ] \
+    || fail "the portable fallback did not read the command line"
+
+  # An unreadable command line must fail rather than report a positive identity.
+  mkdir -p "$dir/failing-ps"
+  printf '#!/usr/bin/env bash\nexit 1\n' > "$dir/failing-ps/ps"
+  chmod +x "$dir/failing-ps/ps"
+  rc=0
+  PATH="$dir/failing-ps:$PATH" FM_PROC_ROOT_OVERRIDE="$no_proc" bash -c '. "$1"; fm_pid_cmdline "$2"' _ "$LIB" "$pid" || rc=$?
+  [ "$rc" -ne 0 ] || fail "an unreadable command line was reported as readable"
+  pass "pid helpers use the portable ps fallback and refuse an unreadable command line"
+}
+
 test_stale_watch_reclaim_publishes_before_clear() {
   local dir state lockdir rc token
   dir=$(make_case stale-watch-publish-before-clear)
@@ -1105,6 +1182,8 @@ test_msys_pid_identity_uses_proc() {
 test_singleton_start
 test_pid_identity_is_locale_invariant
 test_proc_pid_identity_ignores_wall_clock_and_detects_pid_reuse
+test_pid_start_identity_rejects_a_recycled_pid
+test_pid_helpers_use_the_portable_ps_fallback
 test_msys_pid_identity_uses_proc
 test_stale_watch_lock_reclaimed
 test_stale_watch_reclaim_publishes_before_clear
