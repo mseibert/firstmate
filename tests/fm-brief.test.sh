@@ -440,6 +440,71 @@ test_verdict_head_ordering_in_verdict_modes() {
   pass "fm-brief.sh: direct-PR and no-mistakes DODs share the verdict-head ordering; local-only stays free of it"
 }
 
+# The captain's merge policy treats a PR body without a `## Five-lens gate`
+# section exactly like one with open findings, and a gate that never ran looks
+# exactly like one that found nothing. The direct-PR definition of done is the
+# only place a PR-opening worker is told to write that section, so the block,
+# the per-lens placeholder rows, the two-sided Result rule, the degradation
+# path, and the unclean-gate done line are pinned there.
+# no-mistakes opens its PR through the pipeline and local-only opens none, so
+# neither carries the requirement.
+test_five_lens_gate_in_direct_pr_dod() {
+  local home id brief mode lens
+  home="$TMP_ROOT/five-lens-home"
+  mkdir -p "$home/data"
+
+  id="brief-five-lens-dpr"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode direct-PR >/dev/null 2>&1
+  brief="$home/data/$id/brief.md"
+  assert_present "$brief" "direct-PR brief was not scaffolded"
+  assert_grep "The PR body must carry its own \`## Five-lens gate\` section with the result of every lens" "$brief" \
+    "direct-PR DOD must make the Five-lens gate section mandatory in the PR body"
+  assert_grep "a missing, incomplete, or unreported gate counts exactly like an open finding" "$brief" \
+    "direct-PR DOD must state why a missing or unreported gate is a hard stop"
+  assert_grep "each in its own fresh context (a subagent or a fresh session)" "$brief" \
+    "direct-PR DOD must require a fresh-context pass per lens without assuming one dispatch mechanism"
+  assert_grep "\`code-review\` (correctness), \`maintainability-review\` (rot, bandaids, speculative scaffolding), \`architecture-system-design-reviewer\` (structural fit and defended choices), \`design-decision-questioner\` (challenge the decisions), \`self-containment-review\` (context a repo reader cannot resolve)" "$brief" \
+    "direct-PR DOD must define all five lens foci in the emitted block"
+  assert_grep "| Lens | Ran | Findings | Fixed |" "$brief" \
+    "direct-PR DOD must carry the per-lens table header"
+  for lens in code-review maintainability-review architecture-system-design-reviewer design-decision-questioner self-containment-review; do
+    assert_grep "| $lens | <yes or no> | <n> | <n> |" "$brief" \
+      "direct-PR DOD must carry the $lens placeholder row"
+  done
+  assert_grep "replacing every placeholder with the real result" "$brief" \
+    "direct-PR DOD must say the placeholder rows are not the result"
+  assert_grep "\`Result: clean\` only when every \`Ran\` cell says \`yes\` and no finding remains open" "$brief" \
+    "direct-PR DOD must define clean as every lens ran and nothing is open"
+  assert_grep "\`Result: 1 finding open - see <lens>\`" "$brief" \
+    "direct-PR DOD must show the open-finding Result shape"
+  assert_grep "\`Result: 1 lens did not report - see <lens>\`" "$brief" \
+    "direct-PR DOD must show the not-reported Result shape"
+  assert_grep "a lens that could not run is retried once before it is recorded as not-run" "$brief" \
+    "direct-PR DOD must bound the retry before an honest not-run record"
+  assert_grep "up to three rounds (a round is one lens pass plus its fixes; a later round re-runs only the lenses a fix affects)" "$brief" \
+    "direct-PR DOD must define the round cap and its partial re-run scope"
+  assert_grep "re-run the lenses affected by any later change - a fix, or a rebase that changed the diff - so every pushed line has been gated" "$brief" \
+    "direct-PR DOD must re-gate every later change, including a rebase that changed the diff"
+  assert_grep "after the rebase and before the verdict request and freeze in the ordering above" "$brief" \
+    "direct-PR DOD must place the gate before the verdict request and the freeze"
+  assert_grep "\`done: PR {url} - five-lens gate: <what is not clean>\` instead of the plain done line" "$brief" \
+    "direct-PR DOD must surface an unclean gate in the done line"
+  assert_grep "so the open gate reaches firstmate with the ready signal" "$brief" \
+    "direct-PR DOD must not claim a consequence no firstmate path enforces"
+
+  for mode in no-mistakes local-only; do
+    id="brief-five-lens-$(printf '%s' "$mode" | tr '[:upper:]' '[:lower:]')"
+    FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode "$mode" >/dev/null 2>&1
+    brief="$home/data/$id/brief.md"
+    assert_present "$brief" "$mode brief was not scaffolded"
+    assert_no_grep "## Five-lens gate" "$brief" \
+      "$mode DOD must not require a PR-body section that mode never opens"
+    assert_no_grep "self-containment-review" "$brief" \
+      "$mode DOD must not carry the direct-PR-only lens list"
+  done
+  pass "fm-brief.sh: direct-PR DOD makes the Five-lens gate block mandatory in the PR body"
+}
+
 test_ask_user_escalation_format() {
   local home id brief mode other_id other_brief
   home="$TMP_ROOT/ask-user-home"
@@ -947,6 +1012,7 @@ test_delivery_flags_are_refused_where_they_do_not_apply
 test_faster_paths_use_configured_authority_without_stacked_review
 test_no_mistakes_dod_wording
 test_verdict_head_ordering_in_verdict_modes
+test_five_lens_gate_in_direct_pr_dod
 test_ask_user_escalation_format
 test_ship_project_memory_wording
 test_herdr_lab_contract_is_explicit_and_complete

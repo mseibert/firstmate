@@ -11,6 +11,12 @@
 # verdict covers the head, and every verdict request is preceded by a target-base
 # check and a mergeable check. local-only never requests a verdict and carries
 # no such block.
+# The direct-PR block additionally carries the five-lens gate requirement: the
+# PR body must hold a `## Five-lens gate` section with the result of every lens,
+# because the captain's merge policy treats a missing or unreported gate exactly
+# like an open finding, and the worker opening the PR is the only actor that can
+# write it. no-mistakes opens its PR through the pipeline and local-only opens
+# none, so only direct-PR carries that block.
 # fm_dod_block <no-mistakes|direct-PR|local-only> <task-id> prints the block on
 # stdout with no trailing blank line. The caller validates the mode; an unknown
 # mode is refused rather than silently rendered as the pipeline contract.
@@ -225,6 +231,37 @@ Correct a wrong base before requesting anything, then check that the branch is m
 EOF
 }
 
+# Shared five-lens gate requirement for the direct-PR definition of done. The
+# captain's merge policy treats a PR body without a `## Five-lens gate` section
+# exactly like one with open findings, and the block only counts when every
+# lens reports its own result. The one-line focus per lens keeps the requirement
+# self-contained for a worker whose harness has no lens skill of its own, and the
+# block tells the worker to surface an unclean gate in its done line so the
+# ready signal carries the open gate instead of hiding it behind a bare PR URL. Emitted with a trailing
+# blank line so callers can chain it into their definition-of-done heredocs.
+fm_five_lens_gate_block() {
+  cat <<'EOF'
+The PR body must carry its own `## Five-lens gate` section with the result of every lens, because a missing, incomplete, or unreported gate counts exactly like an open finding.
+Run the five lenses over the branch diff, each in its own fresh context (a subagent or a fresh session), and fix what they find: `code-review` (correctness), `maintainability-review` (rot, bandaids, speculative scaffolding), `architecture-system-design-reviewer` (structural fit and defended choices), `design-decision-questioner` (challenge the decisions), `self-containment-review` (context a repo reader cannot resolve).
+Record one row per lens in the PR body - whether it ran, how many findings it reported, how many you fixed - in this shape, replacing every placeholder with the real result:
+
+## Five-lens gate
+| Lens | Ran | Findings | Fixed |
+|---|---|---|---|
+| code-review | <yes or no> | <n> | <n> |
+| maintainability-review | <yes or no> | <n> | <n> |
+| architecture-system-design-reviewer | <yes or no> | <n> | <n> |
+| design-decision-questioner | <yes or no> | <n> | <n> |
+| self-containment-review | <yes or no> | <n> | <n> |
+
+End it with `Result: clean` only when every `Ran` cell says `yes` and no finding remains open; otherwise name what is not clean there, as `Result: 1 finding open - see <lens>` or `Result: 1 lens did not report - see <lens>`.
+Fix findings and re-run the lenses each fix affects, up to three rounds (a round is one lens pass plus its fixes; a later round re-runs only the lenses a fix affects); a lens that could not run is retried once before it is recorded as not-run.
+Run the gate on the branch content you are about to push, after the rebase and before the verdict request and freeze in the ordering above; re-run the lenses affected by any later change - a fix, or a rebase that changed the diff - so every pushed line has been gated.
+If the final result is not clean, append `done: PR {url} - five-lens gate: <what is not clean>` instead of the plain done line, so the open gate reaches firstmate with the ready signal.
+
+EOF
+}
+
 fm_dod_block() {  # <mode> <task-id>
   local mode=$1 id=$2
   case "$mode" in
@@ -235,6 +272,7 @@ Delivery contract: mode=direct-PR
 This task ships **direct-PR**: you raise the PR yourself, without the no-mistakes pipeline.
 EOF
       fm_verdict_ordering_block "when your task's instructions call for a review verdict, request it once the branch is pushed and the PR is open"
+      fm_five_lens_gate_block
       cat <<EOF
 The task is complete only when committed on your branch.
 When it is implemented and committed, push your branch and open a PR with \`gh-axi\`, then append \`done: PR {url}\` to the status file and stop.
