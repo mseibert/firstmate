@@ -28,8 +28,17 @@
 set -u
 
 FM_HERDR_LAB_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# shellcheck source=bin/fm-wake-lib.sh
-. "$FM_HERDR_LAB_SCRIPT_DIR/fm-wake-lib.sh"
+
+# Load the shared pid-identity owner only when a cancellation actually needs it.
+# Sourcing the wake library initializes its state paths in the calling shell, and
+# a caller that sources this helper first and then re-sources the wake library
+# under a different state would keep the lab-time paths; bin/fm-afk-return.sh
+# loads it lazily for the same reason.
+fm_herdr_lab_require_pid_identity() {
+  command -v fm_pid_start_matches >/dev/null 2>&1 && return 0
+  # shellcheck source=bin/fm-wake-lib.sh
+  . "$FM_HERDR_LAB_SCRIPT_DIR/fm-wake-lib.sh"
+}
 
 fm_herdr_lab_error() {
   echo "fm-herdr-lab: $*" >&2
@@ -161,6 +170,7 @@ fm_herdr_lab_cli() { # <session> <herdr arguments...>
 
 fm_herdr_lab_cancel_provision() { # <pid> <start-identity>
   local pid=$1 start=${2:-} attempt=0
+  fm_herdr_lab_require_pid_identity || return 1
   # Only the proven launch is signalled and reaped. Waiting outside this branch
   # would block forever on a live child whose identity could not be proven,
   # while a recycled pid is never this shell's child and needs no wait.
@@ -180,6 +190,7 @@ fm_herdr_lab_cancel_provision() { # <pid> <start-identity>
 fm_herdr_lab_provision() { # <session>
   local name=$1 sessions tripwire running attempt server_pid server_start max_attempts timeout_seconds
   fm_herdr_lab_validate_name "$name" || return 1
+  fm_herdr_lab_require_pid_identity || return 1
   command -v herdr >/dev/null 2>&1 || { fm_herdr_lab_error "herdr is required"; return 1; }
   command -v jq >/dev/null 2>&1 || { fm_herdr_lab_error "jq is required"; return 1; }
 
