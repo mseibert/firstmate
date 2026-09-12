@@ -322,6 +322,55 @@ assert_grep 'stale-lock-item' "$REMOTE/data/backlog.md" "stale-lock receipt lost
 assert_absent "$REMOTE/data/backlog.md.lock" "stale destination lock survived successful receipt"
 pass "receiver removes one proven dead stale lock and retries once"
 
+# A pid-space wrap leaves the recorded lock pid with an unrelated live process.
+# The lock is written only by a tasks-axi invocation, so a live pid whose command
+# line is not tasks-axi is provably not its owner; keeping the lock would block
+# every later receipt forever.
+write_backlog '- [ ] recycled-lock-item - remote recycled pid lock recovery (repo: alpha)'
+sleep 1000 &
+recycled_pid=$!
+printf '%s:abandoned:0:1\n' "$recycled_pid" > "$REMOTE/data/backlog.md.lock"
+if [ "$(uname 2>/dev/null)" = Darwin ]; then
+  touch -t 202001010000 "$REMOTE/data/backlog.md.lock"
+else
+  touch -d '2020-01-01 00:00:00' "$REMOTE/data/backlog.md.lock"
+fi
+handoff_env "$ROOT/bin/fm-backlog-handoff.sh" ios recycled-lock-item >/dev/null \
+  || fail "recycled-pid stale lock recovery did not retry receipt"
+assert_grep 'recycled-lock-item' "$REMOTE/data/backlog.md" "recycled-pid receipt lost the item"
+assert_absent "$REMOTE/data/backlog.md.lock" "recycled-pid destination lock survived successful receipt"
+kill "$recycled_pid" 2>/dev/null || true
+wait "$recycled_pid" 2>/dev/null || true
+pass "receiver removes a stale lock whose live pid is not a tasks-axi process"
+
+# The inverse: a live process that still looks like a tasks-axi invocation could
+# be the lock's owner, so the lock is kept and the receipt fails closed.
+write_backlog '- [ ] held-lock-item - live tasks-axi lock is preserved (repo: alpha)'
+bash -c 'exec -a tasks-axi sleep 1000' &
+held_pid=$!
+printf '%s:abandoned:0:1\n' "$held_pid" > "$REMOTE/data/backlog.md.lock"
+if [ "$(uname 2>/dev/null)" = Darwin ]; then
+  touch -t 202001010000 "$REMOTE/data/backlog.md.lock"
+else
+  touch -d '2020-01-01 00:00:00' "$REMOTE/data/backlog.md.lock"
+fi
+set +e
+handoff_env "$ROOT/bin/fm-backlog-handoff.sh" ios held-lock-item \
+  > "$TMP_ROOT/held-lock.out" 2>&1
+rc=$?
+set -e
+[ "$rc" -ne 0 ] || fail "handoff succeeded while a live tasks-axi lock was held"
+assert_present "$REMOTE/data/backlog.md.lock" "a live tasks-axi lock was removed"
+assert_no_grep 'held-lock-item' "$REMOTE/data/backlog.md" "a held lock still delivered its item"
+kill "$held_pid" 2>/dev/null || true
+wait "$held_pid" 2>/dev/null || true
+rm -f "$REMOTE/data/backlog.md.lock"
+handoff_env "$ROOT/bin/fm-backlog-handoff.sh" --resume-pending >/dev/null \
+  || fail "recovery after the live lock cleared failed"
+assert_grep 'held-lock-item' "$REMOTE/data/backlog.md" "recovery after the live lock cleared lost the item"
+assert_absent "$PARENT/data/handoff/ios.outbox.md" "recovery after the live lock cleared left its outbox"
+pass "receiver preserves a live tasks-axi lock and recovers once it clears"
+
 # Unreachable delivery keeps the backlog-format outbox visible to bootstrap.
 write_backlog '- [ ] pending-offline - waits for the remote Mac (repo: alpha)'
 set +e

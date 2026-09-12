@@ -71,6 +71,8 @@ UNIT_FILE="$UNIT_DIR/$UNIT"
 REGISTER_BIN="$SCRIPT_DIR/fm-check-register.sh"
 UNREGISTER_BIN="$SCRIPT_DIR/fm-check-unregister.sh"
 
+# shellcheck source=bin/fm-wake-lib.sh
+. "$SCRIPT_DIR/fm-wake-lib.sh"
 # shellcheck source=bin/fm-pr-lib.sh
 . "$SCRIPT_DIR/fm-pr-lib.sh"
 
@@ -135,18 +137,16 @@ action_check() {
 # stale lock with a dead pid is harmless - capacity-brake.sh takes the lock over
 # whenever its recorded pid is dead - so the only case to act on is a live pid.
 # Before signaling, verify the pid is really the capacity brake and not some
-# unrelated process that a stale or reused lock now points at; /proc may be
-# absent (macOS), in which case the brake's own lock is trusted.
+# unrelated process that a stale or reused lock now points at. The command line
+# is read through the shared portable reader, and an unreadable command line
+# fails closed: an unidentifiable process is never signalled.
 lock_pid_is_brake() {
   local pid=$1 cmd
-  if [ -r "/proc/$pid/cmdline" ]; then
-    cmd=$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null || true)
-    case "$cmd" in
-      *capacity-brake.sh*) return 0 ;;
-      *) return 1 ;;
-    esac
-  fi
-  return 0
+  cmd=$(fm_pid_cmdline "$pid") || return 1
+  case "$cmd" in
+    *capacity-brake.sh*) return 0 ;;
+    *) return 1 ;;
+  esac
 }
 
 # Stop the naked loop and wait up to STOP_WAIT seconds for it to actually exit.

@@ -234,6 +234,31 @@ SH
   pass "fm-herdr-lab: timed-out provisioning cancels the launch before teardown"
 }
 
+test_cancel_provision_signals_only_the_recorded_launch() {
+  local live_pid start
+  sleep 1000 &
+  live_pid=$!
+  start=$(fm_pid_start "$live_pid") || fail "could not read the fixture process start identity"
+
+  # A pid-space wrap hands the recorded number to another process. Its start
+  # identity differs, so cancellation must neither signal nor wait on it.
+  fm_herdr_lab_cancel_provision "$live_pid" 'starttime=1' || true
+  kill -0 "$live_pid" 2>/dev/null \
+    || fail "cancellation signalled a pid whose start identity no longer matched the launch"
+  fm_herdr_lab_cancel_provision "$live_pid" '' || true
+  kill -0 "$live_pid" 2>/dev/null \
+    || fail "cancellation signalled a pid with no recorded start identity"
+
+  fm_herdr_lab_cancel_provision "$live_pid" "$start" || true
+  if kill -0 "$live_pid" 2>/dev/null; then
+    kill -KILL "$live_pid" 2>/dev/null || true
+    wait "$live_pid" 2>/dev/null || true
+    fail "cancellation left the process whose start identity matched the launch running"
+  fi
+  wait "$live_pid" 2>/dev/null || true
+  pass "fm-herdr-lab: cancellation signals only the recorded launch identity"
+}
+
 test_refuses_unsafe_names
 test_provision_run_and_guarded_teardown
 test_missing_tripwire_blocks_destruction
@@ -241,3 +266,4 @@ test_changed_default_trips_after_teardown
 test_stopped_owned_lab_can_reprovision
 test_failed_delete_retains_tripwire
 test_timed_out_provision_cancels_late_launch
+test_cancel_provision_signals_only_the_recorded_launch
