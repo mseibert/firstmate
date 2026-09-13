@@ -4,13 +4,13 @@
 # constructing task paths or performing any side effect.
 #
 # The stored identity is provider-tagged: provider, url, host, path, number.
-# "path" is the full project path, which is owner/repository on GitHub and an
-# arbitrarily nested group/subgroup/project namespace on GitLab. A GitLab
-# project can sit at any depth, so no owner/repository pair can address one and
-# the sidecar carries the whole path instead. GitLab also runs on self-hosted
-# instances, so the host is part of that identity rather than a constant. Every
-# consumer re-derives the identity from the stored URL and refuses any record
-# whose parts do not reconstruct that exact URL.
+# "path" is the full project path, which is owner/repository on GitHub and on
+# Forgejo and an arbitrarily nested group/subgroup/project namespace on GitLab.
+# A GitLab project can sit at any depth, so no owner/repository pair can address
+# one and the sidecar carries the whole path instead. GitLab and Forgejo also
+# run on self-hosted instances, so the host is part of that identity rather than
+# a constant. Every consumer re-derives the identity from the stored URL and
+# refuses any record whose parts do not reconstruct that exact URL.
 #
 # A validated exact merged result is retired through a private receipt only
 # after its durable wake is appended.
@@ -195,16 +195,66 @@ fm_pr_url_parse() {
   # "/-/merge_requests/". Any earlier separator therefore lands inside the
   # captured path, where the reserved "-" segment is refused.
   pattern='^https://([a-z0-9.-]{1,253})/([A-Za-z0-9._/-]+)/-/merge_requests/([1-9][0-9]*)$'
+  if [[ "$raw" =~ $pattern ]]; then
+    host=${BASH_REMATCH[1]}
+    path=${BASH_REMATCH[2]}
+    fm_pr_gitlab_host_valid "$host" || return 1
+    fm_pr_gitlab_path_valid "$path" || return 1
+    FM_PR_PROVIDER=gitlab
+    FM_PR_URL=$raw
+    FM_PR_HOST=$host
+    FM_PR_PATH=$path
+    FM_PR_NUMBER=${BASH_REMATCH[3]}
+    return 0
+  fi
+  # Forgejo. Both path segments are matched without a "/", so the path is
+  # exactly owner/repository, and the host and path rules are then re-checked
+  # against their own validators rather than trusted from the pattern.
+  pattern='^https://([a-z0-9.-]{1,253})/([A-Za-z0-9._-]{1,100})/([A-Za-z0-9._-]{1,100})/pulls/([1-9][0-9]*)$'
   [[ "$raw" =~ $pattern ]] || return 1
   host=${BASH_REMATCH[1]}
-  path=${BASH_REMATCH[2]}
+  path="${BASH_REMATCH[2]}/${BASH_REMATCH[3]}"
+  # The shared self-hosted host rules, applied to the host this URL carries
+  # rather than to a hardcoded instance.
   fm_pr_gitlab_host_valid "$host" || return 1
-  fm_pr_gitlab_path_valid "$path" || return 1
-  FM_PR_PROVIDER=gitlab
+  fm_pr_forgejo_path_valid "$path" || return 1
+  FM_PR_PROVIDER=forgejo
   FM_PR_URL=$raw
   FM_PR_HOST=$host
   FM_PR_PATH=$path
-  FM_PR_NUMBER=${BASH_REMATCH[3]}
+  FM_PR_NUMBER=${BASH_REMATCH[4]}
+}
+
+# Forgejo serves a pull request at
+# https://<host>/<owner>/<repository>/pulls/<number>. The host is read from the
+# URL rather than hardcoded because the instance is self-hosted, and the rules a
+# self-hosted host has to satisfy are the ones GitLab already needed, so that
+# validator is reused rather than copied. The name it carries is historical; the
+# rule is "a hostname that is not github.com".
+#
+# Forgejo addresses a repository as exactly owner/repository, with no nested
+# namespace the way GitLab has one, so the path is validated at exactly two
+# segments and neither may be a reserved name. Both URLs measured on the
+# instance carry that shape: seibert.group/customer-journeys (an organization)
+# and mseibert/MyPaperVault (a user). A one- or three-segment path names no
+# repository this forge can resolve, so it is refused here rather than armed as
+# a watch that can never succeed.
+fm_pr_forgejo_path_valid() {
+  local path=${1-} segment
+  local LC_ALL=C
+  local -a segments
+  [ "${#path}" -ge 3 ] && [ "${#path}" -le 201 ] || return 1
+  case "$path" in
+    /*|*/|*//*) return 1 ;;
+  esac
+  IFS=/ read -ra segments <<< "$path"
+  [ "${#segments[@]}" -eq 2 ] || return 1
+  for segment in "${segments[@]}"; do
+    [ "${#segment}" -ge 1 ] && [ "${#segment}" -le 100 ] || return 1
+    case "$segment" in
+      .|..|-*|*.git|*.atom|*[!A-Za-z0-9._-]*) return 1 ;;
+    esac
+  done
 }
 
 fm_pr_head_valid() {

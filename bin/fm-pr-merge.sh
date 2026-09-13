@@ -55,7 +55,31 @@
 #
 # Extra args must not include --repo or -R in any form, including a bundled
 # short-option cluster such as -yR, because the repository comes only from the
-# URL, nor --sha on GitLab because the head comes only from the live read.
+# URL, nor --sha on GitLab or Forgejo because the head comes only from the live
+# read.
+#
+# A Forgejo pull request is merged through `tea api` with an explicit JSON body
+# rather than a CLI subcommand, because tea's own `pulls merge` cannot bind the
+# merge to a head commit and that binding is not optional. The body carries
+# head_commit_id, Forgejo's counterpart to glab's --sha, so a push that lands
+# between the verification and the merge is refused by the forge instead of
+# landing commits nothing verified; force_merge is never sent. The merge style
+# is never chosen silently either: the caller's own --merge, --squash, --rebase
+# or --method wins, and without one the repository's own default_merge_style
+# applies, exactly as GitLab applies its project default, so this path sets no
+# convention of its own. Because the body is built here, extra arguments cannot
+# be forwarded the way gh-axi and glab forward theirs: the flags this path
+# translates are accepted and anything else is refused by name rather than
+# dropped.
+#
+# Forgejo's auto-merge is refused rather than offered, and the reason is the
+# binding: merge_when_checks_succeed schedules the merge through
+# ScheduleAutoMerge, which takes no head commit, so a scheduled merge would land
+# on whatever the head is when the checks pass instead of on the head this run
+# verified. GitHub's merge queue re-verifies the queued commit and Forgejo's
+# auto-merge does not, so there is no counterpart here that keeps the guarantee,
+# and a flag that silently drops it is worse than no flag. A caller who wants
+# the merge waits for green and calls this path again.
 #
 # On GitLab, this script confirms the MR is actually merged before reporting it;
 # an auto-merge-queued or unconfirmed request leaves the poll armed and records
@@ -186,7 +210,9 @@ reject_head_overrides() {
 }
 
 reject_repo_overrides "$@" || exit 1
-[ "$PROVIDER" != gitlab ] || reject_head_overrides "$@" || exit 1
+case "$PROVIDER" in
+  gitlab|forgejo) reject_head_overrides "$@" || exit 1 ;;
+esac
 
 # Task-derived paths are constructed only after the canonical ID validation.
 META="$STATE/$ID.meta"
@@ -210,12 +236,28 @@ if [ "$PROVIDER" = gitlab ]; then
   fi
 fi
 
+# Forgejo reads its state and merges through tea, and every payload it returns
+# is JSON, so both tools are named together and before anything is recorded.
+if [ "$PROVIDER" = forgejo ]; then
+  FORGEJO_MISSING=
+  command -v tea >/dev/null 2>&1 || FORGEJO_MISSING="tea"
+  if ! command -v jq >/dev/null 2>&1; then
+    FORGEJO_MISSING="${FORGEJO_MISSING:+$FORGEJO_MISSING and }jq"
+  fi
+  if [ -n "$FORGEJO_MISSING" ]; then
+    echo "error: merging a Forgejo pull request requires $FORGEJO_MISSING on PATH" >&2
+    exit 1
+  fi
+fi
+
 # The recorded head is read before bin/fm-pr-check.sh rewrites the metadata,
 # because that script re-records pr= and drops a pr_head= it cannot resolve.
 RECORDED_HEAD=
-if [ "$PROVIDER" = gitlab ]; then
-  RECORDED_HEAD=$(grep '^pr_head=' "$META" | tail -1 | cut -d= -f2- || true)
-fi
+case "$PROVIDER" in
+  gitlab|forgejo)
+    RECORDED_HEAD=$(grep '^pr_head=' "$META" | tail -1 | cut -d= -f2- || true)
+    ;;
+esac
 
 # Pre-merge conditions for a GitLab merge request, read from one live view of
 # the merge request. Sets FM_PR_MERGE_HEAD to the verified head on success and
@@ -316,6 +358,234 @@ FIELDS
   printf 'verified: %s is open and mergeable, with a successful pipeline at head %s\n' \
     "$URL" "$live_head" >&2
   FM_PR_MERGE_HEAD=$live_head
+}
+
+# Pre-merge conditions for a Forgejo pull request, read from one live view of
+# the pull request plus one live view of its head commit's combined status.
+# Sets FM_PR_MERGE_HEAD to the verified head on success and returns non-zero
+# after reporting every condition that failed, not just the first.
+forgejo_verify_mergeable() {
+  local json fields checks line
+  local total=0 named=0 refusals=''
+  local state='' merged='' mergeable='' live_head='' status_sha='' status_state=''
+
+  if ! json=$(tea api "/repos/$FM_PR_PATH/pulls/$PR_NUMBER" 2>/dev/null) \
+    || [ -z "$json" ]; then
+    echo "error: could not read the Forgejo pull request state before merging" >&2
+    return 1
+  fi
+  # One named field per line, as on GitLab: an absent or null field becomes an
+  # empty string or the literal "null", neither of which satisfies a check
+  # below, so an unreadable field refuses the merge instead of passing it.
+  if ! fields=$(printf '%s' "$json" | jq -r '
+      if type == "object" then
+        "state=" + ((.state // "") | tostring),
+        "merged=" + ((.merged // false) | tostring),
+        "mergeable=" + ((.mergeable // false) | tostring),
+        "head=" + ((.head.sha // "") | tostring)
+      else
+        error("pull request payload is not an object")
+      end' 2>/dev/null); then
+    echo "error: could not read the Forgejo pull request state before merging" >&2
+    return 1
+  fi
+  while IFS= read -r line; do
+    total=$((total + 1))
+    case "$line" in
+      state=*) state=${line#state=} ;;
+      merged=*) merged=${line#merged=} ;;
+      mergeable=*) mergeable=${line#mergeable=} ;;
+      head=*) live_head=${line#head=} ;;
+      *) continue ;;
+    esac
+    named=$((named + 1))
+  done <<FIELDS
+$fields
+FIELDS
+  if [ "$named" -ne 4 ] || [ "$total" -ne 4 ]; then
+    echo "error: could not read the Forgejo pull request state before merging" >&2
+    return 1
+  fi
+
+  if ! fm_pr_head_valid "$live_head"; then
+    echo "error: could not read the Forgejo pull request head commit before merging" >&2
+    return 1
+  fi
+  # A rebase moves the head and leaves the recorded value behind, so the
+  # disagreement is reported and the live head is what gets verified and merged.
+  if [ -n "$RECORDED_HEAD" ] && [ "$RECORDED_HEAD" != "$live_head" ]; then
+    printf 'notice: recorded head %s disagrees with the live head %s; verifying the live head\n' \
+      "$RECORDED_HEAD" "$live_head" >&2
+  fi
+
+  # Forgejo reports a pull request's mergeability and its head commit's checks
+  # in two places, so the combined status of exactly this head is read
+  # separately. An unreadable status refuses rather than passing empty, and a
+  # repository with no checks at all answers with an empty state, which is
+  # reported as the condition it is instead of being read as green.
+  if ! checks=$(tea api "/repos/$FM_PR_PATH/commits/$live_head/status" 2>/dev/null) \
+    || [ -z "$checks" ]; then
+    echo "error: could not read the Forgejo head commit status before merging" >&2
+    return 1
+  fi
+  if ! fields=$(printf '%s' "$checks" | jq -r '
+      if type == "object" then
+        "sha=" + ((.sha // "") | tostring),
+        "status=" + ((.state // "") | tostring)
+      else
+        error("commit status payload is not an object")
+      end' 2>/dev/null); then
+    echo "error: could not read the Forgejo head commit status before merging" >&2
+    return 1
+  fi
+  total=0
+  named=0
+  while IFS= read -r line; do
+    total=$((total + 1))
+    case "$line" in
+      sha=*) status_sha=${line#sha=} ;;
+      status=*) status_state=${line#status=} ;;
+      *) continue ;;
+    esac
+    named=$((named + 1))
+  done <<FIELDS
+$fields
+FIELDS
+  if [ "$named" -ne 2 ] || [ "$total" -ne 2 ]; then
+    echo "error: could not read the Forgejo head commit status before merging" >&2
+    return 1
+  fi
+  # The status endpoint is addressed by the head, and this confirms the answer
+  # belongs to that same commit rather than to a shortened or stale reference.
+  # Forgejo answers a commit that carries no checks at all with an empty sha and
+  # an empty state, and that case is reported below as the missing status it is
+  # rather than as a status belonging to another commit.
+  if [ "$status_sha" != "$live_head" ] && { [ -n "$status_sha" ] || [ -n "$status_state" ]; }; then
+    echo "error: the Forgejo head commit status does not belong to the live head commit" >&2
+    return 1
+  fi
+
+  [ "$state" = open ] \
+    || refusals="$refusals  - state is \"${state:-unreadable}\", not open
+"
+  [ "$merged" = false ] \
+    || refusals="$refusals  - merged is \"${merged:-unreadable}\", so this pull request is already merged
+"
+  [ "$mergeable" = true ] \
+    || refusals="$refusals  - mergeable is \"${mergeable:-unreadable}\", not true
+"
+  [ "$status_state" = success ] \
+    || refusals="$refusals  - the combined status of head $live_head is \"${status_state:-none}\", not success
+"
+
+  if [ -n "$refusals" ]; then
+    printf 'error: refusing to merge %s\n' "$URL" >&2
+    printf '%s' "$refusals" >&2
+    return 1
+  fi
+  printf 'verified: %s is open and mergeable, with a successful combined status at head %s\n' \
+    "$URL" "$live_head" >&2
+  FM_PR_MERGE_HEAD=$live_head
+}
+
+# The merge style is never chosen silently: the caller's own arguments win, and
+# without one the repository's configured default_merge_style applies, exactly
+# as GitLab applies its project default. An unreadable default refuses rather
+# than falling back to a style this path would have picked on its own.
+forgejo_merge_style() {
+  local style repo_json
+  style=$(caller_merge_method "$@")
+  if [ -n "$style" ]; then
+    printf '%s' "$style"
+    return 0
+  fi
+  if ! repo_json=$(tea api "/repos/$FM_PR_PATH" 2>/dev/null) || [ -z "$repo_json" ]; then
+    echo "error: could not read the Forgejo repository's default merge style" >&2
+    return 1
+  fi
+  if ! style=$(printf '%s' "$repo_json" | jq -r '
+      if type == "object" and (.default_merge_style | type == "string") then .default_merge_style
+      else error("invalid default merge style") end' 2>/dev/null); then
+    echo "error: could not read the Forgejo repository's default merge style" >&2
+    return 1
+  fi
+  if [ -z "$style" ]; then
+    echo "error: the Forgejo repository names no default merge style" >&2
+    return 1
+  fi
+  printf '%s' "$style"
+}
+
+# The merge styles this path will ask for. manually-merged is refused on purpose:
+# it records a merge that never happened, which is the one outcome a guarded
+# merge path must not be able to produce, and it is the reason force_merge is
+# never sent either.
+forgejo_style_valid() {
+  case "$1" in
+    merge|rebase|rebase-merge|squash|fast-forward-only) return 0 ;;
+    manually-merged)
+      echo "error: refusing the manually-merged style: it records a merge that never happened" >&2
+      return 1
+      ;;
+    *)
+      printf 'error: %s is not a Forgejo merge style\n' "${1:-unreadable}" >&2
+      return 1
+      ;;
+  esac
+}
+
+# The Forgejo merge body is built here, so an extra argument cannot be forwarded
+# the way gh-axi and glab forward theirs. Only the flags this path translates
+# are accepted, and anything else is refused by name rather than dropped.
+forgejo_reject_unknown_args() {
+  local arg pending=false
+  for arg in "$@"; do
+    if [ "$pending" = true ]; then
+      pending=false
+      continue
+    fi
+    case "$arg" in
+      --merge|--squash|--rebase) ;;
+      --method) pending=true ;;
+      --method=*) ;;
+      --auto|--auto=*|--disable-auto)
+        printf 'error: refusing --auto for a Forgejo pull request: merge_when_checks_succeed takes no head commit, so a scheduled merge would not be bound to the head this run verified\n' >&2
+        return 1
+        ;;
+      *)
+        printf 'error: unsupported extra merge argument for a Forgejo pull request: %s\n' "$arg" >&2
+        return 1
+        ;;
+    esac
+  done
+  # A --method with no value would otherwise fall through to the repository
+  # default, which is a style the caller did not ask for.
+  if caller_has_merge_method "$@" && [ -z "$(caller_merge_method "$@")" ]; then
+    echo 'error: --method was given without a merge style' >&2
+    return 1
+  fi
+}
+
+forgejo_confirm_merged() {
+  local json merged
+  if ! json=$(tea api "/repos/$FM_PR_PATH/pulls/$PR_NUMBER" 2>/dev/null) || [ -z "$json" ]; then
+    printf 'actionable: Forgejo accepted the merge for %s but its landed state could not be confirmed; the merge poll remains armed\n' \
+      "$URL" >&2
+    return 2
+  fi
+  if ! merged=$(printf '%s' "$json" | jq -r '
+      if type == "object" and (.merged | type == "boolean") then .merged
+      else error("invalid merged field") end' 2>/dev/null); then
+    printf 'actionable: Forgejo accepted the merge for %s but its landed state could not be confirmed; the merge poll remains armed\n' \
+      "$URL" >&2
+    return 2
+  fi
+  [ "$merged" = true ] && return 0
+  # A 200 that does not read back as merged is reported rather than left
+  # silent, because nothing in this path explains it.
+  printf 'notice: the forge accepted the merge of %s but the pull request does not read back as merged; the merge poll remains armed\n' \
+    "$URL" >&2
+  return 1
 }
 
 # Read one live GitHub pull request view after gh-axi returns. The selected
@@ -683,6 +953,39 @@ case "$PROVIDER" in
     gitlab_confirm_rc=0
     gitlab_confirm_merged || gitlab_confirm_rc=$?
     [ "$gitlab_confirm_rc" -eq 0 ] || exit 0
+    ;;
+  forgejo)
+    forgejo_reject_unknown_args "$@" || exit 1
+    forgejo_verify_mergeable || exit 1
+    FORGEJO_STYLE=$(forgejo_merge_style "$@") || exit 1
+    forgejo_style_valid "$FORGEJO_STYLE" || exit 1
+    # head_commit_id binds this merge to the head verified above, so a push that
+    # lands in between is refused by Forgejo instead of merged unverified. The
+    # style comes from the caller or from the repository's own default, and
+    # force_merge is never sent, so a merge the forge refuses stays refused.
+    FORGEJO_BODY=$(printf '{"Do":"%s","head_commit_id":"%s"}' "$FORGEJO_STYLE" "$FM_PR_MERGE_HEAD")
+    # tea api exits 0 even for a request the forge refused, so the HTTP status is
+    # read from the -i trace on stderr instead of from the exit code. This
+    # endpoint answers a landed merge with 200 and an empty body, and every
+    # refusal arrives as a 4xx whose body is the forge's own error; anything
+    # that is not a 200 is refused here, with the forge's own text quoted apart
+    # from this script's verdict.
+    forgejo_merge_raw=$(tea api -i -X POST "/repos/$FM_PR_PATH/pulls/$PR_NUMBER/merge" \
+      -d "$FORGEJO_BODY" 2>&1) || true
+    forgejo_merge_code=$(printf '%s\n' "$forgejo_merge_raw" \
+      | sed -n 's/^HTTP\/[0-9.]* \([0-9][0-9][0-9]\).*/\1/p' | head -1)
+    if [ "$forgejo_merge_code" != 200 ]; then
+      printf 'error: the forge did not accept the merge of %s (HTTP %s)\n' \
+        "$URL" "${forgejo_merge_code:-unreadable}" >&2
+      printf 'the forge'"'"'s own text follows:\n' >&2
+      printf '%s\n' "$forgejo_merge_raw" >&2
+      exit 1
+    fi
+    forgejo_confirm_rc=0
+    forgejo_confirm_merged || forgejo_confirm_rc=$?
+    [ "$forgejo_confirm_rc" -eq 0 ] || exit 0
+    printf 'verified: %s is merged (style=%s, head=%s)\n' \
+      "$URL" "$FORGEJO_STYLE" "$FM_PR_MERGE_HEAD"
     ;;
   *)
     echo "error: invalid PR merge request" >&2
