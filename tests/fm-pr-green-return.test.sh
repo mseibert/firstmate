@@ -13,8 +13,8 @@
 #   (d) a repo with no checks holds and names hard stop 4
 #   (e) a foreign author holds and names hard stop 6
 #   (f) a missing or open five-lens gate holds and names hard stop 1, per-lens
-#       prose results naming an unresolved finding hold, and clean per-lens
-#       prose or a clean table passes
+#       prose results outside the clean forms hold, and clean per-lens prose or
+#       a clean table passes
 #   (g) a missing, negative, or stale review verdict holds and names hard stop 2
 #   (g) the advisory review verdict holds only a blocking verdict or an
 #       unreadable channel, and names hard stop 2, while a missing or stale
@@ -933,6 +933,28 @@ test_gate_prose_does_not_accept_open_findings() {
     assert_contains "$out" "hard-stop-1" "the prose token \"$token\" was accepted as clean"
   done
 
+  # Values outside the clean forms - and a clean-looking prefix followed by
+  # finding language - trip the stop.
+  for entry in 'Result: failed' 'Verdikt: 2 Befunde' 'Result: passed, 2 findings remain'; do
+    dir=$(make_case "gate-prose-value-$(printf '%s' "$entry" | tr -c 'a-z0-9' '-')")
+    write_policy "$dir" programmieren-community
+    write_meta "$dir" t1 "https://forgejo.example/seibert.group/programmieren-community/pulls/365" programmieren-community
+    tea_green "$dir"
+    # shellcheck disable=SC2016 # Literal gate prose is test data.
+    body='## Five-Lens-Block
+
+**1. `code-review` — Verdikt: kein Blocker.**
+**2. `maintainability-review` — Verdikt: kein Blocker.**
+**3. `architecture-system-design-reviewer` — Verdikt: kein Blocker.**
+**4. `design-decision-questioner` — Verdikt: kein Blocker.**
+**5. `self-containment-review` — Verdikt: kein Blocker.**
+**6. `review-gate` — '"$entry"'.**
+'
+    tea_set_body "$dir" "$body"
+    out=$(report_case "$dir" "$NOW_LATE")
+    assert_contains "$out" "hard-stop-1" "the prose value \"$entry\" was accepted as clean"
+  done
+
   # Five clean per-lens prose entries pass (tea_green's own body is exactly
   # that), and so does a clean table without the literal `Result: clean` line.
   dir=$(make_case gate-prose-clean)
@@ -958,7 +980,41 @@ test_gate_prose_does_not_accept_open_findings() {
 '
   out=$(report_case "$dir" "$NOW_LATE")
   assert_contains "$out" $'t1\tdue\tready' "a clean five-lens table without the literal Result line was rejected"
-  pass "per-lens prose results naming open findings hold; clean prose and clean tables pass"
+
+  # Per-lens `Result: passed` entries are a clean form, alone and mixed with the
+  # other clean forms.
+  dir=$(make_case gate-prose-passed)
+  write_policy "$dir" programmieren-community
+  write_meta "$dir" t1 "https://forgejo.example/seibert.group/programmieren-community/pulls/365" programmieren-community
+  tea_green "$dir"
+  # shellcheck disable=SC2016 # Literal gate prose is test data.
+  tea_set_body "$dir" '## Five-Lens-Block
+
+**1. `code-review` — Result: passed.**
+**2. `maintainability-review` — Result: passed.**
+**3. `architecture-system-design-reviewer` — Result: passed.**
+**4. `design-decision-questioner` — Result: passed.**
+**5. `self-containment-review` — Result: passed.**
+'
+  out=$(report_case "$dir" "$NOW_LATE")
+  assert_contains "$out" $'t1\tdue\tready' "five per-lens Result: passed entries were rejected"
+
+  dir=$(make_case gate-prose-mixed)
+  write_policy "$dir" programmieren-community
+  write_meta "$dir" t1 "https://forgejo.example/seibert.group/programmieren-community/pulls/365" programmieren-community
+  tea_green "$dir"
+  # shellcheck disable=SC2016 # Literal gate prose is test data.
+  tea_set_body "$dir" '## Five-Lens-Block
+
+**1. `code-review` — Result: clean.**
+**2. `maintainability-review` — Result: pass.**
+**3. `architecture-system-design-reviewer` — Verdikt: kein Blocker.**
+**4. `design-decision-questioner` — Result: passed.**
+**5. `self-containment-review` — Verdikt: no blocker.**
+'
+  out=$(report_case "$dir" "$NOW_LATE")
+  assert_contains "$out" $'t1\tdue\tready' "mixed clean per-lens prose forms were rejected"
+  pass "per-lens prose results outside the clean forms hold; clean prose and clean tables pass"
 }
 
 test_forgejo_file_list_pagination() {

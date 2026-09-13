@@ -44,8 +44,9 @@
 # does not turn the check set red by itself, and every other failing check still
 # trips hard stop 3. The five-lens gate (hard stop 1) is accepted as
 # `Result: clean`, as a table whose every row ran and closed its findings, or as
-# at least five per-lens result entries that name no unresolved finding; a lens
-# result that names an open finding trips the stop. The review verdict (item 2)
+# at least five per-lens result entries, each positively naming a clean result
+# (`clean`, `passed`/`pass`, or a `kein`/`no blocker` entry); any other wording,
+# or a line naming an open finding, trips the stop. The review verdict (item 2)
 # follows the policy's forge-specific channels - GitHub's newest seibert-pr-agent
 # `**Verdict:**` comment, Forgejo's crabd tracking comment - and the policy's
 # current wording makes that item advisory, not a gate: a verdict that never
@@ -403,11 +404,11 @@ PATHS
 
 # gate_clean <body>: hard stop 1. The policy owner's clarification accepts
 # `Result: clean`, a table in which every lens ran and no finding is open, or a
-# per-lens result for every lens that names no unresolved finding; a missing
+# per-lens result for every lens that positively names a clean result; a missing
 # block, fewer than five lens results, a table with an open finding, or a lens
-# result naming an open finding trips the stop.
+# result in any other wording trips the stop.
 gate_clean() {
-  local body=$1 section clean table_rows table_ok result_lines result_count
+  local body=$1 section clean table_rows table_ok result_lines prose_ok
   section=$(printf '%s\n' "$body" | awk '
     /^#+[ \t]/ {
       line = tolower($0)
@@ -448,8 +449,9 @@ gate_clean() {
     return 1
   fi
 
-  # Per-lens prose variant: at least five lens result entries, none of which
-  # names an unresolved finding. A result naming an open finding trips the stop
+  # Per-lens prose variant: at least five lens result entries, each positively
+  # naming a clean result (`clean`, `passed`/`pass`, or a `kein`/`no blocker`
+  # entry). Any other wording, or a line naming an open finding, trips the stop
   # even when five other entries look clean.
   result_lines=$(printf '%s\n' "$section" | sed 's/[*_`]//g' \
     | grep -Ei '(result|verdikt|ergebnis)[[:space:]]*:.*[^[:space:]]' || true)
@@ -462,8 +464,27 @@ gate_clean() {
     | grep -Eiwq 'majors?|must-?fix|should-?fix|hold|rework|offen|open|leaks?'; then
     return 1
   fi
-  result_count=$(printf '%s\n' "$result_lines" | grep -c . || true)
-  [ "${result_count:-0}" -ge 5 ]
+  prose_ok=$(printf '%s\n' "$result_lines" | tr '[:upper:]' '[:lower:]' | awk '
+    {
+      if (match($0, /(result|verdikt|ergebnis)[ \t]*:/)) {
+        value = substr($0, RSTART + RLENGTH)
+      } else {
+        value = $0
+      }
+      gsub(/[ \t"_-]/, "", value)
+      sub(/[.!?,;:]+$/, "", value)
+      if (value == "clean" || value == "passed" || value == "pass" \
+        || value == "keinblocker" || value == "keinblockers" \
+        || value == "keineblocker" || value == "keineblockers" \
+        || value == "noblocker" || value == "noblockers") {
+        accepted++
+      } else {
+        unlisted++
+      }
+    }
+    END { if (accepted >= 5 && unlisted == 0) print "1" }
+  ')
+  [ -n "$prose_ok" ]
 }
 
 # ---------------------------------------------------------------- checks ----
