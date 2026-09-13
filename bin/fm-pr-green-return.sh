@@ -35,11 +35,13 @@
 # before it is reported, so a transient state under active work does not wake
 # anyone. state/pr-green-return/<id> records the observed identity, class,
 # reason, wait start, and notification, so a restart never resets the wait and
-# one (head, class, reason) is reported once. A queued mandate is tied to the
-# head it names: the record also holds the head whose mandate is queued, a key
-# already queued for an older head is never read as a moved head's notification,
-# and the moved head queues its own mandate under the same key, where the
-# drain's newest-row-per-key view replaces the stale one.
+# one (head, class, reason) is reported once. Both classes share one task wake
+# key, so a fresh verdict always supersedes the queued row it replaces under the
+# drain's newest-row-per-key view. A queued mandate is tied to the head it
+# names: the record also holds the head whose row is queued, an older head's
+# queued row is never read as a moved head's notification, and a notification is
+# suppressed only by the record's own (head, class, reason) value, never by a key
+# merely being present.
 #
 # EDGE SEMANTICS. A repo with no checks at all trips hard stop 4 (an empty
 # combined status is never green), and a check set that is pending or unreadable
@@ -1205,14 +1207,8 @@ record_remove() { # <id>
   rm -f -- "$RECORD_DIR/$1" 2>/dev/null || true
 }
 
-queue_wake() { # <key> <payload> <head-already-queued>
-  local key=$1 payload=$2 same_head=${3:-0} queued
-  if [ "$same_head" = 1 ]; then
-    queued=$(fm_wake_queued_keys check 2>/dev/null || true)
-    if printf '%s\n' "$queued" | grep -Fx -- "$key" >/dev/null 2>&1; then
-      return 1
-    fi
-  fi
+queue_wake() { # <key> <payload>
+  local key=$1 payload=$2
   fm_wake_append check "$key" "$payload" || return 2
   printf 'actionable: %s\n' "$payload"
 }
@@ -1248,7 +1244,7 @@ label_for_reason() { # <reason>
 # wait record, and queue exactly one check wake per (head, class, reason) once
 # the wait has elapsed. Prints only the actionable lines for queued wakes.
 process_task() {
-  local id=$1 meta=$2 now=$3 wait=$4 since notified queued same_head key payload age rc=0
+  local id=$1 meta=$2 now=$3 wait=$4 since notified queued key payload age
   evaluate_task "$id" "$meta"
   case "$EV_CLASS" in
     merged|closed|waiting)
@@ -1282,26 +1278,19 @@ process_task() {
     notified=$REC_NOTIFIED
   fi
   queued=$REC_QUEUED_HEAD
-  same_head=0
-  if [ -n "$PR_HEAD" ] && [ "$queued" = "$PR_HEAD" ]; then
-    same_head=1
-  fi
 
   age=$((now - since))
   if [ "$age" -ge "$wait" ] && [ -z "$notified" ]; then
+    key="pr-green-return:$id"
     if [ "$EV_CLASS" = due ]; then
-      key="pr-green-return:$id"
       payload=$(wake_payload_due "$id" "$age")
-      queue_wake "$key" "$payload" "$same_head" || rc=$?
-      if [ "$rc" -eq 0 ] || [ "$rc" -eq 1 ]; then
+      if queue_wake "$key" "$payload"; then
         notified="due:$PR_HEAD"
         queued=$PR_HEAD
       fi
     else
-      key="pr-green-return-hold:$id"
       payload=$(wake_payload_held "$id" "$age" "$(label_for_reason "$EV_REASON")")
-      queue_wake "$key" "$payload" "$same_head" || rc=$?
-      if [ "$rc" -eq 0 ] || [ "$rc" -eq 1 ]; then
+      if queue_wake "$key" "$payload"; then
         notified="held:$PR_HEAD:$EV_REASON"
         queued=$PR_HEAD
       fi

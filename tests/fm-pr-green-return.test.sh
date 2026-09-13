@@ -9,7 +9,8 @@
 #   (b) the wait boundary is exact (threshold - 1 silent, threshold exact wakes)
 #       and a restart keeps the evidence-backed wait start instead of resetting;
 #       a moved head is never counted as notified by the old head's queued
-#       mandate and queues its own under the same key, replacing the stale row
+#       mandate and queues its own under the shared key, replacing the stale
+#       row, even when the fresh verdict is a hold of the other class
 #   (c) red CI holds the PR and names hard stop 3, never a merge; a head green
 #       only through the policy's Coolify `deploy / deploy` preview waiver holds
 #       for the protected merge path instead of a dead-end mandate; a skipped
@@ -370,6 +371,16 @@ queue_rows() { # <dir>
   cat "$1/home/state/.wake-queue" 2>/dev/null || true
 }
 
+# presented_rows <dir>: the drain's newest-row-per-key view of the queue, i.e.
+# exactly the rows a wake drain offers main, computed by the same function the
+# drain uses.
+presented_rows() { # <dir>
+  local queue=$1/home/state/.wake-queue
+  [ -f "$queue" ] || return 0
+  FM_STATE_OVERRIDE="$1/home/state" bash -c '. "$1"; fm_wake_print_deduped "$2"' _ \
+    "$ROOT/bin/fm-wake-lib.sh" "$queue" 2>/dev/null || true
+}
+
 scan_case() { # <dir> <now> [extra env pairs...]
   local dir=$1 now=$2
   shift 2
@@ -412,8 +423,8 @@ test_github_pr_holds_without_a_bound_merge() {
   keys=$(queue_keys "$dir")
   rows=$(queue_rows "$dir")
   marker="$dir/home/state/pr-green-return/t1"
-  assert_contains "$keys" "pr-green-return-hold:t1" "an otherwise due GitHub PR did not queue the hold report"
-  assert_not_contains "$keys" "pr-green-return:t1" "a GitHub PR queued a bound-merge wake its merge path cannot honor"
+  assert_contains "$keys" "pr-green-return:t1" "an otherwise due GitHub PR did not queue the hold report"
+  assert_not_contains "$rows" "merge it bound now" "a GitHub PR queued a bound-merge wake its merge path cannot honor"
   assert_contains "$rows" "no bound merge" "the GitHub hold payload did not say a bound merge is impossible"
   assert_contains "$rows" "do not merge" "the GitHub hold payload did not forbid the merge"
   assert_grep "class=held" "$marker" "the GitHub marker class is not held"
@@ -443,7 +454,7 @@ test_wait_boundary_is_exact_and_persists() {
 }
 
 test_moved_head_queues_its_own_mandate() {
-  local dir keys rows out marker newest head2 h2_epoch
+  local dir keys rows out marker newest presented head2 h2_epoch
   head2=3333333333333333333333333333333333333333
   h2_epoch=$((VERDICT_EPOCH + 1200))
   dir=$(make_case moved-head)
@@ -480,11 +491,52 @@ test_moved_head_queues_its_own_mandate() {
   rows=$(queue_rows "$dir")
   newest=$(printf '%s\n' "$rows" | awk -F'\t' '$4 == "pr-green-return:t1" { row = $0 } END { print row }')
   assert_contains "$newest" "head $head2" "the newest queued mandate does not name the moved head"
+  presented=$(presented_rows "$dir")
+  [ "$(printf '%s\n' "$presented" | grep -c .)" = 1 ] || fail "the drain presentation offered the stale mandate beside the moved head's"
+  assert_not_contains "$presented" "head $HEAD" "the presented mandate still names the stale head"
 
   # An unchanged moved head queues nothing further.
   scan_case "$dir" "$((h2_epoch + 900))" >/dev/null
   [ "$(queue_keys "$dir" | grep -c 'pr-green-return:t1')" = 2 ] || fail "an unchanged head queued a duplicate mandate"
   pass "a moved head queues its own mandate and a stale row is not counted for it"
+}
+
+test_cross_class_verdict_supersedes_the_stale_mandate() {
+  local dir marker presented head2 h2_epoch
+  head2=4444444444444444444444444444444444444444
+  h2_epoch=$((VERDICT_EPOCH + 1200))
+  dir=$(make_case cross-class)
+  write_policy "$dir" programmieren-community
+  write_meta "$dir" t1 "https://forgejo.example/seibert.group/programmieren-community/pulls/365" programmieren-community
+  tea_green "$dir"
+  marker="$dir/home/state/pr-green-return/t1"
+
+  # The verified head is due and its bound-merge mandate is queued, undrained.
+  scan_case "$dir" "$NOW_LATE" >/dev/null
+  assert_grep "notified=due:$HEAD" "$marker" "the due head was not marked notified"
+  assert_contains "$(presented_rows "$dir")" "merge it bound now" "the due head did not present its mandate"
+
+  # The branch moves to a head whose diff adds .forgejo/workflows ground, so the
+  # fresh verdict is a hard-stop-5 hold while the stale mandate is still queued.
+  tea_move_head "$dir" "$head2" "2026-01-01T00:30:00Z"
+  jq -n '[{filename: ".forgejo/workflows/ci.yml"}, {filename: "src/app.ts"}]' > "$dir/fix/tea-files.json"
+  scan_case "$dir" "$h2_epoch" >/dev/null
+  scan_case "$dir" "$((h2_epoch + 600))" >/dev/null
+  assert_grep "notified=held:$head2:hard-stop-5" "$marker" "the moved head's hold was not recorded"
+  assert_grep "queued_head=$head2" "$marker" "the moved head's queued row was not recorded"
+
+  presented=$(presented_rows "$dir")
+  [ "$(printf '%s\n' "$presented" | grep -c .)" = 1 ] || fail "the drain presentation offered the stale mandate beside the hold"
+  assert_contains "$presented" "head $head2" "the presented row does not name the moved head"
+  assert_contains "$presented" "hard stop 5" "the presented row does not name the hold reason"
+  assert_contains "$presented" "do not merge" "the presented row does not forbid the merge"
+  assert_not_contains "$presented" "merge it bound now" "the stale due mandate is still presented beside the hold"
+
+  # The held moved head is notified once: another scan adds no row.
+  scan_case "$dir" "$((h2_epoch + 900))" >/dev/null
+  presented=$(presented_rows "$dir")
+  [ "$(printf '%s\n' "$presented" | grep -c .)" = 1 ] || fail "an unchanged held head queued a duplicate"
+  pass "a fresh hold supersedes the stale due mandate under the shared wake key"
 }
 
 test_red_checks_hold_and_name_hard_stop_3() {
@@ -498,8 +550,8 @@ test_red_checks_hold_and_name_hard_stop_3() {
   keys=$(queue_keys "$dir")
   rows=$(queue_rows "$dir")
   marker="$dir/home/state/pr-green-return/t1"
-  assert_contains "$keys" "pr-green-return-hold:t1" "red CI did not queue the hold wake"
-  assert_not_contains "$keys" "pr-green-return:t1" "red CI queued a merge wake"
+  assert_contains "$keys" "pr-green-return:t1" "red CI did not queue the hold wake"
+  assert_not_contains "$rows" "merge it bound now" "red CI queued a merge wake"
   assert_contains "$rows" "hard stop 3" "red CI payload did not name hard stop 3"
   assert_contains "$rows" "do not merge" "red CI payload did not forbid the merge"
   assert_grep "class=held" "$marker" "red CI marker class is not held"
@@ -517,8 +569,8 @@ test_no_checks_hold_and_name_hard_stop_4() {
   scan_hold_wake "$dir" "$NOW_LATE" >/dev/null
   keys=$(queue_keys "$dir")
   rows=$(queue_rows "$dir")
-  assert_contains "$keys" "pr-green-return-hold:t1" "a repo without checks did not hold"
-  assert_not_contains "$keys" "pr-green-return:t1" "a repo without checks queued a merge wake"
+  assert_contains "$keys" "pr-green-return:t1" "a repo without checks did not hold"
+  assert_not_contains "$rows" "merge it bound now" "a repo without checks queued a merge wake"
   assert_contains "$rows" "hard stop 4" "the hold payload did not name hard stop 4"
   pass "a repo with no checks holds and names hard stop 4"
 }
@@ -533,9 +585,9 @@ test_foreign_pr_holds_hard_stop_6() {
   scan_hold_wake "$dir" "$NOW_LATE" >/dev/null
   keys=$(queue_keys "$dir")
   rows=$(queue_rows "$dir")
-  assert_contains "$keys" "pr-green-return-hold:t1" "a foreign PR did not hold"
+  assert_contains "$keys" "pr-green-return:t1" "a foreign PR did not hold"
   assert_contains "$rows" "hard stop 6" "the hold payload did not name hard stop 6"
-  assert_not_contains "$keys" "pr-green-return:t1" "a foreign PR queued a merge wake"
+  assert_not_contains "$rows" "merge it bound now" "a foreign PR queued a merge wake"
   pass "a foreign PR holds and names hard stop 6"
 }
 
@@ -549,7 +601,7 @@ test_gate_holds_hard_stop_1() {
   scan_hold_wake "$dir" "$NOW_LATE" >/dev/null
   keys=$(queue_keys "$dir")
   rows=$(queue_rows "$dir")
-  assert_contains "$keys" "pr-green-return-hold:t1" "a missing gate block did not hold"
+  assert_contains "$keys" "pr-green-return:t1" "a missing gate block did not hold"
   assert_contains "$rows" "hard stop 1" "the hold payload did not name hard stop 1"
 
   dir=$(make_case gate-open)
@@ -558,7 +610,7 @@ test_gate_holds_hard_stop_1() {
   gh_green "$dir"
   gh_set_body "$dir" $'## Five-lens gate\n\n| Lens | Ran | Findings | Fixed |\n|---|---|---|---|\n| code-review | yes | 3 | 0 |\n| maintainability-review | yes | 0 | 0 |\n| architecture-system-design-reviewer | yes | 0 | 0 |\n| design-decision-questioner | yes | 0 | 0 |\n| self-containment-review | yes | 0 | 0 |\n\nResult: 3 findings, 1 open\n'
   scan_hold_wake "$dir" "$NOW_LATE" >/dev/null
-  assert_contains "$(queue_keys "$dir")" "pr-green-return-hold:t1" "an open gate finding did not hold"
+  assert_contains "$(queue_keys "$dir")" "pr-green-return:t1" "an open gate finding did not hold"
   pass "a missing or open five-lens gate holds and names hard stop 1"
 }
 
@@ -584,9 +636,9 @@ test_verdict_channel_is_advisory_and_holds_only_on_a_blocking_read() {
   scan_hold_wake "$dir" "$NOW_LATE" >/dev/null
   keys=$(queue_keys "$dir")
   rows=$(queue_rows "$dir")
-  assert_contains "$keys" "pr-green-return-hold:t1" "a blocking verdict did not hold"
+  assert_contains "$keys" "pr-green-return:t1" "a blocking verdict did not hold"
   assert_contains "$rows" "hard stop 2" "a blocking verdict did not name hard stop 2"
-  assert_not_contains "$keys" "pr-green-return:t1" "a blocking verdict queued a merge wake"
+  assert_not_contains "$rows" "merge it bound now" "a blocking verdict queued a merge wake"
 
   # A positive verdict older than the head is advisory like any other: it does
   # not trip item 2 on its own.
@@ -606,7 +658,7 @@ test_verdict_channel_is_advisory_and_holds_only_on_a_blocking_read() {
   gh_green "$dir"
   rm -f "$dir/fix/gh-comments.json"
   scan_hold_wake "$dir" "$NOW_LATE" >/dev/null
-  assert_contains "$(queue_keys "$dir")" "pr-green-return-hold:t1" "an unreadable verdict channel did not hold"
+  assert_contains "$(queue_keys "$dir")" "pr-green-return:t1" "an unreadable verdict channel did not hold"
   assert_contains "$(queue_rows "$dir")" "hard stop 2" "an unreadable verdict channel did not name hard stop 2"
   pass "the advisory verdict holds only a blocking or unreadable read"
 }
@@ -621,10 +673,10 @@ test_sensitive_diff_holds_hard_stop_5() {
   scan_hold_wake "$dir" "$NOW_LATE" >/dev/null
   keys=$(queue_keys "$dir")
   rows=$(queue_rows "$dir")
-  assert_contains "$keys" "pr-green-return-hold:t1" "a sensitive diff did not hold"
+  assert_contains "$keys" "pr-green-return:t1" "a sensitive diff did not hold"
   assert_contains "$rows" "hard stop 5" "a sensitive diff did not name hard stop 5"
   assert_contains "$rows" ".github/workflows/ci.yml" "the hold payload did not name the sensitive path"
-  assert_not_contains "$keys" "pr-green-return:t1" "a sensitive diff queued a merge wake"
+  assert_not_contains "$rows" "merge it bound now" "a sensitive diff queued a merge wake"
 
   # An unreadable changed-file list is no proof that the diff stays off the
   # policy's sensitive ground, so hard stop 5 fails closed.
@@ -636,9 +688,9 @@ test_sensitive_diff_holds_hard_stop_5() {
   scan_hold_wake "$dir" "$NOW_LATE" >/dev/null
   keys=$(queue_keys "$dir")
   rows=$(queue_rows "$dir")
-  assert_contains "$keys" "pr-green-return-hold:t1" "an unreadable file list did not hold"
+  assert_contains "$keys" "pr-green-return:t1" "an unreadable file list did not hold"
   assert_contains "$rows" "hard stop 5" "an unreadable file list did not name hard stop 5"
-  assert_not_contains "$keys" "pr-green-return:t1" "an unreadable file list queued a merge wake"
+  assert_not_contains "$rows" "merge it bound now" "an unreadable file list queued a merge wake"
 
   # `.forgejo/workflows/**` is built-in ground even though the fixture policy's
   # glob block omits it: a Forgejo workflow change holds under hard stop 5.
@@ -650,10 +702,10 @@ test_sensitive_diff_holds_hard_stop_5() {
   scan_hold_wake "$dir" "$NOW_LATE" >/dev/null
   keys=$(queue_keys "$dir")
   rows=$(queue_rows "$dir")
-  assert_contains "$keys" "pr-green-return-hold:t1" "a .forgejo/workflows change did not hold"
+  assert_contains "$keys" "pr-green-return:t1" "a .forgejo/workflows change did not hold"
   assert_contains "$rows" "hard stop 5" "a .forgejo/workflows change did not name hard stop 5"
   assert_contains "$rows" ".forgejo/workflows/ci.yml" "the hold payload did not name the sensitive path"
-  assert_not_contains "$keys" "pr-green-return:t1" "a .forgejo/workflows change queued a merge wake"
+  assert_not_contains "$rows" "merge it bound now" "a .forgejo/workflows change queued a merge wake"
 
   # A `.forgejo` path outside the workflows directory stays due, so the
   # built-in ground is exactly `.forgejo/workflows/**`.
@@ -675,10 +727,10 @@ test_sensitive_diff_holds_hard_stop_5() {
   scan_hold_wake "$dir" "$NOW_LATE" >/dev/null
   keys=$(queue_keys "$dir")
   rows=$(queue_rows "$dir")
-  assert_contains "$keys" "pr-green-return-hold:t1" "a rename out of src/auth did not hold"
+  assert_contains "$keys" "pr-green-return:t1" "a rename out of src/auth did not hold"
   assert_contains "$rows" "hard stop 5" "a rename out of src/auth did not name hard stop 5"
   assert_contains "$rows" "src/auth/guard.ts" "the hold payload did not name the old sensitive path"
-  assert_not_contains "$keys" "pr-green-return:t1" "a rename out of src/auth queued a merge wake"
+  assert_not_contains "$rows" "merge it bound now" "a rename out of src/auth queued a merge wake"
 
   dir=$(make_case sensitive-forgejo-rename-normal)
   write_policy "$dir" programmieren-community
@@ -698,10 +750,10 @@ test_sensitive_diff_holds_hard_stop_5() {
   scan_hold_wake "$dir" "$NOW_LATE" >/dev/null
   keys=$(queue_keys "$dir")
   rows=$(queue_rows "$dir")
-  assert_contains "$keys" "pr-green-return-hold:t1" "a GitLab rename out of src/auth did not hold"
+  assert_contains "$keys" "pr-green-return:t1" "a GitLab rename out of src/auth did not hold"
   assert_contains "$rows" "hard stop 5" "a GitLab rename out of src/auth did not name hard stop 5"
   assert_contains "$rows" "src/auth/guard.ts" "the GitLab hold payload did not name the old sensitive path"
-  assert_not_contains "$keys" "pr-green-return:t1" "a GitLab rename out of src/auth queued a merge wake"
+  assert_not_contains "$rows" "merge it bound now" "a GitLab rename out of src/auth queued a merge wake"
 
   dir=$(make_case sensitive-gitlab-rename-normal)
   write_policy "$dir" project
@@ -723,7 +775,7 @@ test_lockfile_only_change_is_not_sensitive_on_a_mergeable_pr() {
   scan_case "$dir" "$NOW_LATE" >/dev/null
   keys=$(queue_keys "$dir")
   assert_contains "$keys" "pr-green-return:t1" "a mergeable lockfile-only change was held"
-  assert_not_contains "$keys" "pr-green-return-hold:t1" "a mergeable lockfile-only change queued a hold"
+  assert_not_contains "$(queue_rows "$dir")" "do not merge" "a mergeable lockfile-only change queued a hold"
   pass "a lockfile change is not sensitive on a mergeable PR (policy: only on conflict)"
 }
 
@@ -747,9 +799,9 @@ test_package_json_scripts_qualifier() {
   scan_hold_wake "$dir" "$NOW_LATE" >/dev/null
   keys=$(queue_keys "$dir")
   rows=$(queue_rows "$dir")
-  assert_contains "$keys" "pr-green-return-hold:t1" "a scripts change did not hold"
+  assert_contains "$keys" "pr-green-return:t1" "a scripts change did not hold"
   assert_contains "$rows" "hard stop 5" "a scripts change did not name hard stop 5"
-  assert_not_contains "$keys" "pr-green-return:t1" "a scripts change queued a merge wake"
+  assert_not_contains "$rows" "merge it bound now" "a scripts change queued a merge wake"
   pass "package.json is sensitive only when its scripts block changes"
 }
 
@@ -762,9 +814,9 @@ test_unreadable_policy_holds_hard_stop_7() {
     FM_PR_GREEN_RETURN_POLICY="$dir/fix/absent-policy.md" >/dev/null
   keys=$(queue_keys "$dir")
   rows=$(queue_rows "$dir")
-  assert_contains "$keys" "pr-green-return-hold:t1" "an unreadable policy did not hold"
+  assert_contains "$keys" "pr-green-return:t1" "an unreadable policy did not hold"
   assert_contains "$rows" "hard stop 7" "an unreadable policy did not name hard stop 7"
-  assert_not_contains "$keys" "pr-green-return:t1" "an unreadable policy queued a merge wake"
+  assert_not_contains "$rows" "merge it bound now" "an unreadable policy queued a merge wake"
   pass "an unreadable policy holds every candidate and names hard stop 7"
 }
 
@@ -777,9 +829,9 @@ test_allowlist_default_ask_holds() {
   scan_hold_wake "$dir" "$NOW_LATE" >/dev/null
   keys=$(queue_keys "$dir")
   rows=$(queue_rows "$dir")
-  assert_contains "$keys" "pr-green-return-hold:t1" "an unlisted repo did not hold"
+  assert_contains "$keys" "pr-green-return:t1" "an unlisted repo did not hold"
   assert_contains "$rows" "the policy default ask" "the hold payload did not name the default ask"
-  assert_not_contains "$keys" "pr-green-return:t1" "an unlisted repo queued a merge wake"
+  assert_not_contains "$rows" "merge it bound now" "an unlisted repo queued a merge wake"
   pass "a repo outside the allowlist is held as the policy default ask"
 }
 
@@ -822,7 +874,7 @@ test_forgejo_verdict_channel() {
   printf '%s\n' '[]' > "$dir/fix/tea-comments.json"
   scan_case "$dir" "$NOW_LATE" >/dev/null
   assert_contains "$(queue_keys "$dir")" "pr-green-return:t1" "a missing crabd verdict held the merge"
-  assert_not_contains "$(queue_keys "$dir")" "pr-green-return-hold:t1" "a missing crabd verdict queued a hold"
+  assert_not_contains "$(queue_rows "$dir")" "do not merge" "a missing crabd verdict queued a hold"
 
   dir=$(make_case forgejo-legacy)
   write_policy "$dir" programmieren-community
@@ -831,7 +883,7 @@ test_forgejo_verdict_channel() {
   tea_set_verdict "$dir" $'**Verdict:** Good to merge\n<!-- crabd:tracking -->\n<!-- pr-agent-rate-limit -->'
   scan_case "$dir" "$NOW_LATE" >/dev/null
   assert_contains "$(queue_keys "$dir")" "pr-green-return:t1" "a legacy Qodo verdict held the merge"
-  assert_not_contains "$(queue_keys "$dir")" "pr-green-return-hold:t1" "a legacy Qodo verdict queued a hold"
+  assert_not_contains "$(queue_rows "$dir")" "do not merge" "a legacy Qodo verdict queued a hold"
 
   dir=$(make_case forgejo-blocking)
   write_policy "$dir" programmieren-community
@@ -839,7 +891,7 @@ test_forgejo_verdict_channel() {
   tea_green "$dir"
   tea_set_verdict "$dir" $'Reviewed this pull request — **Please address the findings before merging.**\n<!-- crabd:tracking -->'
   scan_hold_wake "$dir" "$NOW_LATE" >/dev/null
-  assert_contains "$(queue_keys "$dir")" "pr-green-return-hold:t1" "a blocking crabd verdict did not hold"
+  assert_contains "$(queue_keys "$dir")" "pr-green-return:t1" "a blocking crabd verdict did not hold"
   assert_contains "$(queue_rows "$dir")" "hard stop 2" "a blocking crabd verdict did not name hard stop 2"
   pass "a missing or legacy Forgejo verdict does not hold, a blocking one does"
 }
@@ -854,7 +906,7 @@ test_gitlab_needs_no_verdict_channel() {
   keys=$(queue_keys "$dir")
   rows=$(queue_rows "$dir")
   assert_contains "$keys" "pr-green-return:t1" "a GitLab MR without a policy verdict channel was not due"
-  assert_not_contains "$keys" "pr-green-return-hold:t1" "a GitLab MR queued a verdict hold"
+  assert_not_contains "$rows" "do not merge" "a GitLab MR queued a verdict hold"
   assert_contains "$rows" "bin/fm-pr-merge.sh t1 https://gitlab.example/group/project/-/merge_requests/7" "the GitLab due payload is missing the bound merge command"
   pass "GitLab has no policy verdict channel, and a verdict that cannot arrive does not hold"
 }
@@ -891,7 +943,7 @@ test_scan_cadence_suppresses_repeat_work() {
     FM_PR_GREEN_RETURN_SECS=600 FM_PR_GREEN_RETURN_INTERVAL=999999 \
     FM_PR_GREEN_RETURN_NOW="$((NOW_LATE + 60))" PATH="$dir/fakebin:$PATH" \
     "$GREEN" scan >/dev/null 2>&1
-  assert_not_contains "$(queue_keys "$dir")" "pr-green-return-hold:t1" "the cadence gate did not suppress a repeat scan"
+  assert_not_contains "$(queue_rows "$dir")" "do not merge" "the cadence gate did not suppress a repeat scan"
   pass "the scan cadence suppresses repeated work between configured intervals"
 }
 
@@ -999,10 +1051,10 @@ test_coolify_preview_check_is_waived() {
   scan_hold_wake "$dir" "$NOW_LATE" >/dev/null
   keys=$(queue_keys "$dir")
   rows=$(queue_rows "$dir")
-  assert_contains "$keys" "pr-green-return-hold:t1" "the waived Coolify preview did not queue the merge-path hold"
+  assert_contains "$keys" "pr-green-return:t1" "the waived Coolify preview did not queue the merge-path hold"
   assert_contains "$rows" "no bound merge" "the merge-path hold did not name the bound merge"
   assert_contains "$rows" "preview" "the merge-path hold did not name the red preview check"
-  assert_not_contains "$keys" "pr-green-return:t1" "the waived Coolify preview queued a dead-end merge mandate"
+  assert_not_contains "$rows" "merge it bound now" "the waived Coolify preview queued a dead-end merge mandate"
 
   # Any other failing check still holds under hard stop 3.
   dir=$(make_case coolify-other-red)
@@ -1013,9 +1065,9 @@ test_coolify_preview_check_is_waived() {
   scan_hold_wake "$dir" "$NOW_LATE" >/dev/null
   keys=$(queue_keys "$dir")
   rows=$(queue_rows "$dir")
-  assert_contains "$keys" "pr-green-return-hold:t1" "a real failing check beside the waived preview did not hold"
+  assert_contains "$keys" "pr-green-return:t1" "a real failing check beside the waived preview did not hold"
   assert_contains "$rows" "hard stop 3" "a real failing check beside the waived preview did not name hard stop 3"
-  assert_not_contains "$keys" "pr-green-return:t1" "a red check set queued a merge wake"
+  assert_not_contains "$rows" "merge it bound now" "a red check set queued a merge wake"
 
   # The GitHub path applies the same waiver; its remaining hold is the unbound
   # merge path, never hard stop 3.
@@ -1041,9 +1093,9 @@ test_skipped_status_semantics() {
   scan_hold_wake "$dir" "$NOW_LATE" >/dev/null
   keys=$(queue_keys "$dir")
   rows=$(queue_rows "$dir")
-  assert_contains "$keys" "pr-green-return-hold:t1" "a real failure beside a skipped status did not hold"
+  assert_contains "$keys" "pr-green-return:t1" "a real failure beside a skipped status did not hold"
   assert_contains "$rows" "hard stop 3" "a real failure beside a skipped status did not name hard stop 3"
-  assert_not_contains "$keys" "pr-green-return:t1" "a real failure beside a skipped status queued a merge wake"
+  assert_not_contains "$rows" "merge it bound now" "a real failure beside a skipped status queued a merge wake"
 
   # A combined `skipped` head is no checks (hard stop 4), and a combined
   # `warning` head is classified through its statuses and holds as red.
@@ -1055,9 +1107,9 @@ test_skipped_status_semantics() {
   scan_hold_wake "$dir" "$NOW_LATE" >/dev/null
   keys=$(queue_keys "$dir")
   rows=$(queue_rows "$dir")
-  assert_contains "$keys" "pr-green-return-hold:t1" "a combined skipped head did not hold"
+  assert_contains "$keys" "pr-green-return:t1" "a combined skipped head did not hold"
   assert_contains "$rows" "hard stop 4" "a combined skipped head did not name hard stop 4"
-  assert_not_contains "$keys" "pr-green-return:t1" "a combined skipped head queued a merge wake"
+  assert_not_contains "$rows" "merge it bound now" "a combined skipped head queued a merge wake"
   assert_not_contains "$rows" "checks-unreadable" "a combined skipped head was parked as unreadable"
 
   dir=$(make_case warning-combined)
@@ -1068,9 +1120,9 @@ test_skipped_status_semantics() {
   scan_hold_wake "$dir" "$NOW_LATE" >/dev/null
   keys=$(queue_keys "$dir")
   rows=$(queue_rows "$dir")
-  assert_contains "$keys" "pr-green-return-hold:t1" "a combined warning head did not hold"
+  assert_contains "$keys" "pr-green-return:t1" "a combined warning head did not hold"
   assert_contains "$rows" "hard stop 3" "a combined warning head did not name hard stop 3"
-  assert_not_contains "$keys" "pr-green-return:t1" "a combined warning head queued a merge wake"
+  assert_not_contains "$rows" "merge it bound now" "a combined warning head queued a merge wake"
   assert_not_contains "$rows" "checks-unreadable" "a combined warning head was parked as unreadable"
 
   # The waived preview beside a skipped status stays policy-clean but holds for
@@ -1097,9 +1149,9 @@ test_skipped_status_semantics() {
   scan_hold_wake "$dir" "$NOW_LATE" >/dev/null
   keys=$(queue_keys "$dir")
   rows=$(queue_rows "$dir")
-  assert_contains "$keys" "pr-green-return-hold:t1" "a skipped GitLab pipeline did not hold"
+  assert_contains "$keys" "pr-green-return:t1" "a skipped GitLab pipeline did not hold"
   assert_contains "$rows" "hard stop 4" "a skipped GitLab pipeline did not name hard stop 4"
-  assert_not_contains "$keys" "pr-green-return:t1" "a skipped GitLab pipeline queued a merge wake"
+  assert_not_contains "$rows" "merge it bound now" "a skipped GitLab pipeline queued a merge wake"
   assert_not_contains "$rows" "checks-unreadable" "a skipped GitLab pipeline was parked as unreadable"
   pass "a skipped check status is a pass, a skipped combined head and pipeline are no checks, and a combined warning is red"
 }
@@ -1123,7 +1175,7 @@ test_gate_prose_does_not_accept_open_findings() {
 **6. `review-gate` — Verdikt: kein Blocker.**
 '
   scan_hold_wake "$dir" "$NOW_LATE" >/dev/null
-  assert_contains "$(queue_keys "$dir")" "pr-green-return-hold:t1" "the reported #365 prose block was accepted as clean"
+  assert_contains "$(queue_keys "$dir")" "pr-green-return:t1" "the reported #365 prose block was accepted as clean"
   assert_contains "$(queue_rows "$dir")" "hard stop 1" "the #365 prose block did not name hard stop 1"
 
   # Every named unresolved-finding spelling trips the stop even when five other
@@ -1245,8 +1297,8 @@ test_forgejo_file_list_pagination() {
   scan_hold_wake "$dir" "$NOW_LATE" >/dev/null
   keys=$(queue_keys "$dir")
   rows=$(queue_rows "$dir")
-  assert_contains "$keys" "pr-green-return-hold:t1" "a sensitive file beyond the first page did not hold"
-  assert_not_contains "$keys" "pr-green-return:t1" "a sensitive file beyond the first page queued a merge wake"
+  assert_contains "$keys" "pr-green-return:t1" "a sensitive file beyond the first page did not hold"
+  assert_not_contains "$rows" "merge it bound now" "a sensitive file beyond the first page queued a merge wake"
   assert_contains "$rows" "hard stop 5" "the paginated hold did not name hard stop 5"
   assert_contains "$rows" "migration" "the hold payload did not name the sensitive path"
   assert_grep "page=2" "$dir/fix/calls.log" "the scan did not request the second file page"
@@ -1285,8 +1337,8 @@ test_gitlab_changes_overflow_holds() {
   scan_hold_wake "$dir" "$NOW_LATE" >/dev/null
   keys=$(queue_keys "$dir")
   rows=$(queue_rows "$dir")
-  assert_contains "$keys" "pr-green-return-hold:t1" "a GitLab changes overflow did not hold"
-  assert_not_contains "$keys" "pr-green-return:t1" "a GitLab changes overflow queued a merge wake"
+  assert_contains "$keys" "pr-green-return:t1" "a GitLab changes overflow did not hold"
+  assert_not_contains "$rows" "merge it bound now" "a GitLab changes overflow queued a merge wake"
   assert_contains "$rows" "hard stop 5" "a GitLab changes overflow did not name hard stop 5"
   pass "a GitLab changes overflow fails closed under hard stop 5"
 }
@@ -1311,16 +1363,17 @@ test_lockfile_does_not_falsely_hold_package_json() {
   scan_hold_wake "$dir" "$NOW_LATE" >/dev/null
   keys=$(queue_keys "$dir")
   rows=$(queue_rows "$dir")
-  assert_contains "$keys" "pr-green-return-hold:t1" "changed package.json scripts beside a lockfile did not hold"
+  assert_contains "$keys" "pr-green-return:t1" "changed package.json scripts beside a lockfile did not hold"
   assert_not_contains "$rows" "pnpm-lock.yaml" "the scripts hold named the lockfile instead of package.json"
   assert_contains "$rows" "package.json" "the scripts hold did not name package.json"
-  assert_not_contains "$keys" "pr-green-return:t1" "changed package.json scripts queued a merge wake"
+  assert_not_contains "$rows" "merge it bound now" "changed package.json scripts queued a merge wake"
   pass "a lockfile beside package.json is skipped, and only a scripts change holds"
 }
 
 test_github_pr_holds_without_a_bound_merge
 test_wait_boundary_is_exact_and_persists
 test_moved_head_queues_its_own_mandate
+test_cross_class_verdict_supersedes_the_stale_mandate
 test_red_checks_hold_and_name_hard_stop_3
 test_coolify_preview_check_is_waived
 test_skipped_status_semantics
