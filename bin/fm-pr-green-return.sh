@@ -41,10 +41,14 @@
 # combined status is never green), and a check set that is pending or unreadable
 # is never green. A `skipped` check status is a pass, matching Forgejo's own
 # combined-state semantics and the GitHub mapping; a GitLab `skipped` head
-# pipeline is no checks and trips hard stop 4. The policy's Coolify
-# `deploy / deploy` preview exception is machine-waived: a failing check whose
-# normalized name is exactly that poller does not turn the check set red by
-# itself, and every other failing check still trips hard stop 3.
+# pipeline and a Forgejo combined `skipped` head are no checks and trip hard
+# stop 4, and a Forgejo combined `warning` is classified through its statuses.
+# The policy's Coolify `deploy / deploy` preview exception is machine-waived: a
+# failing check whose normalized name is exactly that poller does not turn the
+# check set red by itself, and every other failing check still trips hard stop 3.
+# A Forgejo head kept green only by that waiver stays policy-clean but is held
+# with the no-bound-merge reason, because the protected merge path requires the
+# live combined status to be exactly `success`.
 # The five-lens gate (hard stop 1) is accepted as
 # `Result: clean`, as a table whose every row ran and closed its findings, or as
 # at least five per-lens result entries, each positively naming a clean result
@@ -565,6 +569,7 @@ PR_AUTHOR=
 PR_BODY=
 PR_HEAD_TIME=
 PR_CHECKS=
+PR_MERGE_PATH_READY=1
 PR_VERDICT=absent
 PR_VERDICT_TIME=
 PR_FILES=
@@ -763,7 +768,7 @@ forgejo_checks_read() {
     success)
       if [ "$total" -gt 0 ]; then PR_CHECKS=green; else PR_CHECKS=none; fi
       ;;
-    failure|error)
+    failure|error|warning)
       if statuses=$(printf '%s' "$json" | jq -r '
           if (.statuses | type) == "array" then
             .statuses[]?
@@ -777,11 +782,13 @@ forgejo_checks_read() {
           else error("combined status carries no statuses list") end' 2>/dev/null); then
         PR_CHECKS=$(printf '%s\n' "$statuses" | classify_check_lines)
         [ "$PR_CHECKS" != none ] || PR_CHECKS=red
+        [ "$PR_CHECKS" != green ] || PR_MERGE_PATH_READY=0
       else
         PR_CHECKS=unreadable
       fi
       ;;
     pending) PR_CHECKS=pending ;;
+    skipped) PR_CHECKS=none ;;
     '') PR_CHECKS=none ;;
     *) PR_CHECKS=unreadable ;;
   esac
@@ -985,6 +992,7 @@ evaluate_task() {
   PR_VERDICT=absent
   PR_VERDICT_TIME=
   PR_CHECKS=
+  PR_MERGE_PATH_READY=1
   PR_STATE=
   PR_HEAD=
   PR_MERGEABLE=unknown
@@ -1115,6 +1123,11 @@ evaluate_task() {
   if [ "$PR_PROVIDER" = github ]; then
     EV_CLASS=held
     EV_REASON="no-bound-merge: the GitHub merge path cannot bind the reviewed head"
+    return 0
+  fi
+  if [ "$PR_PROVIDER" = forgejo ] && [ "$PR_MERGE_PATH_READY" != 1 ]; then
+    EV_CLASS=held
+    EV_REASON="no-bound-merge: the head is policy-clean, but the protected merge path refuses it because the preview check is red"
     return 0
   fi
 

@@ -8,10 +8,11 @@
 #       bound-merge check wake with the verified head
 #   (b) the wait boundary is exact (threshold - 1 silent, threshold exact wakes)
 #       and a restart keeps the evidence-backed wait start instead of resetting
-#   (c) red CI holds the PR and names hard stop 3, never a merge, while only the
-#       policy's Coolify `deploy / deploy` preview failing does not hold; a
-#       skipped status is a pass and a skipped GitLab pipeline is no checks
-#       (hard stop 4)
+#   (c) red CI holds the PR and names hard stop 3, never a merge; a head green
+#       only through the policy's Coolify `deploy / deploy` preview waiver holds
+#       for the protected merge path instead of a dead-end mandate; a skipped
+#       status is a pass, a combined skipped head and a skipped GitLab pipeline
+#       are no checks (hard stop 4), and a combined warning head is red
 #   (d) a repo with no checks holds and names hard stop 4
 #   (e) a foreign author holds and names hard stop 6
 #   (f) a missing or open five-lens gate holds and names hard stop 1, per-lens
@@ -926,16 +927,21 @@ test_non_candidates_are_ignored() {
 
 test_coolify_preview_check_is_waived() {
   local dir keys rows out
-  # Only the policy's named Coolify preview poller fails: the PR may still be due.
+  # Only the policy's named Coolify preview poller fails: the head stays
+  # policy-clean, but the protected merge path refuses the non-success combined
+  # status, so the scan queues the hold report instead of a dead-end mandate.
   dir=$(make_case coolify-waived)
   write_policy "$dir" programmieren-community
   write_meta "$dir" t1 "https://forgejo.example/seibert.group/programmieren-community/pulls/365" programmieren-community
   tea_green "$dir"
   tea_set_checks "$dir" failure '[{"context": "deploy / deploy (pull_request)", "status": "failure"}, {"context": "CI / test (pull_request)", "status": "success"}]'
-  scan_case "$dir" "$NOW_LATE" >/dev/null
+  scan_hold_wake "$dir" "$NOW_LATE" >/dev/null
   keys=$(queue_keys "$dir")
-  assert_contains "$keys" "pr-green-return:t1" "the waived Coolify preview held the PR"
-  assert_not_contains "$keys" "pr-green-return-hold:t1" "the waived Coolify preview queued a hold"
+  rows=$(queue_rows "$dir")
+  assert_contains "$keys" "pr-green-return-hold:t1" "the waived Coolify preview did not queue the merge-path hold"
+  assert_contains "$rows" "no bound merge" "the merge-path hold did not name the bound merge"
+  assert_contains "$rows" "preview" "the merge-path hold did not name the red preview check"
+  assert_not_contains "$keys" "pr-green-return:t1" "the waived Coolify preview queued a dead-end merge mandate"
 
   # Any other failing check still holds under hard stop 3.
   dir=$(make_case coolify-other-red)
@@ -978,15 +984,46 @@ test_skipped_status_semantics() {
   assert_contains "$rows" "hard stop 3" "a real failure beside a skipped status did not name hard stop 3"
   assert_not_contains "$keys" "pr-green-return:t1" "a real failure beside a skipped status queued a merge wake"
 
-  # The waived preview beside a skipped status reaches due instead of parking.
+  # A combined `skipped` head is no checks (hard stop 4), and a combined
+  # `warning` head is classified through its statuses and holds as red.
+  dir=$(make_case skipped-combined)
+  write_policy "$dir" programmieren-community
+  write_meta "$dir" t1 "https://forgejo.example/seibert.group/programmieren-community/pulls/365" programmieren-community
+  tea_green "$dir"
+  tea_set_checks "$dir" skipped '[{"context": "CI / deploy (pull_request)", "status": "skipped"}]'
+  scan_hold_wake "$dir" "$NOW_LATE" >/dev/null
+  keys=$(queue_keys "$dir")
+  rows=$(queue_rows "$dir")
+  assert_contains "$keys" "pr-green-return-hold:t1" "a combined skipped head did not hold"
+  assert_contains "$rows" "hard stop 4" "a combined skipped head did not name hard stop 4"
+  assert_not_contains "$keys" "pr-green-return:t1" "a combined skipped head queued a merge wake"
+  assert_not_contains "$rows" "checks-unreadable" "a combined skipped head was parked as unreadable"
+
+  dir=$(make_case warning-combined)
+  write_policy "$dir" programmieren-community
+  write_meta "$dir" t1 "https://forgejo.example/seibert.group/programmieren-community/pulls/365" programmieren-community
+  tea_green "$dir"
+  tea_set_checks "$dir" warning '[{"context": "CI / test (pull_request)", "status": "warning"}]'
+  scan_hold_wake "$dir" "$NOW_LATE" >/dev/null
+  keys=$(queue_keys "$dir")
+  rows=$(queue_rows "$dir")
+  assert_contains "$keys" "pr-green-return-hold:t1" "a combined warning head did not hold"
+  assert_contains "$rows" "hard stop 3" "a combined warning head did not name hard stop 3"
+  assert_not_contains "$keys" "pr-green-return:t1" "a combined warning head queued a merge wake"
+  assert_not_contains "$rows" "checks-unreadable" "a combined warning head was parked as unreadable"
+
+  # The waived preview beside a skipped status stays policy-clean but holds for
+  # the protected merge path instead of parking as unreadable.
   dir=$(make_case skipped-waived)
   write_policy "$dir" programmieren-community
   write_meta "$dir" t1 "https://forgejo.example/seibert.group/programmieren-community/pulls/365" programmieren-community
   tea_green "$dir"
   tea_set_checks "$dir" failure '[{"context": "deploy / deploy (pull_request)", "status": "failure"}, {"context": "CI / docs (pull_request)", "status": "skipped"}]'
   out=$(report_case "$dir" "$NOW_LATE")
-  assert_contains "$out" $'t1\tdue\tready' "the waived preview beside a skipped status was not due"
+  assert_contains "$out" "held" "the waived preview beside a skipped status was not held"
+  assert_contains "$out" "no-bound-merge" "the waived preview beside a skipped status did not name the merge-path hold"
   assert_not_contains "$out" "checks-unreadable" "the waived preview beside a skipped status parked as unreadable"
+  assert_not_contains "$out" $'t1\tdue\tready' "the waived preview beside a skipped status queued a dead-end mandate"
 
   # A skipped GitLab head pipeline is no checks: hard stop 4, not a silent park.
   dir=$(make_case skipped-gitlab)
@@ -1003,7 +1040,7 @@ test_skipped_status_semantics() {
   assert_contains "$rows" "hard stop 4" "a skipped GitLab pipeline did not name hard stop 4"
   assert_not_contains "$keys" "pr-green-return:t1" "a skipped GitLab pipeline queued a merge wake"
   assert_not_contains "$rows" "checks-unreadable" "a skipped GitLab pipeline was parked as unreadable"
-  pass "a skipped check status is a pass and a skipped GitLab pipeline is no checks"
+  pass "a skipped check status is a pass, a skipped combined head and pipeline are no checks, and a combined warning is red"
 }
 
 test_gate_prose_does_not_accept_open_findings() {
