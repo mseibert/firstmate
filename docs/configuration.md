@@ -254,7 +254,7 @@ The skill text owns the marker spelling, the tick order, and the reinforcement r
 One positive decimal integer, in seconds, and one newline is the whole format; the default is `600`, and `FM_PR_GREEN_RETURN_SECS` overrides the file for one test or one explicit run.
 The scan applies the merge policy in `~/.claude/pr-policy.md` (or `FM_PR_GREEN_RETURN_POLICY`): a repo absent from the autonomous allowlist, a policy hard stop, an unreadable policy, or a changed-file list that cannot be proven complete holds the PR instead of merging it, and the queued wake names that reason for the captain.
 An otherwise due GitHub PR is also held, because the GitHub merge path cannot bind the merge to the verified head; Forgejo (`head_commit_id`) and GitLab (`--sha`) carry the bound-merge mandate.
-The record under `state/pr-green-return/<id>` holds the observed PR identity, class, reason, wait start, and notification, so a restart never resets the wait and one head is reported once.
+The record under `state/pr-green-return/<id>` holds the observed PR identity, class, reason, wait start, notification, and the head whose mandate is queued, so a restart never resets the wait, one head is reported once, and a queued mandate for an older head is never counted for a moved head.
 The scan never merges; `bin/fm-pr-merge.sh` still decides the merge live and binds it to the head it verifies, and the merge mandate only reaches main through the check-wake routing.
 The value is per home and is not inherited by secondmate homes.
 The script's header owns the exact config field, the evidence-backed wait start, and the hold semantics.

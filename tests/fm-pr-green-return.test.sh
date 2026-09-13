@@ -7,7 +7,9 @@
 #       its merge path cannot bind the head, while Forgejo and GitLab queue the
 #       bound-merge check wake with the verified head
 #   (b) the wait boundary is exact (threshold - 1 silent, threshold exact wakes)
-#       and a restart keeps the evidence-backed wait start instead of resetting
+#       and a restart keeps the evidence-backed wait start instead of resetting;
+#       a moved head is never counted as notified by the old head's queued
+#       mandate and queues its own under the same key, replacing the stale row
 #   (c) red CI holds the PR and names hard stop 3, never a merge; a head green
 #       only through the policy's Coolify `deploy / deploy` preview waiver holds
 #       for the protected merge path instead of a dead-end mandate; a skipped
@@ -321,6 +323,20 @@ tea_set_checks() { # <dir> <state> <statuses-json>
     > "$dir/fix/tea-status.json"
 }
 
+# tea_move_head <dir> <head> <commit-time>: move the Forgejo fixture to a new
+# head with its own commit time and a fresh matching verdict.
+tea_move_head() { # <dir> <head> <time>
+  local dir=$1 head=$2 time=$3 tmp
+  tmp=$(mktemp)
+  jq --arg head "$head" '.head.sha = $head' "$dir/fix/tea-pull.json" > "$tmp"
+  mv "$tmp" "$dir/fix/tea-pull.json"
+  jq -n --arg head "$head" '{sha: $head, state: "success", total_count: 2}' > "$dir/fix/tea-status.json"
+  jq -n --arg time "$time" '{created: $time}' > "$dir/fix/tea-commit.json"
+  jq -n --arg time "$time" \
+    '[{user: {login: "seibert-pr-agent"}, updated_at: $time, body: "Reviewed this pull request — **Good to merge (LGTM).**\n<!-- crabd:tracking -->"}]' \
+    > "$dir/fix/tea-comments.json"
+}
+
 glab_green() { # <dir>
   local dir=$1
   jq -n --arg head "$HEAD" --arg base "$BASE" '{
@@ -424,6 +440,51 @@ test_wait_boundary_is_exact_and_persists() {
   scan_case "$dir" "$((VERDICT_EPOCH + 1200))" >/dev/null
   [ "$(queue_keys "$dir" | grep -c 'pr-green-return:t1')" = 1 ] || fail "an already-notified PR was queued twice"
   pass "the wait boundary is exact and a later scan does not reset or duplicate it"
+}
+
+test_moved_head_queues_its_own_mandate() {
+  local dir keys rows out marker newest head2 h2_epoch
+  head2=3333333333333333333333333333333333333333
+  h2_epoch=$((VERDICT_EPOCH + 1200))
+  dir=$(make_case moved-head)
+  write_policy "$dir" programmieren-community
+  write_meta "$dir" t1 "https://forgejo.example/seibert.group/programmieren-community/pulls/365" programmieren-community
+  tea_green "$dir"
+  marker="$dir/home/state/pr-green-return/t1"
+
+  # The verified head holds the wait and queues its mandate.
+  out=$(scan_case "$dir" "$NOW_LATE")
+  assert_contains "$out" "head $HEAD" "the verified head did not queue its mandate"
+  assert_grep "head=$HEAD" "$marker" "the record did not name the verified head"
+  assert_grep "notified=due:$HEAD" "$marker" "the verified head was not marked notified"
+  assert_grep "queued_head=$HEAD" "$marker" "the verified head was not marked queued"
+  [ "$(queue_keys "$dir" | grep -c 'pr-green-return:t1')" = 1 ] || fail "the verified head was not queued exactly once"
+
+  # The branch moves to a new head: the old mandate must not be counted for it.
+  tea_move_head "$dir" "$head2" "2026-01-01T00:30:00Z"
+  out=$(scan_case "$dir" "$((h2_epoch + 100))")
+  assert_not_contains "$out" "head $head2" "the moved head queued a mandate before its wait"
+  assert_grep "head=$head2" "$marker" "the record did not name the moved head"
+  assert_no_grep "notified=due:$head2" "$marker" "the moved head was claimed notified before its wait"
+  assert_grep "queued_head=$HEAD" "$marker" "the moved head did not mark the old mandate stale"
+  [ "$(queue_keys "$dir" | grep -c 'pr-green-return:t1')" = 1 ] || fail "the moved head was queued before its wait"
+
+  # When its own wait elapses, the moved head queues its own mandate under the
+  # same key; the newest row for that key is the moved head's, so the stale one
+  # is replaced rather than presented beside it.
+  out=$(scan_case "$dir" "$((h2_epoch + 600))")
+  assert_contains "$out" "head $head2" "the moved head did not queue its own mandate"
+  assert_grep "notified=due:$head2" "$marker" "the moved head was not marked notified"
+  assert_grep "queued_head=$head2" "$marker" "the moved head was not marked queued"
+  [ "$(queue_keys "$dir" | grep -c 'pr-green-return:t1')" = 2 ] || fail "the moved head did not queue its own mandate beside the stale row"
+  rows=$(queue_rows "$dir")
+  newest=$(printf '%s\n' "$rows" | awk -F'\t' '$4 == "pr-green-return:t1" { row = $0 } END { print row }')
+  assert_contains "$newest" "head $head2" "the newest queued mandate does not name the moved head"
+
+  # An unchanged moved head queues nothing further.
+  scan_case "$dir" "$((h2_epoch + 900))" >/dev/null
+  [ "$(queue_keys "$dir" | grep -c 'pr-green-return:t1')" = 2 ] || fail "an unchanged head queued a duplicate mandate"
+  pass "a moved head queues its own mandate and a stale row is not counted for it"
 }
 
 test_red_checks_hold_and_name_hard_stop_3() {
@@ -1259,6 +1320,7 @@ test_lockfile_does_not_falsely_hold_package_json() {
 
 test_github_pr_holds_without_a_bound_merge
 test_wait_boundary_is_exact_and_persists
+test_moved_head_queues_its_own_mandate
 test_red_checks_hold_and_name_hard_stop_3
 test_coolify_preview_check_is_waived
 test_skipped_status_semantics
