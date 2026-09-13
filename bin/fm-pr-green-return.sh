@@ -56,9 +56,12 @@
 # second opinion to read. A lockfile glob from hard stop 5 is skipped because
 # mergeable=true already proves the "only on conflict" condition false, and a
 # package.json match holds only when its base and head scripts blocks differ or
-# cannot be read. The changed-file list is trusted only once the read proves it
-# complete: Forgejo pages until a short page, and a GitLab `overflow: true`
-# response fails closed.
+# cannot be read. `.forgejo/workflows/**` is matched as built-in hard stop 5
+# ground in addition to the policy's parsed globs, because the policy's own
+# allowlist rows name it while its Section 5 glob block omits it.
+# The changed-file list is trusted only once the read proves it complete:
+# Forgejo pages until a short page, and a GitLab `overflow: true` response
+# fails closed.
 #
 # CHECK WAKE ROUTING. The queued rows are check kind, which the Pi supervision
 # branch never offers to the branch actor (docs/pi-supervision-branch.md), so the
@@ -111,6 +114,8 @@ DEFAULT_BUDGET_SECS=45
 DEFAULT_CMD_TIMEOUT_SECS=20
 WAIT_CONFIG_NAME=pr-green-return
 WAIVED_CHECK_NAME='deploy / deploy'
+# Built-in hard stop 5 ground that the policy's Section 5 glob block may omit.
+BUILTIN_SENSITIVE_GLOBS='.forgejo/workflows/**'
 FILE_PAGE_LIMIT=50
 FILE_PAGE_MAX=40
 
@@ -309,9 +314,10 @@ glob_matches() {
 }
 
 # diff_sensitive_matches <newline-separated paths>: print every path the policy's
-# sensitive globs match. A leading `**/` also matches a root-level occurrence,
-# and a glob with no separator also matches a basename at any depth, which is
-# the safe direction: an unmatched sensitive path would be the dangerous one.
+# sensitive globs or the built-in ground match. A leading `**/` also matches a
+# root-level occurrence, and a glob with no separator also matches a basename at
+# any depth, which is the safe direction: an unmatched sensitive path would be
+# the dangerous one.
 diff_sensitive_matches() { # <newline-separated paths>
   local path glob
   [ -n "${1:-}" ] || return 0
@@ -325,6 +331,7 @@ diff_sensitive_matches() { # <newline-separated paths>
       fi
     done <<GLOBS
 $POLICY_GLOBS
+$BUILTIN_SENSITIVE_GLOBS
 GLOBS
   done <<PATHS
 $1

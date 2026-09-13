@@ -19,9 +19,10 @@
 #   (g) the advisory review verdict holds only a blocking verdict or an
 #       unreadable channel, and names hard stop 2, while a missing or stale
 #       verdict does not hold the merge
-#   (h) a sensitive diff path, an unreadable changed-file list, a Forgejo file
-#       list whose sensitive path is beyond a truncated page, and a GitLab
-#       changes overflow hold and name hard stop 5
+#   (h) a sensitive diff path, a built-in `.forgejo/workflows` path, an
+#       unreadable changed-file list, a Forgejo file list whose sensitive path
+#       is beyond a truncated page, and a GitLab changes overflow hold and name
+#       hard stop 5
 #   (i) a package.json version-only change is not sensitive, a scripts change is
 #       held by hard stop 5, and a mergeable lockfile - alone or beside
 #       package.json - is not held (the policy applies those globs only on
@@ -547,7 +548,7 @@ test_verdict_channel_is_advisory_and_holds_only_on_a_blocking_read() {
 }
 
 test_sensitive_diff_holds_hard_stop_5() {
-  local dir keys rows
+  local dir keys rows out
   dir=$(make_case sensitive)
   write_policy "$dir" project
   write_meta "$dir" t1 "https://github.com/op/project/pull/7"
@@ -574,6 +575,31 @@ test_sensitive_diff_holds_hard_stop_5() {
   assert_contains "$keys" "pr-green-return-hold:t1" "an unreadable file list did not hold"
   assert_contains "$rows" "hard stop 5" "an unreadable file list did not name hard stop 5"
   assert_not_contains "$keys" "pr-green-return:t1" "an unreadable file list queued a merge wake"
+
+  # `.forgejo/workflows/**` is built-in ground even though the fixture policy's
+  # glob block omits it: a Forgejo workflow change holds under hard stop 5.
+  dir=$(make_case sensitive-forgejo-workflow)
+  write_policy "$dir" programmieren-community
+  write_meta "$dir" t1 "https://forgejo.example/seibert.group/programmieren-community/pulls/365" programmieren-community
+  tea_green "$dir"
+  jq -n '[{filename: ".forgejo/workflows/ci.yml"}, {filename: "src/app.ts"}]' > "$dir/fix/tea-files.json"
+  scan_hold_wake "$dir" "$NOW_LATE" >/dev/null
+  keys=$(queue_keys "$dir")
+  rows=$(queue_rows "$dir")
+  assert_contains "$keys" "pr-green-return-hold:t1" "a .forgejo/workflows change did not hold"
+  assert_contains "$rows" "hard stop 5" "a .forgejo/workflows change did not name hard stop 5"
+  assert_contains "$rows" ".forgejo/workflows/ci.yml" "the hold payload did not name the sensitive path"
+  assert_not_contains "$keys" "pr-green-return:t1" "a .forgejo/workflows change queued a merge wake"
+
+  # A `.forgejo` path outside the workflows directory stays due, so the
+  # built-in ground is exactly `.forgejo/workflows/**`.
+  dir=$(make_case sensitive-forgejo-normal)
+  write_policy "$dir" programmieren-community
+  write_meta "$dir" t1 "https://forgejo.example/seibert.group/programmieren-community/pulls/365" programmieren-community
+  tea_green "$dir"
+  jq -n '[{filename: ".forgejo/config.yml"}, {filename: "src/app.ts"}]' > "$dir/fix/tea-files.json"
+  out=$(report_case "$dir" "$NOW_LATE")
+  assert_contains "$out" $'t1\tdue\tready' "a non-workflow .forgejo path was held"
   pass "a sensitive diff path holds and names hard stop 5"
 }
 
