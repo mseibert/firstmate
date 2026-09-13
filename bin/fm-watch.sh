@@ -102,8 +102,9 @@
 #   check: pr-green-return the bounded green-return scan queued a wake for an
 #                          own-task PR: either the bound-merge mandate for a
 #                          green, mergeable, policy-clean PR past the wait, or
-#                          the hold report naming the merge-policy hard stop or
-#                          the allowlist default ask that holds it
+#                          the hold report naming the merge-policy hard stop,
+#                          the allowlist default ask, or the GitHub merge
+#                          path's inability to bind the head
 #   check: secondmate wake-loop stalled: mate=<id> row=<seq> age=<seconds>s
 #                          the oldest valid row in an endpoint-recorded local
 #                          secondmate home's durable wake queue exceeded
@@ -1959,8 +1960,8 @@ while :; do
   # The same poll loop owns the bounded green-return cadence. Its own internal
   # cadence and budget keep the provider reads rare, and it stays silent unless
   # an own-task PR has held a due or held verdict past the configured wait and
-  # queued the main-owned check wake that files the bound merge, so quiet
-  # cycles never wake firstmate or consume model tokens.
+  # queued the main-owned check wake - the bound-merge mandate or the hold
+  # report - so quiet cycles never wake firstmate or consume model tokens.
   green_return_out=
   if green_return_out=$(FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" \
     "$SCRIPT_DIR/fm-pr-green-return.sh" scan 2>/dev/null); then

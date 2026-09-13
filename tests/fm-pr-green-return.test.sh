@@ -3,22 +3,29 @@
 # PR that is green, mergeable, and policy-clean but has not been merged.
 #
 # Matrix:
-#   (a) a due GitHub PR queues the bound-merge check wake with the verified head
+#   (a) an otherwise due GitHub PR queues the no-bound-merge hold report because
+#       its merge path cannot bind the head, while Forgejo and GitLab queue the
+#       bound-merge check wake with the verified head
 #   (b) the wait boundary is exact (threshold - 1 silent, threshold exact wakes)
 #       and a restart keeps the evidence-backed wait start instead of resetting
-#   (c) red CI holds the PR and names hard stop 3, never a merge
+#   (c) red CI holds the PR and names hard stop 3, never a merge, while only the
+#       policy's Coolify `deploy / deploy` preview failing does not hold
 #   (d) a repo with no checks holds and names hard stop 4
 #   (e) a foreign author holds and names hard stop 6
-#   (f) a missing or open five-lens gate holds and names hard stop 1
+#   (f) a missing or open five-lens gate holds and names hard stop 1, per-lens
+#       prose results naming an unresolved finding hold, and clean per-lens
+#       prose or a clean table passes
 #   (g) a missing, negative, or stale review verdict holds and names hard stop 2
 #   (g) the advisory review verdict holds only a blocking verdict or an
 #       unreadable channel, and names hard stop 2, while a missing or stale
 #       verdict does not hold the merge
-#   (h) a sensitive diff path, or an unreadable changed-file list, holds and
-#       names hard stop 5
+#   (h) a sensitive diff path, an unreadable changed-file list, a Forgejo file
+#       list whose sensitive path is beyond a truncated page, and a GitLab
+#       changes overflow hold and name hard stop 5
 #   (i) a package.json version-only change is not sensitive, a scripts change is
-#       held by hard stop 5, and a mergeable lockfile-only change is not held
-#       (the policy applies those globs only on conflict)
+#       held by hard stop 5, and a mergeable lockfile - alone or beside
+#       package.json - is not held (the policy applies those globs only on
+#       conflict)
 #   (j) an unreadable policy holds every candidate and names hard stop 7
 #   (k) a repo outside the autonomous allowlist is held as the default ask
 #   (l) a merged or closed PR leaves no wake and no record
@@ -99,7 +106,19 @@ case "${1:-} ${2:-}" in
   "api /user") cat "$fixed/tea-user.json" ;;
   "api "*)
     case "$2" in
-      */pulls/*/files) cat "$fixed/tea-files.json" ;;
+      */pulls/*/files*)
+        page=1
+        case "$2" in
+          *page=*) page=${2##*page=}; page=${page%%&*} ;;
+        esac
+        if [ -f "$fixed/tea-files-page$page.json" ]; then
+          cat "$fixed/tea-files-page$page.json"
+        elif [ -f "$fixed/tea-files.json" ]; then
+          cat "$fixed/tea-files.json"
+        else
+          printf '[]\n'
+        fi
+        ;;
       */pulls/*) cat "$fixed/tea-pull.json" ;;
       */git/commits/*) cat "$fixed/tea-commit.json" ;;
       */commits/*/status) cat "$fixed/tea-status.json" ;;
@@ -284,6 +303,20 @@ tea_set_verdict() { # <dir> <body-json>
     > "$dir/fix/tea-comments.json"
 }
 
+tea_set_body() { # <dir> <body>
+  local dir=$1 tmp
+  tmp=$(mktemp)
+  jq --arg body "$2" '.body = $body' "$dir/fix/tea-pull.json" > "$tmp"
+  mv "$tmp" "$dir/fix/tea-pull.json"
+}
+
+tea_set_checks() { # <dir> <state> <statuses-json>
+  local dir=$1 state=$2 statuses=$3
+  jq -n --arg head "$HEAD" --arg state "$state" --argjson statuses "$statuses" \
+    '{sha: $head, state: $state, total_count: ($statuses | length), statuses: $statuses}' \
+    > "$dir/fix/tea-status.json"
+}
+
 glab_green() { # <dir>
   local dir=$1
   jq -n --arg head "$HEAD" --arg base "$BASE" '{
@@ -300,7 +333,7 @@ glab_green() { # <dir>
   }' > "$dir/fix/glab-mr.json"
   printf '%s\n' '{"username":"op"}' > "$dir/fix/glab-user.json"
   jq -n --arg time "$HEAD_TIME" '{committed_date: $time}' > "$dir/fix/glab-commit.json"
-  jq -n '{changes: [{new_path: "src/app.ts"}]}' > "$dir/fix/glab-changes.json"
+  jq -n '{changes: [{new_path: "src/app.ts"}], overflow: false}' > "$dir/fix/glab-changes.json"
 }
 
 raw_pair() { # <dir> <base-scripts> <head-scripts>
@@ -349,34 +382,31 @@ scan_hold_wake() { # <dir> <now> [extra env pairs...]
   scan_case "$dir" "$((now + 600))" "$@" >/dev/null
 }
 
-test_due_github_pr_wakes_the_bound_merge() {
-  local dir keys rows
-  dir=$(make_case due-gh)
+test_github_pr_holds_without_a_bound_merge() {
+  local dir keys rows marker
+  dir=$(make_case github-nobound)
   write_policy "$dir" project
   write_meta "$dir" t1 "https://github.com/op/project/pull/7"
   gh_green "$dir"
-  scan_case "$dir" "$NOW_LATE" >/dev/null
+  scan_hold_wake "$dir" "$NOW_LATE" >/dev/null
   keys=$(queue_keys "$dir")
   rows=$(queue_rows "$dir")
-  assert_contains "$keys" "pr-green-return:t1" "due wake key missing"
-  assert_not_contains "$keys" "pr-green-return-hold:t1" "due PR also queued a hold"
-  assert_contains "$rows" "check: green-return t1 due:" "due payload missing the due marker"
-  assert_contains "$rows" "head $HEAD" "due payload missing the verified head"
-  assert_contains "$rows" "bin/fm-pr-merge.sh t1 https://github.com/op/project/pull/7" "due payload missing the bound merge command"
-  assert_grep "class=due" "$dir/home/state/pr-green-return/t1" "marker class is not due"
-  assert_grep "since=$VERDICT_EPOCH" "$dir/home/state/pr-green-return/t1" "marker did not keep the evidence-backed wait start"
-  assert_grep "notified=due:$HEAD" "$dir/home/state/pr-green-return/t1" "marker did not record the notification"
+  marker="$dir/home/state/pr-green-return/t1"
+  assert_contains "$keys" "pr-green-return-hold:t1" "an otherwise due GitHub PR did not queue the hold report"
+  assert_not_contains "$keys" "pr-green-return:t1" "a GitHub PR queued a bound-merge wake its merge path cannot honor"
+  assert_contains "$rows" "no bound merge" "the GitHub hold payload did not say a bound merge is impossible"
+  assert_contains "$rows" "do not merge" "the GitHub hold payload did not forbid the merge"
+  assert_grep "class=held" "$marker" "the GitHub marker class is not held"
   assert_no_grep "pr merge" "$dir/fix/calls.log" "the scan attempted a merge verb"
-  assert_no_grep "mr merge" "$dir/fix/calls.log" "the scan attempted a merge verb"
-  pass "a due GitHub PR queues the bound-merge wake with the verified head"
+  pass "an otherwise due GitHub PR is held because its merge path cannot bind the head"
 }
 
 test_wait_boundary_is_exact_and_persists() {
   local dir keys
   dir=$(make_case wait)
-  write_policy "$dir" project
-  write_meta "$dir" t1 "https://github.com/op/project/pull/7"
-  gh_green "$dir"
+  write_policy "$dir" programmieren-community
+  write_meta "$dir" t1 "https://forgejo.example/seibert.group/programmieren-community/pulls/365" programmieren-community
+  tea_green "$dir"
   scan_case "$dir" "$((VERDICT_EPOCH + 599))" >/dev/null
   keys=$(queue_keys "$dir")
   [ -z "$keys" ] || fail "a PR inside the wait already woke: $keys"
@@ -468,17 +498,17 @@ test_gate_holds_hard_stop_1() {
 }
 
 test_verdict_channel_is_advisory_and_holds_only_on_a_blocking_read() {
-  local dir keys rows
-  # A verdict that never arrives does not hold the merge (policy, 2026-09-13).
+  local dir keys rows out
+  # A verdict that never arrives trips nothing; on GitHub the only remaining
+  # hold is that the merge path cannot bind the head, never item 2.
   dir=$(make_case verdict-missing)
   write_policy "$dir" project
   write_meta "$dir" t1 "https://github.com/op/project/pull/7"
   gh_green "$dir"
   gh_set_verdict "$dir" none
-  scan_case "$dir" "$NOW_LATE" >/dev/null
-  keys=$(queue_keys "$dir")
-  assert_contains "$keys" "pr-green-return:t1" "a missing verdict held the merge"
-  assert_not_contains "$keys" "pr-green-return-hold:t1" "a missing verdict queued a hold"
+  out=$(report_case "$dir" "$NOW_LATE")
+  assert_contains "$out" "no-bound-merge" "a missing verdict was not treated as advisory"
+  assert_not_contains "$out" "hard-stop-2" "a missing verdict tripped hard stop 2"
 
   # A blocking verdict is held for the captain's own read, naming item 2.
   dir=$(make_case verdict-negative)
@@ -493,15 +523,15 @@ test_verdict_channel_is_advisory_and_holds_only_on_a_blocking_read() {
   assert_contains "$rows" "hard stop 2" "a blocking verdict did not name hard stop 2"
   assert_not_contains "$keys" "pr-green-return:t1" "a blocking verdict queued a merge wake"
 
-  # A positive verdict older than the head is advisory like any other: the
-  # merge it once approved is still allowed, provided nothing else holds.
+  # A positive verdict older than the head is advisory like any other: it does
+  # not trip item 2 on its own.
   dir=$(make_case verdict-stale)
   write_policy "$dir" project
   write_meta "$dir" t1 "https://github.com/op/project/pull/7"
   gh_green "$dir"
   gh_set_head_time "$dir" "2026-01-01T00:12:00Z"
-  scan_case "$dir" "$NOW_LATE" >/dev/null
-  assert_contains "$(queue_keys "$dir")" "pr-green-return:t1" "a stale positive verdict held the merge"
+  out=$(report_case "$dir" "$NOW_LATE")
+  assert_not_contains "$out" "hard-stop-2" "a stale positive verdict tripped hard stop 2"
 
   # A channel that cannot be read still holds: a blocking verdict could be
   # hiding behind the failed read.
@@ -550,10 +580,10 @@ test_sensitive_diff_holds_hard_stop_5() {
 test_lockfile_only_change_is_not_sensitive_on_a_mergeable_pr() {
   local dir keys
   dir=$(make_case lockfile)
-  write_policy "$dir" project
-  write_meta "$dir" t1 "https://github.com/op/project/pull/7"
-  gh_green "$dir"
-  gh_set_files "$dir" $'pnpm-lock.yaml\nsrc/app.ts'
+  write_policy "$dir" programmieren-community
+  write_meta "$dir" t1 "https://forgejo.example/seibert.group/programmieren-community/pulls/365" programmieren-community
+  tea_green "$dir"
+  jq -n '[{filename: "pnpm-lock.yaml"}, {filename: "src/app.ts"}]' > "$dir/fix/tea-files.json"
   scan_case "$dir" "$NOW_LATE" >/dev/null
   keys=$(queue_keys "$dir")
   assert_contains "$keys" "pr-green-return:t1" "a mergeable lockfile-only change was held"
@@ -564,10 +594,10 @@ test_lockfile_only_change_is_not_sensitive_on_a_mergeable_pr() {
 test_package_json_scripts_qualifier() {
   local dir keys rows
   dir=$(make_case pkg-version)
-  write_policy "$dir" project
-  write_meta "$dir" t1 "https://github.com/op/project/pull/7"
-  gh_green "$dir"
-  gh_set_files "$dir" $'package.json'
+  write_policy "$dir" programmieren-community
+  write_meta "$dir" t1 "https://forgejo.example/seibert.group/programmieren-community/pulls/365" programmieren-community
+  tea_green "$dir"
+  jq -n '[{filename: "package.json"}]' > "$dir/fix/tea-files.json"
   raw_pair "$dir" '{"build":"tsc"}' '{"build":"tsc"}'
   scan_case "$dir" "$NOW_LATE" >/dev/null
   assert_contains "$(queue_keys "$dir")" "pr-green-return:t1" "a version-only package.json change was not due"
@@ -642,6 +672,7 @@ test_forgejo_due_with_fresh_crabd_verdict() {
   rows=$(queue_rows "$dir")
   assert_contains "$keys" "pr-green-return:t1" "a green Forgejo PR with a fresh crabd verdict was not due"
   assert_contains "$rows" "due" "the Forgejo due payload is missing"
+  assert_contains "$rows" "bin/fm-pr-merge.sh t1 https://forgejo.example/seibert.group/programmieren-community/pulls/365" "the Forgejo due payload is missing the bound merge command"
   assert_no_grep "merge " "$dir/fix/calls.log" "the scan attempted a merge verb"
   pass "a Forgejo PR with a fresh crabd verdict is due"
 }
@@ -678,15 +709,17 @@ test_forgejo_verdict_channel() {
 }
 
 test_gitlab_needs_no_verdict_channel() {
-  local dir keys
+  local dir keys rows
   dir=$(make_case gitlab)
   write_policy "$dir" project
   write_meta "$dir" t1 "https://gitlab.example/group/project/-/merge_requests/7"
   glab_green "$dir"
   scan_case "$dir" "$NOW_LATE" >/dev/null
   keys=$(queue_keys "$dir")
+  rows=$(queue_rows "$dir")
   assert_contains "$keys" "pr-green-return:t1" "a GitLab MR without a policy verdict channel was not due"
   assert_not_contains "$keys" "pr-green-return-hold:t1" "a GitLab MR queued a verdict hold"
+  assert_contains "$rows" "bin/fm-pr-merge.sh t1 https://gitlab.example/group/project/-/merge_requests/7" "the GitLab due payload is missing the bound merge command"
   pass "GitLab has no policy verdict channel, and a verdict that cannot arrive does not hold"
 }
 
@@ -709,13 +742,13 @@ test_report_is_read_only_and_names_the_hold() {
 test_scan_cadence_suppresses_repeat_work() {
   local dir keys
   dir=$(make_case cadence)
-  write_policy "$dir" project
-  write_meta "$dir" t1 "https://github.com/op/project/pull/7"
-  gh_green "$dir"
+  write_policy "$dir" programmieren-community
+  write_meta "$dir" t1 "https://forgejo.example/seibert.group/programmieren-community/pulls/365" programmieren-community
+  tea_green "$dir"
   scan_case "$dir" "$NOW_LATE" >/dev/null
   keys=$(queue_keys "$dir")
   assert_contains "$keys" "pr-green-return:t1" "the first scan did not queue the due wake"
-  gh_set_checks "$dir" '[{"__typename":"CheckRun","status":"COMPLETED","conclusion":"FAILURE","name":"Lint"}]'
+  tea_set_checks "$dir" failure '[{"context": "CI / lint (pull_request)", "status": "failure"}]'
   env FM_HOME="$dir/home" \
     FM_PR_GREEN_RETURN_POLICY="$dir/fix/policy.md" \
     FM_TEST_FIX="$dir/fix" FM_TEST_LOG="$dir/fix/calls.log" \
@@ -729,10 +762,10 @@ test_scan_cadence_suppresses_repeat_work() {
 test_every_candidate_is_evaluated_in_one_scan() {
   local dir keys
   dir=$(make_case two-tasks)
-  write_policy "$dir" project
-  write_meta "$dir" t1 "https://github.com/op/project/pull/7"
-  write_meta "$dir" t2 "https://github.com/op/project/pull/8"
-  gh_green "$dir"
+  write_policy "$dir" programmieren-community
+  write_meta "$dir" t1 "https://forgejo.example/seibert.group/programmieren-community/pulls/365" programmieren-community
+  write_meta "$dir" t2 "https://forgejo.example/seibert.group/programmieren-community/pulls/366" programmieren-community
+  tea_green "$dir"
   scan_case "$dir" "$NOW_LATE" >/dev/null
   keys=$(queue_keys "$dir")
   assert_contains "$keys" "pr-green-return:t1" "the first candidate was not evaluated"
@@ -743,9 +776,9 @@ test_every_candidate_is_evaluated_in_one_scan() {
 test_watcher_surfaces_the_green_return_check_wake() {
   local dir status=0
   dir=$(make_case watcher)
-  write_policy "$dir" project
-  write_meta "$dir" t1 "https://github.com/op/project/pull/7"
-  gh_green "$dir"
+  write_policy "$dir" programmieren-community
+  write_meta "$dir" t1 "https://forgejo.example/seibert.group/programmieren-community/pulls/365" programmieren-community
+  tea_green "$dir"
   FM_HOME="$dir/home" FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 \
     FM_PR_GREEN_RETURN_POLICY="$dir/fix/policy.md" \
     FM_TEST_FIX="$dir/fix" FM_TEST_LOG="$dir/fix/calls.log" \
@@ -781,9 +814,9 @@ test_invalid_wait_config_fails_closed() {
 test_config_file_sets_the_wait() {
   local dir keys
   dir=$(make_case config-wait)
-  write_policy "$dir" project
-  write_meta "$dir" t1 "https://github.com/op/project/pull/7"
-  gh_green "$dir"
+  write_policy "$dir" programmieren-community
+  write_meta "$dir" t1 "https://forgejo.example/seibert.group/programmieren-community/pulls/365" programmieren-community
+  tea_green "$dir"
   printf '%s\n' 601 > "$dir/home/config/pr-green-return"
   env FM_HOME="$dir/home" \
     FM_PR_GREEN_RETURN_POLICY="$dir/fix/policy.md" \
@@ -801,14 +834,14 @@ test_config_file_sets_the_wait() {
 test_non_candidates_are_ignored() {
   local dir keys
   dir=$(make_case non-candidates)
-  write_policy "$dir" project
-  write_meta "$dir" t1 "https://github.com/op/project/pull/7"
+  write_policy "$dir" programmieren-community
+  write_meta "$dir" t1 "https://forgejo.example/seibert.group/programmieren-community/pulls/365" programmieren-community
   fm_write_meta "$dir/home/state/t9.meta" \
     "window=firstmate:fm-t9" \
     "kind=ship" \
     "mode=direct-PR"
   fm_write_secondmate_meta "$dir/home/state/mate1.meta" "$dir/mate-home"
-  gh_green "$dir"
+  tea_green "$dir"
   scan_case "$dir" "$NOW_LATE" >/dev/null
   keys=$(queue_keys "$dir")
   assert_contains "$keys" "pr-green-return:t1" "the PR candidate was not evaluated"
@@ -817,15 +850,217 @@ test_non_candidates_are_ignored() {
   pass "a task without a pr= line, and a secondmate meta, are not candidates"
 }
 
-test_due_github_pr_wakes_the_bound_merge
+test_coolify_preview_check_is_waived() {
+  local dir keys rows out
+  # Only the policy's named Coolify preview poller fails: the PR may still be due.
+  dir=$(make_case coolify-waived)
+  write_policy "$dir" programmieren-community
+  write_meta "$dir" t1 "https://forgejo.example/seibert.group/programmieren-community/pulls/365" programmieren-community
+  tea_green "$dir"
+  tea_set_checks "$dir" failure '[{"context": "deploy / deploy (pull_request)", "status": "failure"}, {"context": "CI / test (pull_request)", "status": "success"}]'
+  scan_case "$dir" "$NOW_LATE" >/dev/null
+  keys=$(queue_keys "$dir")
+  assert_contains "$keys" "pr-green-return:t1" "the waived Coolify preview held the PR"
+  assert_not_contains "$keys" "pr-green-return-hold:t1" "the waived Coolify preview queued a hold"
+
+  # Any other failing check still holds under hard stop 3.
+  dir=$(make_case coolify-other-red)
+  write_policy "$dir" programmieren-community
+  write_meta "$dir" t1 "https://forgejo.example/seibert.group/programmieren-community/pulls/365" programmieren-community
+  tea_green "$dir"
+  tea_set_checks "$dir" failure '[{"context": "deploy / deploy (pull_request)", "status": "failure"}, {"context": "CI / lint (pull_request)", "status": "failure"}]'
+  scan_hold_wake "$dir" "$NOW_LATE" >/dev/null
+  keys=$(queue_keys "$dir")
+  rows=$(queue_rows "$dir")
+  assert_contains "$keys" "pr-green-return-hold:t1" "a real failing check beside the waived preview did not hold"
+  assert_contains "$rows" "hard stop 3" "a real failing check beside the waived preview did not name hard stop 3"
+  assert_not_contains "$keys" "pr-green-return:t1" "a red check set queued a merge wake"
+
+  # The GitHub path applies the same waiver; its remaining hold is the unbound
+  # merge path, never hard stop 3.
+  dir=$(make_case coolify-github)
+  write_policy "$dir" project
+  write_meta "$dir" t1 "https://github.com/op/project/pull/7"
+  gh_green "$dir"
+  gh_set_checks "$dir" '[{"__typename":"CheckRun","status":"COMPLETED","conclusion":"FAILURE","name":"deploy / deploy"},{"__typename":"CheckRun","status":"COMPLETED","conclusion":"SUCCESS","name":"Lint"}]'
+  out=$(report_case "$dir" "$NOW_LATE")
+  assert_not_contains "$out" "hard-stop-3" "the waived GitHub preview check tripped hard stop 3"
+  assert_contains "$out" "no-bound-merge" "the waived GitHub preview did not fall through to the unbound-merge hold"
+  pass "the Coolify preview check is waived while every other failing check still holds"
+}
+
+test_gate_prose_does_not_accept_open_findings() {
+  local dir token out body
+  # The reported programmieren-community#365 block: six per-lens prose results,
+  # several naming unresolved findings, no table and no literal `Result: clean`.
+  dir=$(make_case gate-prose-365)
+  write_policy "$dir" programmieren-community
+  write_meta "$dir" t1 "https://forgejo.example/seibert.group/programmieren-community/pulls/365" programmieren-community
+  tea_green "$dir"
+  # shellcheck disable=SC2016 # Literal gate prose is test data.
+  tea_set_body "$dir" '## Five-Lens-Block
+
+**1. `code-review` — Verdikt: "nicht CLEAN", 2 major + 11 minor + 4 nit.**
+**2. `maintainability-review` — Verdikt: NEEDS REWORK.**
+**3. `architecture-system-design-reviewer` — Verdikt: HOLD.**
+**4. `design-decision-questioner` — Verdikt: 6 Leaks.**
+**5. `self-containment-review` — Verdikt: kein Blocker.**
+**6. `review-gate` — Verdikt: kein Blocker.**
+'
+  scan_hold_wake "$dir" "$NOW_LATE" >/dev/null
+  assert_contains "$(queue_keys "$dir")" "pr-green-return-hold:t1" "the reported #365 prose block was accepted as clean"
+  assert_contains "$(queue_rows "$dir")" "hard stop 1" "the #365 prose block did not name hard stop 1"
+
+  # Every named unresolved-finding spelling trips the stop even when five other
+  # per-lens entries look clean.
+  for token in '3 major findings remain' 'must-fix before merge' 'should-fix items' 'HOLD' 'NEEDS REWORK' 'nicht CLEAN' 'Findings: 3' '1 open finding' '6 Leaks'; do
+    dir=$(make_case "gate-prose-$(printf '%s' "$token" | tr -c 'a-z0-9' '-')")
+    write_policy "$dir" programmieren-community
+    write_meta "$dir" t1 "https://forgejo.example/seibert.group/programmieren-community/pulls/365" programmieren-community
+    tea_green "$dir"
+    # shellcheck disable=SC2016 # Literal gate prose is test data.
+    body='## Five-Lens-Block
+
+**1. `code-review` — Verdikt: kein Blocker.**
+**2. `maintainability-review` — Verdikt: kein Blocker.**
+**3. `architecture-system-design-reviewer` — Verdikt: kein Blocker.**
+**4. `design-decision-questioner` — Verdikt: kein Blocker.**
+**5. `self-containment-review` — Verdikt: kein Blocker.**
+**6. `review-gate` — Verdikt: '"$token"'.**
+'
+    tea_set_body "$dir" "$body"
+    out=$(report_case "$dir" "$NOW_LATE")
+    assert_contains "$out" "hard-stop-1" "the prose token \"$token\" was accepted as clean"
+  done
+
+  # Five clean per-lens prose entries pass (tea_green's own body is exactly
+  # that), and so does a clean table without the literal `Result: clean` line.
+  dir=$(make_case gate-prose-clean)
+  write_policy "$dir" programmieren-community
+  write_meta "$dir" t1 "https://forgejo.example/seibert.group/programmieren-community/pulls/365" programmieren-community
+  tea_green "$dir"
+  out=$(report_case "$dir" "$NOW_LATE")
+  assert_contains "$out" $'t1\tdue\tready' "five clean per-lens prose entries were rejected"
+
+  dir=$(make_case gate-table-clean)
+  write_policy "$dir" programmieren-community
+  write_meta "$dir" t1 "https://forgejo.example/seibert.group/programmieren-community/pulls/365" programmieren-community
+  tea_green "$dir"
+  tea_set_body "$dir" '## Five-Lens-Block
+
+| Lens | Ran | Findings | Fixed |
+|---|---|---|---|
+| code-review | yes | 0 | 0 |
+| maintainability-review | yes | 0 | 0 |
+| architecture-system-design-reviewer | yes | 0 | 0 |
+| design-decision-questioner | yes | 0 | 0 |
+| self-containment-review | yes | 0 | 0 |
+'
+  out=$(report_case "$dir" "$NOW_LATE")
+  assert_contains "$out" $'t1\tdue\tready' "a clean five-lens table without the literal Result line was rejected"
+  pass "per-lens prose results naming open findings hold; clean prose and clean tables pass"
+}
+
+test_forgejo_file_list_pagination() {
+  local dir keys rows
+  # A full first page forces a second request; the sensitive path on that second
+  # page must hold instead of being treated as an absent canary.
+  dir=$(make_case forgejo-pages-sensitive)
+  write_policy "$dir" programmieren-community
+  write_meta "$dir" t1 "https://forgejo.example/seibert.group/programmieren-community/pulls/365" programmieren-community
+  tea_green "$dir"
+  jq -n '[range(0; 50) | {filename: ("src/module-\(.)/file.ts")}]' > "$dir/fix/tea-files-page1.json"
+  jq -n '[{filename: "packages/database/prisma/migrations/20260912090000_add_csg_call_metric/migration.sql"}]' > "$dir/fix/tea-files-page2.json"
+  scan_hold_wake "$dir" "$NOW_LATE" >/dev/null
+  keys=$(queue_keys "$dir")
+  rows=$(queue_rows "$dir")
+  assert_contains "$keys" "pr-green-return-hold:t1" "a sensitive file beyond the first page did not hold"
+  assert_not_contains "$keys" "pr-green-return:t1" "a sensitive file beyond the first page queued a merge wake"
+  assert_contains "$rows" "hard stop 5" "the paginated hold did not name hard stop 5"
+  assert_contains "$rows" "migration" "the hold payload did not name the sensitive path"
+  assert_grep "page=2" "$dir/fix/calls.log" "the scan did not request the second file page"
+
+  # A short page proves completeness and a full page followed by a clean page
+  # still reaches due.
+  dir=$(make_case forgejo-pages-complete)
+  write_policy "$dir" programmieren-community
+  write_meta "$dir" t1 "https://forgejo.example/seibert.group/programmieren-community/pulls/365" programmieren-community
+  tea_green "$dir"
+  jq -n '[{filename: "src/a.ts"}, {filename: "src/b.ts"}]' > "$dir/fix/tea-files-page1.json"
+  scan_case "$dir" "$NOW_LATE" >/dev/null
+  assert_contains "$(queue_keys "$dir")" "pr-green-return:t1" "a complete short file page was not treated as complete"
+  assert_no_grep "page=2" "$dir/fix/calls.log" "a short file page still requested a second page"
+
+  dir=$(make_case forgejo-pages-more)
+  write_policy "$dir" programmieren-community
+  write_meta "$dir" t1 "https://forgejo.example/seibert.group/programmieren-community/pulls/365" programmieren-community
+  tea_green "$dir"
+  jq -n '[range(0; 50) | {filename: ("src/module-\(.)/file.ts")}]' > "$dir/fix/tea-files-page1.json"
+  jq -n '[{filename: "src/clean.ts"}]' > "$dir/fix/tea-files-page2.json"
+  scan_case "$dir" "$NOW_LATE" >/dev/null
+  assert_contains "$(queue_keys "$dir")" "pr-green-return:t1" "a full page followed by a clean page held"
+  pass "a truncated Forgejo file page holds and a complete paginated read still reaches due"
+}
+
+test_gitlab_changes_overflow_holds() {
+  local dir keys rows tmp
+  dir=$(make_case gitlab-overflow)
+  write_policy "$dir" project
+  write_meta "$dir" t1 "https://gitlab.example/group/project/-/merge_requests/7"
+  glab_green "$dir"
+  tmp=$(mktemp)
+  jq '.overflow = true' "$dir/fix/glab-changes.json" > "$tmp"
+  mv "$tmp" "$dir/fix/glab-changes.json"
+  scan_hold_wake "$dir" "$NOW_LATE" >/dev/null
+  keys=$(queue_keys "$dir")
+  rows=$(queue_rows "$dir")
+  assert_contains "$keys" "pr-green-return-hold:t1" "a GitLab changes overflow did not hold"
+  assert_not_contains "$keys" "pr-green-return:t1" "a GitLab changes overflow queued a merge wake"
+  assert_contains "$rows" "hard stop 5" "a GitLab changes overflow did not name hard stop 5"
+  pass "a GitLab changes overflow fails closed under hard stop 5"
+}
+
+test_lockfile_does_not_falsely_hold_package_json() {
+  local dir keys rows
+  dir=$(make_case pkg-lockfile)
+  write_policy "$dir" programmieren-community
+  write_meta "$dir" t1 "https://forgejo.example/seibert.group/programmieren-community/pulls/365" programmieren-community
+  tea_green "$dir"
+  jq -n '[{filename: "package.json"}, {filename: "pnpm-lock.yaml"}]' > "$dir/fix/tea-files.json"
+  raw_pair "$dir" '{"build":"tsc"}' '{"build":"tsc"}'
+  scan_case "$dir" "$NOW_LATE" >/dev/null
+  assert_contains "$(queue_keys "$dir")" "pr-green-return:t1" "a lockfile beside unchanged package.json scripts was falsely held"
+
+  dir=$(make_case pkg-lockfile-scripts)
+  write_policy "$dir" programmieren-community
+  write_meta "$dir" t1 "https://forgejo.example/seibert.group/programmieren-community/pulls/365" programmieren-community
+  tea_green "$dir"
+  jq -n '[{filename: "package.json"}, {filename: "pnpm-lock.yaml"}]' > "$dir/fix/tea-files.json"
+  raw_pair "$dir" '{"build":"tsc"}' '{"build":"tsc && rm -rf /"}'
+  scan_hold_wake "$dir" "$NOW_LATE" >/dev/null
+  keys=$(queue_keys "$dir")
+  rows=$(queue_rows "$dir")
+  assert_contains "$keys" "pr-green-return-hold:t1" "changed package.json scripts beside a lockfile did not hold"
+  assert_not_contains "$rows" "pnpm-lock.yaml" "the scripts hold named the lockfile instead of package.json"
+  assert_contains "$rows" "package.json" "the scripts hold did not name package.json"
+  assert_not_contains "$keys" "pr-green-return:t1" "changed package.json scripts queued a merge wake"
+  pass "a lockfile beside package.json is skipped, and only a scripts change holds"
+}
+
+test_github_pr_holds_without_a_bound_merge
 test_wait_boundary_is_exact_and_persists
 test_red_checks_hold_and_name_hard_stop_3
+test_coolify_preview_check_is_waived
 test_no_checks_hold_and_name_hard_stop_4
 test_foreign_pr_holds_hard_stop_6
 test_gate_holds_hard_stop_1
+test_gate_prose_does_not_accept_open_findings
 test_verdict_channel_is_advisory_and_holds_only_on_a_blocking_read
 test_sensitive_diff_holds_hard_stop_5
+test_forgejo_file_list_pagination
+test_gitlab_changes_overflow_holds
 test_lockfile_only_change_is_not_sensitive_on_a_mergeable_pr
+test_lockfile_does_not_falsely_hold_package_json
 test_package_json_scripts_qualifier
 test_unreadable_policy_holds_hard_stop_7
 test_allowlist_default_ask_holds

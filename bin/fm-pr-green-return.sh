@@ -8,12 +8,14 @@
 # reads the live pull request, applies the merge policy in ~/.claude/pr-policy.md
 # (hard stops and the autonomous allowlist), and, once the PR has held the same
 # verdict for the configured wait, queues a check wake for MAIN:
-#   - due  (green + mergeable + no policy hold + repo allowlisted): the wake
-#     carries the mandate to merge through bin/fm-pr-merge.sh bound to the head
-#     this scan verified. The scan itself never merges, and only main-owned
-#     check wakes can carry that mandate.
-#   - held (a policy hard stop, or the allowlist default ask): the wake names the
-#     hard stop and asks for the captain's decision instead of a merge.
+#   - due  (green + mergeable + no policy hold + repo allowlisted + a forge
+#     whose merge path can bind a head): the wake carries the mandate to merge
+#     through bin/fm-pr-merge.sh bound to the head this scan verified, which is
+#     Forgejo's head_commit_id and GitLab's --sha. The scan itself never merges,
+#     and only main-owned check wakes can carry that mandate.
+#   - held (a policy hard stop, the allowlist default ask, or a GitHub PR whose
+#     merge path cannot bind the head): the wake names the reason and asks for
+#     the captain's decision instead of a merge.
 # Whether the merge actually lands is still decided live at merge time by
 # bin/fm-pr-merge.sh; this path is a detector and a wake, never a merge.
 #
@@ -37,21 +39,25 @@
 #
 # EDGE SEMANTICS. A repo with no checks at all trips hard stop 4 (an empty
 # combined status is never green), and a check set that is pending or unreadable
-# is never green. The five-lens gate (hard stop 1) is accepted as `Result: clean`,
-# as a table whose every row ran and closed its findings, or as at least five
-# lens result entries; a table with an open finding trips the stop. The review
-# verdict (item 2) follows the policy's forge-specific channels - GitHub's newest
-# seibert-pr-agent `**Verdict:**` comment, Forgejo's crabd tracking comment - and
-# the policy's current wording makes that item advisory, not a gate: a verdict
-# that never arrives does not hold the merge, while one that asks for changes,
-# or a verdict channel that cannot be read, holds for the captain's own read.
-# Nothing is held for a forge the policy defines no verdict channel for; there
-# is simply no second opinion to read. The policy's Coolify `deploy / deploy`
-# preview exception is deliberately NOT machine-waived: a failing check holds
-# the PR for a human, and a false hold is the safe side. A lockfile glob from
-# hard stop 5 is skipped because mergeable=true already proves the "only on
-# conflict" condition false, and a package.json match holds only when its base
-# and head scripts blocks differ or cannot be read.
+# is never green. The policy's Coolify `deploy / deploy` preview exception is
+# machine-waived: a failing check whose normalized name is exactly that poller
+# does not turn the check set red by itself, and every other failing check still
+# trips hard stop 3. The five-lens gate (hard stop 1) is accepted as
+# `Result: clean`, as a table whose every row ran and closed its findings, or as
+# at least five per-lens result entries that name no unresolved finding; a lens
+# result that names an open finding trips the stop. The review verdict (item 2)
+# follows the policy's forge-specific channels - GitHub's newest seibert-pr-agent
+# `**Verdict:**` comment, Forgejo's crabd tracking comment - and the policy's
+# current wording makes that item advisory, not a gate: a verdict that never
+# arrives does not hold the merge, while one that asks for changes, or a verdict
+# channel that cannot be read, holds for the captain's own read. Nothing is held
+# for a forge the policy defines no verdict channel for; there is simply no
+# second opinion to read. A lockfile glob from hard stop 5 is skipped because
+# mergeable=true already proves the "only on conflict" condition false, and a
+# package.json match holds only when its base and head scripts blocks differ or
+# cannot be read. The changed-file list is trusted only once the read proves it
+# complete: Forgejo pages until a short page, and a GitLab `overflow: true`
+# response fails closed.
 #
 # CHECK WAKE ROUTING. The queued rows are check kind, which the Pi supervision
 # branch never offers to the branch actor (docs/pi-supervision-branch.md), so the
@@ -103,6 +109,9 @@ DEFAULT_INTERVAL_SECS=60
 DEFAULT_BUDGET_SECS=45
 DEFAULT_CMD_TIMEOUT_SECS=20
 WAIT_CONFIG_NAME=pr-green-return
+WAIVED_CHECK_NAME='deploy / deploy'
+FILE_PAGE_LIMIT=50
+FILE_PAGE_MAX=40
 
 # The runtime knobs keep a bounded scan bounded even on a slow forge. Only the
 # wait threshold is captain-configurable; the cadence, budget, and per-command
@@ -349,10 +358,18 @@ package_json_raw() { # <path> <ref>
 # untouched. Anything unreadable or beyond the bounded check holds.
 package_json_scripts_hold() { # <matched paths>
   local path count=0 base head base_scripts head_scripts
+  local package_jsons=()
   while IFS= read -r path; do
     [ -n "$path" ] || continue
     case ${path##*/} in
-      package.json) ;;
+      package.json)
+        package_jsons+=("$path")
+        count=$((count + 1))
+        if [ "$count" -gt 6 ]; then
+          printf 'package.json matches exceed the bounded scripts check\n'
+          return 0
+        fi
+        ;;
       pnpm-lock.yaml|package-lock.json|yarn.lock)
         # The policy's lockfile globs apply only on conflict, and this scan only
         # reaches a mergeable PR, so that condition is provably false here.
@@ -363,17 +380,11 @@ package_json_scripts_hold() { # <matched paths>
         return 0
         ;;
     esac
-    count=$((count + 1))
-    if [ "$count" -gt 6 ]; then
-      printf 'package.json matches exceed the bounded scripts check\n'
-      return 0
-    fi
   done <<PATHS
 $1
 PATHS
   [ "$count" -gt 0 ] || return 0
-  while IFS= read -r path; do
-    [ -n "$path" ] || continue
+  for path in "${package_jsons[@]}"; do
     base=$(package_json_raw "$path" "$PR_BASE_SHA") || base=
     head=$(package_json_raw "$path" "$PR_HEAD") || head=
     if [ -n "$base" ] && [ -n "$head" ] \
@@ -384,9 +395,7 @@ PATHS
     fi
     printf 'package.json scripts changed or unreadable (%s)\n' "$path"
     return 0
-  done <<PATHS
-$1
-PATHS
+  done
   printf '\n'
 }
 
@@ -394,10 +403,11 @@ PATHS
 
 # gate_clean <body>: hard stop 1. The policy owner's clarification accepts
 # `Result: clean`, a table in which every lens ran and no finding is open, or a
-# per-lens result for every lens; a missing block, fewer than five lens results,
-# or a table with an open finding trips the stop.
+# per-lens result for every lens that names no unresolved finding; a missing
+# block, fewer than five lens results, a table with an open finding, or a lens
+# result naming an open finding trips the stop.
 gate_clean() {
-  local body=$1 section clean table_rows table_ok results
+  local body=$1 section clean table_rows table_ok result_lines result_count
   section=$(printf '%s\n' "$body" | awk '
     /^#+[ \t]/ {
       line = tolower($0)
@@ -438,11 +448,71 @@ gate_clean() {
     return 1
   fi
 
-  # Per-lens prose variant: at least five lens result entries. Their substance
-  # is anchored by the independent fresh-verdict hard stop.
-  results=$(printf '%s\n' "$section" \
-    | grep -Eic '(result|verdikt|ergebnis)[[:space:]]*:.*[^[:space:]]' || true)
-  [ "${results:-0}" -ge 5 ]
+  # Per-lens prose variant: at least five lens result entries, none of which
+  # names an unresolved finding. A result naming an open finding trips the stop
+  # even when five other entries look clean.
+  result_lines=$(printf '%s\n' "$section" | sed 's/[*_`]//g' \
+    | grep -Ei '(result|verdikt|ergebnis)[[:space:]]*:.*[^[:space:]]' || true)
+  [ -n "$result_lines" ] || return 1
+  if printf '%s\n' "$result_lines" \
+    | grep -Eiq 'nicht[ -]?clean|not[[:space:]]+clean|findings?[[:space:]]*:[[:space:]]*[1-9][0-9]*'; then
+    return 1
+  fi
+  if printf '%s\n' "$result_lines" \
+    | grep -Eiwq 'majors?|must-?fix|should-?fix|hold|rework|offen|open|leaks?'; then
+    return 1
+  fi
+  result_count=$(printf '%s\n' "$result_lines" | grep -c . || true)
+  [ "${result_count:-0}" -ge 5 ]
+}
+
+# ---------------------------------------------------------------- checks ----
+
+# check_name_waived <name>: the policy waives exactly the Coolify `deploy /
+# deploy` preview poller as known-non-blocking. Spacing and case are normalized
+# and the forge's trailing event suffix is dropped, so Forgejo's context form
+# `deploy / deploy (pull_request)` is the same check.
+check_name_waived() { # <name>
+  local name
+  name=$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]' \
+    | sed 's/([^()]*)[[:space:]]*$//; s/^[[:space:]]*//; s/[[:space:]]*$//; s/[[:space:]]\{1,\}/ /g')
+  [ "$name" = "$WAIVED_CHECK_NAME" ]
+}
+
+# classify_check_lines: read `<name>\t<class>` lines (class pass|fail|pending)
+# and print the aggregate green|none|red|pending|unreadable. A failing waived
+# preview does not fail the aggregate by itself; every other failing check does.
+classify_check_lines() {
+  local name class total=0 fail=0 pending=0 unknown=0
+  while IFS=$'\t' read -r name class; do
+    [ -n "$class" ] || continue
+    total=$((total + 1))
+    case "$class" in
+      pass) ;;
+      pending) pending=1 ;;
+      fail)
+        if ! check_name_waived "$name"; then fail=1; fi
+        ;;
+      *) unknown=1 ;;
+    esac
+  done
+  if [ "$total" -eq 0 ]; then
+    printf 'none\n'
+    return 0
+  fi
+  if [ "$unknown" -eq 1 ]; then
+    printf 'unreadable\n'
+    return 0
+  fi
+  if [ "$fail" -eq 1 ]; then
+    printf 'red\n'
+    return 0
+  fi
+  if [ "$pending" -eq 1 ]; then
+    printf 'pending\n'
+    return 0
+  fi
+  printf 'green\n'
 }
 
 # ------------------------------------------------------------- providers ----
@@ -481,7 +551,7 @@ provider_unreadable() {
 }
 
 gh_read() {
-  local json fields line
+  local json fields line checks
   json=$(fm_run_timed "$FM_PR_GREEN_RETURN_CMD_TIMEOUT" gh pr view "$PR_URL" \
     --json state,isDraft,mergeable,headRefOid,baseRefOid,author,body,commits,statusCheckRollup 2>/dev/null) || {
     provider_unreadable
@@ -533,22 +603,23 @@ FIELDS
     return 0
   fi
   PR_BODY=$(printf '%s' "$json" | jq -r '.body // ""' 2>/dev/null) || PR_BODY=
-  PR_CHECKS=$(printf '%s' "$json" | jq -r '
-    def cls:
-      if .__typename == "CheckRun" then
-        if .status != "COMPLETED" then "pending"
-        elif (.conclusion == "SUCCESS" or .conclusion == "NEUTRAL" or .conclusion == "SKIPPED") then "pass"
-        elif (.conclusion == "FAILURE" or .conclusion == "CANCELLED" or .conclusion == "TIMED_OUT" or .conclusion == "ACTION_REQUIRED" or .conclusion == "STARTUP_FAILURE") then "fail"
-        else "pending" end
-      elif .state == "SUCCESS" then "pass"
-      elif (.state == "PENDING" or .state == "EXPECTED") then "pending"
-      elif (.state == "FAILURE" or .state == "ERROR") then "fail"
-      else "pending" end;
-    [.statusCheckRollup[]? | cls] as $c
-    | if ($c | length) == 0 then "none"
-      elif any($c[]; . == "fail") then "red"
-      elif any($c[]; . == "pending") then "pending"
-      else "green" end' 2>/dev/null) || PR_CHECKS=unreadable
+  if checks=$(printf '%s' "$json" | jq -r '
+      def cls:
+        if .__typename == "CheckRun" then
+          if .status != "COMPLETED" then "pending"
+          elif (.conclusion == "SUCCESS" or .conclusion == "NEUTRAL" or .conclusion == "SKIPPED") then "pass"
+          elif (.conclusion == "FAILURE" or .conclusion == "CANCELLED" or .conclusion == "TIMED_OUT" or .conclusion == "ACTION_REQUIRED" or .conclusion == "STARTUP_FAILURE") then "fail"
+          else "pending" end
+        elif .state == "SUCCESS" then "pass"
+        elif (.state == "PENDING" or .state == "EXPECTED") then "pending"
+        elif (.state == "FAILURE" or .state == "ERROR") then "fail"
+        else "pending" end;
+      .statusCheckRollup[]?
+      | [((.name // .context // "") | tostring), cls] | @tsv' 2>/dev/null); then
+    PR_CHECKS=$(printf '%s\n' "$checks" | classify_check_lines)
+  else
+    PR_CHECKS=unreadable
+  fi
 }
 
 gh_verdict_read() {
@@ -650,7 +721,7 @@ FIELDS
 }
 
 forgejo_checks_read() {
-  local json state total
+  local json state total statuses
   json=$(tea_read "/repos/$PR_PATH/commits/$PR_HEAD/status") || { PR_CHECKS=unreadable; return 0; }
   state=$(printf '%s' "$json" | jq -r '.state // ""' 2>/dev/null) || { PR_CHECKS=unreadable; return 0; }
   total=$(printf '%s' "$json" | jq -r '.total_count // 0' 2>/dev/null) || { PR_CHECKS=unreadable; return 0; }
@@ -661,7 +732,24 @@ forgejo_checks_read() {
     success)
       if [ "$total" -gt 0 ]; then PR_CHECKS=green; else PR_CHECKS=none; fi
       ;;
-    failure|error) PR_CHECKS=red ;;
+    failure|error)
+      if statuses=$(printf '%s' "$json" | jq -r '
+          if (.statuses | type) == "array" then
+            .statuses[]?
+            | [((.context // "") | tostring),
+               ((.status // "") as $s
+                | if $s == "success" then "pass"
+                  elif $s == "pending" then "pending"
+                  elif $s == "failure" or $s == "error" or $s == "warning" then "fail"
+                  else "unknown" end)]
+            | @tsv
+          else error("combined status carries no statuses list") end' 2>/dev/null); then
+        PR_CHECKS=$(printf '%s\n' "$statuses" | classify_check_lines)
+        [ "$PR_CHECKS" != none ] || PR_CHECKS=red
+      else
+        PR_CHECKS=unreadable
+      fi
+      ;;
     pending) PR_CHECKS=pending ;;
     '') PR_CHECKS=none ;;
     *) PR_CHECKS=unreadable ;;
@@ -709,11 +797,23 @@ forgejo_operator_login() {
 }
 
 forgejo_files_read() {
-  local files
+  local page=1 page_json page_files count
   PR_FILES_READ=0
-  files=$(tea_read "/repos/$PR_PATH/pulls/$PR_NUMBER/files") || { PR_FILES=; return 0; }
-  PR_FILES=$(printf '%s' "$files" | jq -r 'if type == "array" then .[]?.filename // empty else error("not a file array") end' 2>/dev/null) || { PR_FILES=; return 0; }
-  PR_FILES_READ=1
+  PR_FILES=
+  while [ "$page" -le "$FILE_PAGE_MAX" ]; do
+    page_json=$(tea_read "/repos/$PR_PATH/pulls/$PR_NUMBER/files?limit=$FILE_PAGE_LIMIT&page=$page") || { PR_FILES=; return 0; }
+    page_files=$(printf '%s' "$page_json" | jq -r 'if type == "array" then .[]?.filename // empty else error("not a file array") end' 2>/dev/null) || { PR_FILES=; return 0; }
+    count=$(printf '%s\n' "$page_files" | awk 'NF { n++ } END { print n + 0 }')
+    [ -z "$page_files" ] || PR_FILES="${PR_FILES}${PR_FILES:+$'\n'}$page_files"
+    if [ "$count" -lt "$FILE_PAGE_LIMIT" ]; then
+      PR_FILES_READ=1
+      return 0
+    fi
+    page=$((page + 1))
+  done
+  # Every page was full, so completeness cannot be proven: hold on hard stop 5.
+  PR_FILES=
+  return 0
 }
 
 gitlab_project_ref() {
@@ -805,10 +905,15 @@ glab_operator_login() {
 }
 
 glab_files_read() {
-  local changes
+  local changes overflow
   PR_FILES_READ=0
   changes=$(fm_run_timed "$FM_PR_GREEN_RETURN_CMD_TIMEOUT" glab api \
     "projects/$(gitlab_project_ref)/merge_requests/$PR_NUMBER/changes" 2>/dev/null) || { PR_FILES=; return 0; }
+  overflow=$(printf '%s' "$changes" | jq -r 'if type == "object" then (.overflow // false) else "unreadable" end' 2>/dev/null) || { PR_FILES=; return 0; }
+  case "$overflow" in
+    false) ;;
+    *) PR_FILES=; return 0 ;;
+  esac
   PR_FILES=$(printf '%s' "$changes" | jq -r 'if type == "object" and (.changes | type) == "array" then .changes[]?.new_path // empty else error("missing changes") end' 2>/dev/null) || { PR_FILES=; return 0; }
   PR_FILES_READ=1
 }
@@ -942,7 +1047,7 @@ evaluate_task() {
   # the diff stays off the policy's sensitive ground.
   if [ "$PR_FILES_READ" != 1 ]; then
     EV_CLASS=held
-    EV_REASON="hard-stop-5: the changed-file list could not be read"
+    EV_REASON="hard-stop-5: the changed-file list could not be read completely"
     return 0
   fi
   local sensitive_matches sensitive_reason
@@ -963,6 +1068,16 @@ evaluate_task() {
   if ! policy_repo_allowlisted "$candidate" "$owner_name"; then
     EV_CLASS=held
     EV_REASON="policy-ask: repo ${candidate:-unknown} is not in the autonomous allowlist"
+    return 0
+  fi
+
+  # Only Forgejo (head_commit_id) and GitLab (--sha) can bind the merge to the
+  # head this scan verified; the GitHub merge path has no head-binding option,
+  # so an otherwise due GitHub PR is held rather than handed a mandate the
+  # merge path cannot honor.
+  if [ "$PR_PROVIDER" = github ]; then
+    EV_CLASS=held
+    EV_REASON="no-bound-merge: the GitHub merge path cannot bind the reviewed head"
     return 0
   fi
 
@@ -1063,6 +1178,7 @@ label_for_reason() { # <reason>
     hard-stop-6:*) printf 'hard stop 6 (not the operator PR)\n' ;;
     hard-stop-7:*) printf 'hard stop 7 (policy unreadable)\n' ;;
     policy-ask:*) printf 'the policy default ask (%s)\n' "${1#policy-ask: }" ;;
+    no-bound-merge:*) printf 'no bound merge (%s)\n' "${1#no-bound-merge: }" ;;
     *) printf '%s\n' "$1" ;;
   esac
 }
