@@ -11,7 +11,7 @@ The shared orchestrator behavior lives in [`AGENTS.md`](../AGENTS.md) - edit it 
 This section is the single owner of the top-level operational-home layout; producer script headers and their help own exact child-file fields and mutation contracts.
 The tracked code root contains the shared instruction, skill, documentation, workflow, and `bin/` surfaces, while each effective `FM_HOME` contains private operational directories.
 `data/` holds durable private fleet records such as the project and secondmate registries, captain preferences, optional shared captain preferences, learnings, backlog, briefs, scout reports, and explicitly installed content-addressed extension packages under `data/extensions/packages/`.
-`state/` holds runtime records such as task metadata, append-only status events, endpoint signals, watcher and wake-queue coordination, inactive terminal-outcome receipts under `state/terminal-outcomes/`, enabled extension working namespaces under `state/extensions/`, away-mode state, generated Relay artifacts, parent-side remote ledger copies under `state/secondmate-summary-cache/`, one-shot Bearings reconcile requests under `state/reconcile-notify/`, private secondmate config-reread generations with their retry and quarantine state, per-task steering-inbox records under `state/<id>.inbox/` (`bin/fm-task-inbox-lib.sh`), and parent-owned secondmate pending-reply records under `state/pending-replies/` (`bin/fm-pending-reply-lib.sh`).
+`state/` holds runtime records such as task metadata, append-only status events, endpoint signals, watcher and wake-queue coordination, inactive terminal-outcome receipts under `state/terminal-outcomes/`, per-task green-return wait records under `state/pr-green-return/`, enabled extension working namespaces under `state/extensions/`, away-mode state, generated Relay artifacts, parent-side remote ledger copies under `state/secondmate-summary-cache/`, one-shot Bearings reconcile requests under `state/reconcile-notify/`, private secondmate config-reread generations with their retry and quarantine state, per-task steering-inbox records under `state/<id>.inbox/` (`bin/fm-task-inbox-lib.sh`), and parent-owned secondmate pending-reply records under `state/pending-replies/` (`bin/fm-pending-reply-lib.sh`).
 `config/` holds local gitignored operating choices, including explicit extension bindings under `config/extensions.d/`, and `projects/` holds the local project clones that Firstmate reads but changes only through the narrow guarded and concrete captain-approved exceptions in `AGENTS.md`.
 Untracked files and directories whose names begin with `scratchpad` are also gitignored, so temporary scratch does not make porcelain-based secondmate sync guards treat a home as dirty.
 
@@ -247,6 +247,16 @@ Opt in for a home that stows often enough that entries never sit unreinforced fo
 The flag is per home and is not inherited by secondmate homes, because stow cadence is a property of the home doing the stowing.
 Only the file's presence is read, so its contents are ignored; remove it to return to the default contract on the next pass.
 The skill text owns the marker spelling, the tick order, and the reinforcement rule.
+
+## Green-PR return wait (config/pr-green-return)
+
+`config/pr-green-return` is an optional local, gitignored value that sets how long the watcher's green-return scan (`bin/fm-pr-green-return.sh`, invoked by `bin/fm-watch.sh`'s poll loop) waits after a task's PR is first seen green, mergeable, and policy-clean before it queues the main-owned wake that files the bound merge.
+One positive decimal integer, in seconds, and one newline is the whole format; the default is `600`, and `FM_PR_GREEN_RETURN_SECS` overrides the file for one test or one explicit run.
+The scan applies the merge policy in `~/.claude/pr-policy.md` (or `FM_PR_GREEN_RETURN_POLICY`): a repo absent from the autonomous allowlist, a policy hard stop, or an unreadable policy holds the PR instead of merging it, and the queued wake names that reason for the captain.
+The record under `state/pr-green-return/<id>` holds the observed PR identity, class, reason, wait start, and notification, so a restart never resets the wait and one head is reported once.
+The scan never merges; `bin/fm-pr-merge.sh` still decides the merge live and binds it to the head it verifies, and the merge mandate only reaches main through the check-wake routing.
+The value is per home and is not inherited by secondmate homes.
+The script's header owns the exact config field, the evidence-backed wait start, and the hold semantics.
 
 ## Secondmate routes (data/secondmates.md)
 
