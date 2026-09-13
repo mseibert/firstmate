@@ -9,7 +9,9 @@
 #   (b) the wait boundary is exact (threshold - 1 silent, threshold exact wakes)
 #       and a restart keeps the evidence-backed wait start instead of resetting
 #   (c) red CI holds the PR and names hard stop 3, never a merge, while only the
-#       policy's Coolify `deploy / deploy` preview failing does not hold
+#       policy's Coolify `deploy / deploy` preview failing does not hold; a
+#       skipped status is a pass and a skipped GitLab pipeline is no checks
+#       (hard stop 4)
 #   (d) a repo with no checks holds and names hard stop 4
 #   (e) a foreign author holds and names hard stop 6
 #   (f) a missing or open five-lens gate holds and names hard stop 1, per-lens
@@ -19,10 +21,10 @@
 #   (g) the advisory review verdict holds only a blocking verdict or an
 #       unreadable channel, and names hard stop 2, while a missing or stale
 #       verdict does not hold the merge
-#   (h) a sensitive diff path, a built-in `.forgejo/workflows` path, an
-#       unreadable changed-file list, a Forgejo file list whose sensitive path
-#       is beyond a truncated page, and a GitLab changes overflow hold and name
-#       hard stop 5
+#   (h) a sensitive diff path, a built-in `.forgejo/workflows` path, a rename
+#       out of a sensitive path, an unreadable changed-file list, a Forgejo file
+#       list whose sensitive path is beyond a truncated page, and a GitLab
+#       changes overflow hold and name hard stop 5
 #   (i) a package.json version-only change is not sensitive, a scripts change is
 #       held by hard stop 5, and a mergeable lockfile - alone or beside
 #       package.json - is not held (the policy applies those globs only on
@@ -600,6 +602,52 @@ test_sensitive_diff_holds_hard_stop_5() {
   jq -n '[{filename: ".forgejo/config.yml"}, {filename: "src/app.ts"}]' > "$dir/fix/tea-files.json"
   out=$(report_case "$dir" "$NOW_LATE")
   assert_contains "$out" $'t1\tdue\tready' "a non-workflow .forgejo path was held"
+
+  # A rename out of a sensitive path contributes its old path, so the change
+  # still holds under hard stop 5; a rename within non-sensitive paths stays due.
+  dir=$(make_case sensitive-forgejo-rename-out)
+  write_policy "$dir" programmieren-community
+  write_meta "$dir" t1 "https://forgejo.example/seibert.group/programmieren-community/pulls/365" programmieren-community
+  tea_green "$dir"
+  jq -n '[{filename: "src/guard.ts", previous_filename: "src/auth/guard.ts", status: "renamed"}]' > "$dir/fix/tea-files.json"
+  scan_hold_wake "$dir" "$NOW_LATE" >/dev/null
+  keys=$(queue_keys "$dir")
+  rows=$(queue_rows "$dir")
+  assert_contains "$keys" "pr-green-return-hold:t1" "a rename out of src/auth did not hold"
+  assert_contains "$rows" "hard stop 5" "a rename out of src/auth did not name hard stop 5"
+  assert_contains "$rows" "src/auth/guard.ts" "the hold payload did not name the old sensitive path"
+  assert_not_contains "$keys" "pr-green-return:t1" "a rename out of src/auth queued a merge wake"
+
+  dir=$(make_case sensitive-forgejo-rename-normal)
+  write_policy "$dir" programmieren-community
+  write_meta "$dir" t1 "https://forgejo.example/seibert.group/programmieren-community/pulls/365" programmieren-community
+  tea_green "$dir"
+  jq -n '[{filename: "src/guard.ts", previous_filename: "src/util/guard.ts", status: "renamed"}]' > "$dir/fix/tea-files.json"
+  out=$(report_case "$dir" "$NOW_LATE")
+  assert_contains "$out" $'t1\tdue\tready' "a rename within non-sensitive paths was held"
+
+  # GitLab reports a rename's old path as `old_path`; the sensitive match must
+  # see it too, and a within-non-sensitive rename must not falsely hold.
+  dir=$(make_case sensitive-gitlab-rename-out)
+  write_policy "$dir" project
+  write_meta "$dir" t1 "https://gitlab.example/group/project/-/merge_requests/7"
+  glab_green "$dir"
+  jq -n '{changes: [{new_path: "src/guard.ts", old_path: "src/auth/guard.ts"}], overflow: false}' > "$dir/fix/glab-changes.json"
+  scan_hold_wake "$dir" "$NOW_LATE" >/dev/null
+  keys=$(queue_keys "$dir")
+  rows=$(queue_rows "$dir")
+  assert_contains "$keys" "pr-green-return-hold:t1" "a GitLab rename out of src/auth did not hold"
+  assert_contains "$rows" "hard stop 5" "a GitLab rename out of src/auth did not name hard stop 5"
+  assert_contains "$rows" "src/auth/guard.ts" "the GitLab hold payload did not name the old sensitive path"
+  assert_not_contains "$keys" "pr-green-return:t1" "a GitLab rename out of src/auth queued a merge wake"
+
+  dir=$(make_case sensitive-gitlab-rename-normal)
+  write_policy "$dir" project
+  write_meta "$dir" t1 "https://gitlab.example/group/project/-/merge_requests/7"
+  glab_green "$dir"
+  jq -n '{changes: [{new_path: "src/guard.ts", old_path: "src/util/guard.ts"}], overflow: false}' > "$dir/fix/glab-changes.json"
+  out=$(report_case "$dir" "$NOW_LATE")
+  assert_contains "$out" $'t1\tdue\tready' "a GitLab rename within non-sensitive paths was held"
   pass "a sensitive diff path holds and names hard stop 5"
 }
 
@@ -915,6 +963,49 @@ test_coolify_preview_check_is_waived() {
   pass "the Coolify preview check is waived while every other failing check still holds"
 }
 
+test_skipped_status_semantics() {
+  local dir keys rows out tmp
+  # A real failure beside a skipped Forgejo status still holds under hard stop 3.
+  dir=$(make_case skipped-red)
+  write_policy "$dir" programmieren-community
+  write_meta "$dir" t1 "https://forgejo.example/seibert.group/programmieren-community/pulls/365" programmieren-community
+  tea_green "$dir"
+  tea_set_checks "$dir" failure '[{"context": "CI / test (pull_request)", "status": "failure"}, {"context": "CI / docs (pull_request)", "status": "skipped"}]'
+  scan_hold_wake "$dir" "$NOW_LATE" >/dev/null
+  keys=$(queue_keys "$dir")
+  rows=$(queue_rows "$dir")
+  assert_contains "$keys" "pr-green-return-hold:t1" "a real failure beside a skipped status did not hold"
+  assert_contains "$rows" "hard stop 3" "a real failure beside a skipped status did not name hard stop 3"
+  assert_not_contains "$keys" "pr-green-return:t1" "a real failure beside a skipped status queued a merge wake"
+
+  # The waived preview beside a skipped status reaches due instead of parking.
+  dir=$(make_case skipped-waived)
+  write_policy "$dir" programmieren-community
+  write_meta "$dir" t1 "https://forgejo.example/seibert.group/programmieren-community/pulls/365" programmieren-community
+  tea_green "$dir"
+  tea_set_checks "$dir" failure '[{"context": "deploy / deploy (pull_request)", "status": "failure"}, {"context": "CI / docs (pull_request)", "status": "skipped"}]'
+  out=$(report_case "$dir" "$NOW_LATE")
+  assert_contains "$out" $'t1\tdue\tready' "the waived preview beside a skipped status was not due"
+  assert_not_contains "$out" "checks-unreadable" "the waived preview beside a skipped status parked as unreadable"
+
+  # A skipped GitLab head pipeline is no checks: hard stop 4, not a silent park.
+  dir=$(make_case skipped-gitlab)
+  write_policy "$dir" project
+  write_meta "$dir" t1 "https://gitlab.example/group/project/-/merge_requests/7"
+  glab_green "$dir"
+  tmp=$(mktemp)
+  jq '.head_pipeline.status = "skipped"' "$dir/fix/glab-mr.json" > "$tmp"
+  mv "$tmp" "$dir/fix/glab-mr.json"
+  scan_hold_wake "$dir" "$NOW_LATE" >/dev/null
+  keys=$(queue_keys "$dir")
+  rows=$(queue_rows "$dir")
+  assert_contains "$keys" "pr-green-return-hold:t1" "a skipped GitLab pipeline did not hold"
+  assert_contains "$rows" "hard stop 4" "a skipped GitLab pipeline did not name hard stop 4"
+  assert_not_contains "$keys" "pr-green-return:t1" "a skipped GitLab pipeline queued a merge wake"
+  assert_not_contains "$rows" "checks-unreadable" "a skipped GitLab pipeline was parked as unreadable"
+  pass "a skipped check status is a pass and a skipped GitLab pipeline is no checks"
+}
+
 test_gate_prose_does_not_accept_open_findings() {
   local dir token out body
   # The reported programmieren-community#365 block: six per-lens prose results,
@@ -1133,6 +1224,7 @@ test_github_pr_holds_without_a_bound_merge
 test_wait_boundary_is_exact_and_persists
 test_red_checks_hold_and_name_hard_stop_3
 test_coolify_preview_check_is_waived
+test_skipped_status_semantics
 test_no_checks_hold_and_name_hard_stop_4
 test_foreign_pr_holds_hard_stop_6
 test_gate_holds_hard_stop_1

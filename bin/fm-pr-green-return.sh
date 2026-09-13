@@ -39,10 +39,13 @@
 #
 # EDGE SEMANTICS. A repo with no checks at all trips hard stop 4 (an empty
 # combined status is never green), and a check set that is pending or unreadable
-# is never green. The policy's Coolify `deploy / deploy` preview exception is
-# machine-waived: a failing check whose normalized name is exactly that poller
-# does not turn the check set red by itself, and every other failing check still
-# trips hard stop 3. The five-lens gate (hard stop 1) is accepted as
+# is never green. A `skipped` check status is a pass, matching Forgejo's own
+# combined-state semantics and the GitHub mapping; a GitLab `skipped` head
+# pipeline is no checks and trips hard stop 4. The policy's Coolify
+# `deploy / deploy` preview exception is machine-waived: a failing check whose
+# normalized name is exactly that poller does not turn the check set red by
+# itself, and every other failing check still trips hard stop 3.
+# The five-lens gate (hard stop 1) is accepted as
 # `Result: clean`, as a table whose every row ran and closed its findings, or as
 # at least five per-lens result entries, each positively naming a clean result
 # (`clean`, `passed`/`pass`, or a `kein`/`no blocker` entry); any other wording,
@@ -58,10 +61,10 @@
 # package.json match holds only when its base and head scripts blocks differ or
 # cannot be read. `.forgejo/workflows/**` is matched as built-in hard stop 5
 # ground in addition to the policy's parsed globs, because the policy's own
-# allowlist rows name it while its Section 5 glob block omits it.
-# The changed-file list is trusted only once the read proves it complete:
-# Forgejo pages until a short page, and a GitLab `overflow: true` response
-# fails closed.
+# allowlist rows name it while its Section 5 glob block omits it. The
+# changed-file list is trusted only once the read proves it complete: Forgejo
+# pages until a short page, a GitLab `overflow: true` response fails closed, and
+# a rename contributes its old path as well as its new one to the sensitive set.
 #
 # CHECK WAKE ROUTING. The queued rows are check kind, which the Pi supervision
 # branch never offers to the branch actor (docs/pi-supervision-branch.md), so the
@@ -766,7 +769,7 @@ forgejo_checks_read() {
             .statuses[]?
             | [((.context // "") | tostring),
                ((.status // "") as $s
-                | if $s == "success" then "pass"
+                | if $s == "success" or $s == "skipped" then "pass"
                   elif $s == "pending" then "pending"
                   elif $s == "failure" or $s == "error" or $s == "warning" then "fail"
                   else "unknown" end)]
@@ -830,8 +833,11 @@ forgejo_files_read() {
   PR_FILES=
   while [ "$page" -le "$FILE_PAGE_MAX" ]; do
     page_json=$(tea_read "/repos/$PR_PATH/pulls/$PR_NUMBER/files?limit=$FILE_PAGE_LIMIT&page=$page") || { PR_FILES=; return 0; }
-    page_files=$(printf '%s' "$page_json" | jq -r 'if type == "array" then .[]?.filename // empty else error("not a file array") end' 2>/dev/null) || { PR_FILES=; return 0; }
-    count=$(printf '%s\n' "$page_files" | awk 'NF { n++ } END { print n + 0 }')
+    count=$(printf '%s' "$page_json" | jq -r 'if type == "array" then length else error("not a file array") end' 2>/dev/null) || { PR_FILES=; return 0; }
+    page_files=$(printf '%s' "$page_json" | jq -r '
+      if type == "array" then
+        .[]? | (.filename // empty), (select((.previous_filename // "") != "") | .previous_filename)
+      else error("not a file array") end' 2>/dev/null) || { PR_FILES=; return 0; }
     [ -z "$page_files" ] || PR_FILES="${PR_FILES}${PR_FILES:+$'\n'}$page_files"
     if [ "$count" -lt "$FILE_PAGE_LIMIT" ]; then
       PR_FILES_READ=1
@@ -913,7 +919,7 @@ FIELDS
       if [ "$pipeline_sha" = "$PR_HEAD" ]; then PR_CHECKS=green; else PR_CHECKS=unreadable; fi
       ;;
     failed|canceled|cancelled) PR_CHECKS=red ;;
-    '') PR_CHECKS=none ;;
+    ''|skipped) PR_CHECKS=none ;;
     pending|running|created|waiting_for_resource|preparing|scheduled|manual) PR_CHECKS=pending ;;
     *) PR_CHECKS=unreadable ;;
   esac
@@ -942,7 +948,10 @@ glab_files_read() {
     false) ;;
     *) PR_FILES=; return 0 ;;
   esac
-  PR_FILES=$(printf '%s' "$changes" | jq -r 'if type == "object" and (.changes | type) == "array" then .changes[]?.new_path // empty else error("missing changes") end' 2>/dev/null) || { PR_FILES=; return 0; }
+  PR_FILES=$(printf '%s' "$changes" | jq -r '
+    if type == "object" and (.changes | type) == "array" then
+      .changes[]? | (.new_path // empty), (select((.old_path // "") != "" and .old_path != .new_path) | .old_path)
+    else error("missing changes") end' 2>/dev/null) || { PR_FILES=; return 0; }
   PR_FILES_READ=1
 }
 
