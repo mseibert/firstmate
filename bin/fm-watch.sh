@@ -2188,6 +2188,17 @@ EOF
       [ -z "$task" ] || fm_dead_worker_reality_check "$w" "$task" "$key" "$kind" || true
       continue
     fi
+    # A readable pane proves the window is back; a live agent behind it means
+    # the worker recovered, ending any dead stretch recorded in
+    # state/.dead-worker-<window-key>. fm_dead_worker_reality_check owns that
+    # marker's lifecycle but only runs on an unreadable pane or a declared wait,
+    # so without this clear a recovered worker keeps the marker and it silently
+    # suppresses the NEXT dead-worker escalation for the same task. A marker
+    # exists only after an escalation, so the common poll pays no backend read.
+    if [ -e "$STATE/.dead-worker-$key" ] \
+      && [ "$(fm_backend_agent_alive "$(window_backend "$w")" "$w" 2>/dev/null || true)" = alive ]; then
+      rm -f "$STATE/.dead-worker-$key"
+    fi
     h=$(printf '%s' "$tail40" | hash_pane)
     hf="$STATE/.hash-$key"
     cf="$STATE/.count-$key"
