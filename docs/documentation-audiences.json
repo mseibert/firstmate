@@ -297,6 +297,10 @@
       "audience": "operator-current"
     },
     {
+      "path": "docs/captain-context-watch.md",
+      "audience": "operator-current"
+    },
+    {
       "path": "docs/cd-guard.md",
       "audience": "maintainer-architecture"
     },
@@ -338,6 +342,10 @@
     },
     {
       "path": "docs/examples/systemd/firstmate-capacity-brake.service",
+      "audience": "operator-example"
+    },
+    {
+      "path": "docs/examples/systemd/firstmate-captain-context-watch.service",
       "audience": "operator-example"
     },
     {
