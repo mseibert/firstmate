@@ -5,7 +5,8 @@
 # a merge. The provider-tagged identity is data in the sidecar and is never
 # interpolated into this source: these bytes are identical for every task.
 # Each provider is read through its own standard CLI, gh for GitHub and glab
-# for GitLab, so an upstream checkout needs no extra tooling to follow either.
+# for GitLab, and tea for Forgejo, so an upstream checkout needs no extra
+# tooling to follow any of them.
 set -u
 LC_ALL=C
 export LC_ALL
@@ -104,6 +105,44 @@ case "$provider" in
     raw=$(glab mr view "$number" -R "https://$host/$path" 2>/dev/null) || exit 0
     state=$(printf '%s\n' "$raw" | sed -n 's/^state:[[:space:]]*//p' | head -1) || exit 0
     [ "$state" = merged ] && printf '%s\n' merged
+    ;;
+  forgejo)
+    [ "${#host}" -ge 1 ] && [ "${#host}" -le 253 ] || exit 0
+    [ "$host" != github.com ] || exit 0
+    case "$host" in
+      .*|*.|*..*|*[!a-z0-9.-]*) exit 0 ;;
+    esac
+    [ "${#path}" -ge 3 ] && [ "${#path}" -le 201 ] || exit 0
+    case "$path" in
+      /*|*/|*//*) exit 0 ;;
+    esac
+    # Forgejo addresses a repository as owner/repository with no nested
+    # namespace, so the stored path has to be exactly two segments and neither
+    # one may be a reserved name. The same two-segment rule the parser applied
+    # is re-applied here rather than trusted from the sidecar.
+    owner=${path%%/*}
+    repo=${path#*/}
+    [ "$owner" != "$path" ] || exit 0
+    case "$repo" in
+      */*) exit 0 ;;
+    esac
+    for segment in "$owner" "$repo"; do
+      [ "${#segment}" -ge 1 ] && [ "${#segment}" -le 100 ] || exit 0
+      case "$segment" in
+        .|..|-*|*.git|*.atom|*[!A-Za-z0-9._-]*) exit 0 ;;
+      esac
+    done
+    [ "$url" = "https://$host/$path/pulls/$number" ] || exit 0
+    # tea has no field selector and prints the API's JSON, so the merge state is
+    # read from that JSON with jq, and only an exact boolean true wakes.
+    # bin/fm-pr-check.sh refuses to arm this watch without jq on PATH for
+    # exactly this reason; a lookup that fails, a payload that is not an object
+    # and a `merged` field that is not a boolean all stay silent rather than
+    # reporting a merge. The pull request body is not parsed, so a body that
+    # happens to contain the text of a merged payload cannot wake this watch.
+    raw=$(tea api "/repos/$path/pulls/$number" 2>/dev/null) || exit 0
+    merged=$(printf '%s\n' "$raw" | jq -r 'if type == "object" and (.merged | type == "boolean") then .merged else error("invalid merged field") end' 2>/dev/null) || exit 0
+    [ "$merged" = true ] && printf '%s\n' merged
     ;;
   *) exit 0 ;;
 esac

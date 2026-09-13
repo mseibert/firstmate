@@ -3,8 +3,9 @@
 # exact pr_head=<sha> when available, then atomically arm a static merge poll.
 # The watcher check source is byte-for-byte bin/fm-pr-poll.sh; task and PR data
 # live only in a private sidecar and are never interpolated into shell source.
-# A GitHub pull request URL and a GitLab merge request URL are both accepted,
-# including a merge request on a self-hosted GitLab instance.
+# A GitHub pull request URL, a GitLab merge request URL and a Forgejo pull
+# request URL are all accepted, including a merge request on a self-hosted
+# GitLab instance and a pull request on a self-hosted Forgejo one.
 # Usage: fm-pr-check.sh <task-id> <pr-url>
 set -eu
 
@@ -60,21 +61,46 @@ if [ "$PROVIDER" = gitlab ] && ! command -v glab >/dev/null 2>&1; then
   exit 1
 fi
 
+# The same refusal for Forgejo, and it names both tools because the poll needs
+# both: tea has no field selector, so the merge state comes out of the API's
+# JSON with jq. Arming a watch whose payload cannot be parsed would look exactly
+# like a pull request that is never merged.
+if [ "$PROVIDER" = forgejo ]; then
+  FORGEJO_MISSING=
+  command -v tea >/dev/null 2>&1 || FORGEJO_MISSING="tea"
+  if ! command -v jq >/dev/null 2>&1; then
+    FORGEJO_MISSING="${FORGEJO_MISSING:+$FORGEJO_MISSING and }jq"
+  fi
+  if [ -n "$FORGEJO_MISSING" ]; then
+    echo "error: watching a Forgejo pull request requires $FORGEJO_MISSING on PATH" >&2
+    exit 1
+  fi
+fi
+
 "$FM_ROOT/bin/fm-guard.sh" || true
 
 # pr_head is recorded only when the forge's CLI can supply it. gh exposes the
-# head commit as a selectable field; plain glab exposes it only inside its JSON
-# output, which would need a JSON processor firstmate does not require, so a
-# GitLab task records no pr_head. Both consumers already treat it as optional:
+# head commit as a selectable field, and tea reads it from the pull request
+# endpoint's JSON with jq, which this provider already requires above. Plain
+# glab exposes it only inside its JSON output, which would need a JSON processor
+# firstmate does not require for that provider, so a GitLab task records no
+# pr_head. Both consumers already treat it as optional:
 # bin/fm-teardown.sh reads the head from the forge at teardown rather than from
 # metadata and falls back to its provider-agnostic content check, and
 # bin/fm-review-diff.sh resolves the head from the remote when none is recorded.
-# bin/fm-pr-merge.sh reads a GitLab head live at merge time for the same reason,
-# and treats a recorded value that disagrees as stale rather than authoritative.
+# bin/fm-pr-merge.sh reads a GitLab or Forgejo head live at merge time for the
+# same reason, and treats a recorded value that disagrees as stale rather than
+# authoritative.
 WT=$(grep '^worktree=' "$META" | tail -1 | cut -d= -f2- || true)
 PR_HEAD=
 if [ "$PROVIDER" = github ] && [ -n "$WT" ] && [ -d "$WT" ] && command -v gh >/dev/null 2>&1; then
   if REMOTE_HEAD=$(cd "$WT" && gh pr view "$URL" --json headRefOid -q .headRefOid 2>/dev/null) \
+    && fm_pr_head_valid "$REMOTE_HEAD"; then
+    PR_HEAD=$REMOTE_HEAD
+  fi
+elif [ "$PROVIDER" = forgejo ]; then
+  if REMOTE_HEAD=$(tea api "/repos/$PROJECT_PATH/pulls/$NUMBER" 2>/dev/null \
+      | jq -r 'if type == "object" and (.head.sha | type == "string") then .head.sha else error("invalid head") end' 2>/dev/null) \
     && fm_pr_head_valid "$REMOTE_HEAD"; then
     PR_HEAD=$REMOTE_HEAD
   fi
