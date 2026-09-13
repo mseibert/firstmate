@@ -111,6 +111,41 @@ case "${1:-}" in
     printf 'fakepane\n'; exit 0 ;;
   capture-pane) printf '╭────╮\n│    │\n╰────╯\n'; exit 0 ;;
   list-windows) [ -f "$D/windows" ] && cat "$D/windows"; exit 0 ;;
+  list-panes)
+    # The exact-existence probe real tmux answers with an error for a missing
+    # window or session (bin/fm-backend.sh's fm_backend_target_exists).
+    target=""
+    prev=""
+    for a in "$@"; do
+      [ "$prev" = "-t" ] && target="$a"
+      prev="$a"
+    done
+    case "$target" in
+      *:*) [ -f "$D/windows" ] && grep -Fqx "${target#*:}" "$D/windows" && exit 0 ;;
+    esac
+    exit 1 ;;
+  new-window)
+    # The endpoint-creation primitive: record the requested name and working
+    # directory so a test can prove WHERE a recreated endpoint landed, and
+    # append the created name to the inventory the state reads see.
+    shift
+    wname= cwd=
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        -dP) shift ;;
+        -F) shift 2 ;;
+        -t) shift 2 ;;
+        -n) wname=${2:-}; shift 2 ;;
+        -c) cwd=${2:-}; shift 2 ;;
+        *) shift ;;
+      esac
+    done
+    printf '%s\n' "$wname" >> "$D/new-windows"
+    printf '%s' "$cwd" > "$D/new-window.cwd"
+    printf '%s\n' "$wname" >> "$D/windows"
+    printf '%%9\n'
+    exit 0 ;;
+  set-window-option) exit 0 ;;
 esac
 exit 0
 SH
@@ -166,6 +201,86 @@ EOF
   printf '%s\n' "fm-$id" > "$dir/fake/windows"
   printf '%s' "$wt" > "$dir/fake/cwd"
   TASK_TMPS+=("/tmp/fm-$id")
+}
+
+# add_herdr_ship_task <case-dir> <id>: the herdr counterpart of add_ship_task,
+# with a recorded pane that the fixture makes authoritatively missing.
+add_herdr_ship_task() {
+  local dir=$1 id=$2
+  local home="$dir/home" proj="$dir/proj" wt="$dir/wt"
+  fm_git_worktree "$proj" "$wt" "task-$id"
+  mkdir -p "$home/data/$id"
+  cat > "$home/data/$id/brief.md" <<EOF
+# Task
+## Captain's intent
+Exercise herdr relaunch behavior for $id.
+
+## Firstmate spec
+Preserve the task while replacing its agent process.
+EOF
+  {
+    echo "window=hses:p-old"
+    echo "endpoint_task_id=$id"
+    echo "worktree=$wt"
+    echo "project=$proj"
+    echo "harness=claude"
+    echo "kind=ship"
+    echo "mode=no-mistakes"
+    echo "yolo=off"
+    echo "tasktmp=/tmp/fm-$id"
+    echo "model=default"
+    echo "effort=default"
+    echo "backend=herdr"
+    echo "herdr_session=hses"
+    echo "herdr_workspace_id=ws1"
+    echo "herdr_tab_id=t-old"
+    echo "herdr_pane_id=p-old"
+  } > "$home/state/$id.meta"
+  TASK_TMPS+=("/tmp/fm-$id")
+}
+
+# make_herdr_recovery_stub <case-dir>: a stateful herdr boundary for the
+# missing-endpoint relaunch. The recorded pane answers pane_not_found (the
+# real classifier's authoritative missing state), tab create returns a fresh
+# tab/pane in the recorded workspace, and the fresh pane hosts no agent until
+# the launch text lands - exactly the transition the launch owner must prove.
+make_herdr_recovery_stub() {  # <case-dir>
+  local dir=$1
+  local fb="$dir/fakebin"
+  cat > "$fb/herdr" <<SH
+#!/usr/bin/env bash
+set -u
+D="$dir/fake"
+case "\${1:-} \${2:-}" in
+  "status --json")
+    printf '%s\n' '{"client":{"version":"0.7.1","protocol":14},"server":{"running":true}}' ;;
+  "tab list")
+    # The task's tab died with its pane: the recorded label is absent.
+    printf '%s\n' '{"result":{"tabs":[]}}' ;;
+  "tab create")
+    printf '%s\n' "\$*" >> "\$D/herdr-tab-create"
+    : > "\$D/herdr-created"
+    printf '%s\n' '{"result":{"tab":{"tab_id":"t-new"},"root_pane":{"pane_id":"p-new"}}}' ;;
+  "pane get")
+    if [ "\${3:-}" = p-new ] && [ -f "\$D/herdr-created" ]; then
+      printf '{"result":{"pane":{"pane_id":"p-new","foreground_cwd":"%s"}}}\n' "$dir/wt"
+      exit 0
+    fi
+    printf '%s\n' '{"error":{"code":"pane_not_found"}}'
+    exit 1 ;;
+  "agent get")
+    if [ "\${3:-}" = p-new ] && [ -f "\$D/herdr-launched" ]; then
+      printf '%s\n' '{"result":{"agent":{"agent_status":"working"}}}'
+      exit 0
+    fi
+    printf '%s\n' '{"error":{"code":"agent_not_found"}}'
+    exit 1 ;;
+  "pane run"|"pane send-text"|"pane send-keys")
+    : > "\$D/herdr-launched" ;;
+esac
+exit 0
+SH
+  chmod +x "$fb/herdr"
 }
 
 run_control() {  # <case-dir> <args...>
@@ -1497,6 +1612,127 @@ test_spawn_relaunch_refuses_a_pane_outside_the_worktree() {
   pass "fm-spawn --relaunch: refuses to start a replacement outside the copy holding the work"
 }
 
+# --- 6b. relaunch of an authoritatively missing endpoint ---------------------
+#
+# A session death can take a task's window while its worktree and unlanded work
+# survive (2026-09-12 incident: eight tasks orphaned, their recovery refused
+# because no window existed). A missing recorded endpoint is a regular recovery
+# case: the launch owner recreates it through the backend's own create primitive
+# in the recorded worktree, proves it agent-free, and starts the replacement.
+
+test_relaunch_recreates_a_missing_window_in_the_recorded_worktree() {
+  local dir out rc
+  dir=$(new_case missing-window rl39)
+  add_ship_task "$dir" rl39 claude
+  # The agent died with the window; a fresh pane hosts a plain shell.
+  printf 'zsh' > "$dir/fake/command"
+  : > "$dir/fake/windows"   # the session's death took the recorded window
+  out=$(run_control "$dir" rl39 relaunch --note "recover after session death"); rc=$?
+  expect_code 0 "$rc" "a missing recorded window should be recreated and relaunched"$'\n'"$out"
+  assert_contains "$out" "relaunched rl39 harness=claude" "the outcome should report the replacement"
+  assert_grep 'fm-rl39' "$dir/fake/windows" "the recorded window was not recreated"
+  [ "$(cat "$dir/fake/new-window.cwd")" = "$dir/wt" ] \
+    || fail "the window must be recreated in the recorded worktree, got: $(cat "$dir/fake/new-window.cwd" 2>/dev/null)"
+  assert_grep 'encode launch-brief' "$dir/fake/literal" "the replacement agent was not launched"
+  [ "$(cat "$dir/fake/command")" = claude ] \
+    || fail "the replacement agent did not come up, pane command is: $(cat "$dir/fake/command")"
+  assert_grep 'phase=complete' "$dir/home/state/rl39.control-relaunch" \
+    "the relaunch transaction did not complete"
+  assert_grep 'exit_result=endpoint-missing' "$dir/home/state/rl39.control-relaunch" \
+    "the journal should record that no agent was left to stop"
+  pass "fm-control relaunch: a missing recorded window is recreated in the recorded worktree and replaced"
+}
+
+test_direct_spawn_relaunch_recreates_a_missing_window() {
+  local dir out rc
+  dir=$(new_case missing-window-direct rl43)
+  add_ship_task "$dir" rl43 claude
+  # The agent died with the window; a fresh pane hosts a plain shell.
+  printf 'zsh' > "$dir/fake/command"
+  : > "$dir/fake/windows"
+  out=$(run_spawn "$dir" rl43 --relaunch --harness claude); rc=$?
+  expect_code 0 "$rc" "a direct relaunch of a missing endpoint should recreate it"$'\n'"$out"
+  assert_grep 'fm-rl43' "$dir/fake/windows" "the direct relaunch did not recreate the recorded window"
+  [ "$(cat "$dir/fake/new-window.cwd")" = "$dir/wt" ] \
+    || fail "the direct relaunch created the window outside the recorded worktree"
+  assert_grep 'encode launch-brief' "$dir/fake/literal" "the direct relaunch did not launch a replacement"
+  pass "fm-spawn --relaunch: recreates an authoritatively missing endpoint in the recorded worktree"
+}
+
+# The duplicate safeguard is the create primitive's own exact pre-check. This
+# stages the race the control lock cannot cover - a window appearing between the
+# missing-state read and the creation - and requires the relaunch to refuse
+# rather than add a second window for the task.
+test_relaunch_missing_window_refuses_a_racing_duplicate() {
+  local dir out rc
+  dir=$(new_case missing-window-race rl44)
+  add_ship_task "$dir" rl44 claude
+  # The agent died with the window; a fresh pane hosts a plain shell.
+  printf 'zsh' > "$dir/fake/command"
+  : > "$dir/fake/windows"
+  mv "$dir/fakebin/tmux" "$dir/fakebin/tmux-real"
+  cat > "$dir/fakebin/tmux" <<SH
+#!/usr/bin/env bash
+set -u
+# The missing-state reads see an empty inventory; the duplicate pre-check (the
+# third list-windows call) sees a window another actor just recreated.
+case "\${1:-}" in
+  list-windows)
+    count=0
+    [ -f "$dir/race-count" ] && count=\$(cat "$dir/race-count")
+    count=\$((count + 1))
+    printf '%s\n' "\$count" > "$dir/race-count"
+    if [ "\$count" -ge 3 ]; then
+      printf '%s\n' 'fm-rl44'
+      exit 0
+    fi
+    ;;
+esac
+exec "$dir/fakebin/tmux-real" "\$@"
+SH
+  chmod +x "$dir/fakebin/tmux"
+  out=$(run_control "$dir" rl44 relaunch --note "recover after session death"); rc=$?
+  expect_code 1 "$rc" "a racing duplicate window should refuse the relaunch"$'\n'"$out"
+  assert_contains "$out" "already exists" "the refusal should name the duplicate window"
+  [ ! -s "$dir/fake/literal" ] || fail "a refused relaunch must deliver no launch bytes"
+  assert_grep 'rollback=prior-record-kept' "$dir/home/state/rl44.control-relaunch" \
+    "the refused transaction should keep the prior durable record"
+  pass "fm-control relaunch: a racing duplicate window refuses instead of adding a second window"
+}
+
+# herdr is the second recovery-grade backend: its missing state is an
+# authoritative pane_not_found, and its create primitive recreates the task tab
+# in the RECORDED workspace. The recreated tab/pane ids are carried into the
+# durable record by the launch's own publication, so the recorded endpoint
+# identity follows the recreated endpoint.
+test_relaunch_recreates_a_missing_herdr_pane_in_the_recorded_workspace() {
+  command -v jq >/dev/null 2>&1 || { pass "herdr relaunch test skipped without jq"; return 0; }
+  local dir out rc
+  dir=$(new_case missing-herdr-pane rl45)
+  add_herdr_ship_task "$dir" rl45
+  make_herdr_recovery_stub "$dir"
+  out=$(run_control "$dir" rl45 relaunch --note "recover after session death"); rc=$?
+  expect_code 0 "$rc" "a missing recorded herdr pane should be recreated and relaunched"$'\n'"$out"
+  assert_contains "$out" "relaunched rl45 harness=claude" "the outcome should report the replacement"
+  assert_grep '--workspace ws1' "$dir/fake/herdr-tab-create" \
+    "the task tab was not recreated in the recorded workspace"
+  assert_grep '--cwd '"$dir"'/wt' "$dir/fake/herdr-tab-create" \
+    "the task tab was not recreated in the recorded worktree"
+  assert_grep '--label fm-rl45' "$dir/fake/herdr-tab-create" \
+    "the recreated tab did not carry the task label"
+  [ "$(meta_field "$dir" rl45 window)" = "hses:p-new" ] \
+    || fail "the durable record did not follow the recreated pane, got: $(meta_field "$dir" rl45 window)"
+  [ "$(meta_field "$dir" rl45 herdr_tab_id)" = "t-new" ] \
+    || fail "the durable record did not record the recreated tab"
+  [ "$(meta_field "$dir" rl45 herdr_pane_id)" = "p-new" ] \
+    || fail "the durable record did not record the recreated pane"
+  assert_grep 'phase=complete' "$dir/home/state/rl45.control-relaunch" \
+    "the relaunch transaction did not complete"
+  assert_grep 'exit_result=endpoint-missing' "$dir/home/state/rl45.control-relaunch" \
+    "the journal should record that no agent was left to stop"
+  pass "fm-control relaunch: a missing herdr pane is recreated in the recorded workspace and replaced"
+}
+
 test_relaunch_reverifies_an_already_in_flight_item_instead_of_rewriting_it() {
   local dir out rc=0
   command -v tasks-axi >/dev/null 2>&1 || {
@@ -1582,5 +1818,9 @@ test_spawn_relaunch_refuses_a_pending_authoritative_close
 test_spawn_relaunch_refuses_contradicting_flags
 test_spawn_relaunch_refuses_an_unrecorded_task
 test_spawn_relaunch_refuses_a_pane_outside_the_worktree
+test_relaunch_recreates_a_missing_window_in_the_recorded_worktree
+test_direct_spawn_relaunch_recreates_a_missing_window
+test_relaunch_missing_window_refuses_a_racing_duplicate
+test_relaunch_recreates_a_missing_herdr_pane_in_the_recorded_workspace
 test_relaunch_reverifies_an_already_in_flight_item_instead_of_rewriting_it
 test_relaunch_moves_a_drifted_item_back_in_flight

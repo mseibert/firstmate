@@ -59,6 +59,19 @@ case "${1:-}" in
   capture-pane)
     printf '╭────╮\n│    │\n╰────╯\n'
     exit 0 ;;
+  list-panes)
+    target=
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        -t) target=$2; shift 2 ;;
+        *) shift ;;
+      esac
+    done
+    if [ -n "${FM_FAKE_TMUX_DEAD_TARGET:-}" ] && [ "$target" = "$FM_FAKE_TMUX_DEAD_TARGET" ]; then
+      exit 1
+    fi
+    printf '%%1\n'
+    exit 0 ;;
   list-windows)
     printf 'foreign:%s\nfm-mpf-lane-m8\nfm-lane-ok\n' "${FM_FAKE_TMUX_WINDOW:-fm-lost}"
     exit 0 ;;

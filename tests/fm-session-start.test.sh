@@ -292,26 +292,34 @@ SH
   chmod +x "$fakebin/ps"
 }
 
-# make_fake_tmux <fakebin> <live-target>: display-message succeeds only for
-# the given "session:window" target - the exact primitive
-# fm_backend_target_exists uses for a tmux endpoint liveness read - and
-# list-windows reports the live target's window name so the recovery-grade
-# classifier (fm_backend_agent_state) can tell a live window from a gone one.
+# make_fake_tmux <fakebin> <live-target>: `list-panes -t` - the exact-existence
+# primitive fm_backend_target_exists uses for a tmux endpoint liveness read -
+# succeeds only for the given "session:window" target. `display-message`
+# deliberately answers ANY target, modeling real tmux's active-window fallback
+# for an absent window, so this fixture pins that only the exact read may
+# license "alive". `list-windows` reports the live target's window name so the
+# recovery-grade classifier (fm_backend_agent_state) can tell a live window
+# from a gone one.
 make_fake_tmux() {
   local fakebin=$1 live=$2 window=${2#*:}
   cat > "$fakebin/tmux" <<SH
 #!/usr/bin/env bash
 set -u
 case "\${1:-}" in
-  display-message)
+  list-panes)
     target=""
     prev=""
     for a in "\$@"; do
       [ "\$prev" = "-t" ] && target="\$a"
       prev="\$a"
     done
-    [ "\$target" = "$live" ] && { printf '%%1\n'; exit 0; }
-    exit 1
+    [ "\$target" = "$live" ] || exit 1
+    printf '%%1\n'
+    exit 0
+    ;;
+  display-message)
+    printf '%%1\n'
+    exit 0
     ;;
   list-windows)
     printf 'main\n'
@@ -392,6 +400,19 @@ case "${1:-}" in
     else
       printf '%s\n' main
     fi
+    exit 0
+    ;;
+  list-panes)
+    # The exact-existence probe fm_backend_target_exists uses: real tmux fails
+    # for an absent window or an unreadable server, and succeeds while the
+    # window is present (including the recreated one after a relaunch).
+    if [ "$mode" = unreadable ] && [ ! -e "$spawned" ] && [ ! -e "$killed" ]; then
+      exit 1
+    fi
+    if [ -e "$spawned" ]; then printf '%%1\n'; exit 0; fi
+    if [ -e "$killed" ]; then exit 1; fi
+    [ "$mode" = missing ] && exit 1
+    printf '%%1\n'
     exit 0
     ;;
   has-session) exit 0 ;;

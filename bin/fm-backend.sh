@@ -836,11 +836,21 @@ fm_backend_composer_state() {  # <backend> <target> [expected-label] -> empty|pe
 # Mirrors fm-crew-state.sh's pane_readable check; exists here as one shared
 # primitive so callers that only need a fast alive/dead read (recovery
 # digests, the session-start fleet digest) do not re-derive it inline.
+#
+# The tmux arm deliberately does NOT use `display-message -t <target>`: tmux
+# answers an absent window from the client's active window rather than
+# failing (verified against real tmux 3.6), so a display-message probe reports
+# a vanished task window as live and a stale busy record can then be read as
+# work in progress. `list-panes -t <target>` resolves the same target forms
+# (window name, index, id, and a session:window.pane suffix) but fails for a
+# missing window or session, which is exactly the existence question here.
+# fm_backend_tmux_agent_state owns the recovery-grade distinction between a
+# missing window and an unreadable tmux; this primitive only needs presence.
 fm_backend_target_exists() {  # <backend> <target> [expected-label]
   local backend=$1 target=$2 expected_label=${3:-} session pane
   case "$backend" in
     tmux)
-      tmux display-message -p -t "$target" '#{pane_id}' >/dev/null 2>&1
+      tmux list-panes -t "$target" >/dev/null 2>&1
       ;;
     herdr)
       fm_backend_source herdr || return 1
