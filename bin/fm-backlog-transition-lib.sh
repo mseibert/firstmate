@@ -48,8 +48,12 @@
 # replay would reject. The validator pins the data path to this home's configured
 # root before any recovery mutation, then re-runs exactly that close.
 # `tasks-axi done` on an already-closed task backfills links
-# without moving the close date, so replay is idempotent. Spawn needs no marker:
-# it publishes the meta first, so a crash
+# without moving the close date, so replay is idempotent. A recorded
+# pull-request link tasks-axi's typed `--pr` flag cannot carry (any forge but
+# GitHub's /pull/<n> form) is written into the task body as the finished
+# work's deliverable instead, on the same path for a fresh close and a
+# replayed one, so no forge's close depends on the typed link. Spawn needs no
+# marker: it publishes the meta first, so a crash
 # leaves the meta itself as the evidence that the row is owed a start.
 # A captain-held row uses the same record with a `mode=retain` line: replay then
 # records the deliverable and reopens the row instead of closing it, and never
@@ -72,6 +76,15 @@ FM_BACKLOG_ROW_HOLD_KIND=
 # retained_incomplete | answered | stale | noop.
 # shellcheck disable=SC2034 # Output global, read by the sourcing caller.
 FM_BACKLOG_CLOSE_REPLAY_RESULT=
+# Set by fm_backlog_close_done_args: the flags the close itself runs with,
+# after every pull-request link tasks-axi cannot carry as a typed --pr link has
+# been recorded on the task body instead.
+FM_BACKLOG_CLOSE_ARGS=()
+
+# tasks-axi's typed `--pr` link accepts the GitHub pull-request form only, and
+# bin/fm-pr-lib.sh is the single provider classifier for a pull-request URL.
+# shellcheck source=bin/fm-pr-lib.sh disable=SC1091
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fm-pr-lib.sh"
 
 # Emit each byte of a value as a decimal number, locale-independently.
 # Deliberately perl rather than od: the spawn and teardown lifecycle runs under a
@@ -419,19 +432,73 @@ fm_backlog_done() {  # <data-dir> <id> [flag...]
   fm_backlog_mutate "$data" "done" "$id" "$@"
 }
 
+# Record the finished work's deliverable as one line at the end of the task
+# body (a line already present is left alone). The body is the only carrier a
+# non-GitHub pull request has: tasks-axi's typed --pr link accepts the GitHub
+# form alone, so a link recorded here is never passed through it. The mutation
+# runs against the caller's own spelling of the data directory so the home
+# boundary stays authorized.
+fm_backlog_append_deliverable() {  # <data-dir> <id> <deliverable>
+  local authorized_data=$1 id=$2 deliverable=$3 data out command_status body line new_body tmp
+  if ! data=$(fm_backlog_data_absolute "$authorized_data"); then
+    FM_BACKLOG_TRANSITION_ERROR="data directory cannot be resolved: $authorized_data"
+    return 1
+  fi
+  out=$(fm_backlog_row_show "$data" "$id" --full)
+  command_status=$?
+  if [ "$command_status" -ne 0 ]; then
+    FM_BACKLOG_TRANSITION_ERROR=$(printf '%s\n' "$out" | sed -n '1p')
+    [ -n "$FM_BACKLOG_TRANSITION_ERROR" ] \
+      || FM_BACKLOG_TRANSITION_ERROR="tasks-axi show $id failed with no output"
+    return "$command_status"
+  fi
+  body=$(printf '%s\n' "$out" | sed -n 's/^  body: //p' | head -1 \
+    | LC_ALL=C perl -MJSON::PP -e '
+      local $/;
+      my $shown = <STDIN>;
+      $shown =~ s/\s+\z//;
+      exit 0 if $shown eq "" || $shown eq "-";
+      my $value = $shown =~ /\A"/ ? decode_json($shown) : $shown;
+      print $value unless $value eq "-";
+    ') || {
+    FM_BACKLOG_TRANSITION_ERROR="could not decode the task body of $id"
+    return 1
+  }
+  line="Deliverable of the finished work: $deliverable"
+  case $'\n'"$body"$'\n' in
+    *$'\n'"$line"$'\n'*) return 0 ;;
+  esac
+  new_body=$line
+  [ -z "$body" ] || new_body=$(printf '%s\n\n%s' "$body" "$line")
+  tmp=$(umask 077; mktemp "${TMPDIR:-/tmp}/fm-backlog-retain-body.XXXXXX") || {
+    FM_BACKLOG_TRANSITION_ERROR="cannot stage the deliverable for $id"
+    return 1
+  }
+  if ! printf '%s\n' "$new_body" > "$tmp"; then
+    rm -f -- "$tmp"
+    FM_BACKLOG_TRANSITION_ERROR="cannot stage the deliverable for $id"
+    return 1
+  fi
+  if ! fm_backlog_mutate "$authorized_data" update "$id" --body-file "$tmp"; then
+    rm -f -- "$tmp"
+    return 1
+  fi
+  rm -f -- "$tmp"
+  return 0
+}
+
 # Keep a captain-held row open across the removal of the work record that
 # discovered it: record the finished work's deliverable as one line at the end
-# of the task body (a line already present is left alone) and return the row to
-# Queued, the conventional post-cleanup shape for an open captain call.
+# of the task body and return the row to Queued, the conventional post-cleanup
+# shape for an open captain call.
 # bin/fm-fleet-snapshot.sh classifies that retained hold from its structured
 # fields; only bin/fm-captain-hold.sh answer closes the call. The links are
 # written into the body rather than through `tasks-axi update --report`,
 # because that flag rewrites the title of a row that is not Done.
 fm_backlog_retain() {  # <data-dir> <id> [flag...]
-  local data authorized_data=$1 id=$2 out command_status previous_arg=''
-  local arg deliverable='' line body new_body tmp
-  if ! data=$(fm_backlog_data_absolute "$1"); then
-    FM_BACKLOG_TRANSITION_ERROR="data directory cannot be resolved: $1"
+  local authorized_data=$1 id=$2 previous_arg='' arg deliverable=''
+  if ! fm_backlog_data_absolute "$authorized_data" >/dev/null; then
+    FM_BACKLOG_TRANSITION_ERROR="data directory cannot be resolved: $authorized_data"
     return 1
   fi
   shift 2
@@ -445,48 +512,7 @@ fm_backlog_retain() {  # <data-dir> <id> [flag...]
     previous_arg=$arg
   done
   if [ -n "$deliverable" ]; then
-    out=$(fm_backlog_row_show "$data" "$id" --full)
-    command_status=$?
-    if [ "$command_status" -ne 0 ]; then
-      FM_BACKLOG_TRANSITION_ERROR=$(printf '%s\n' "$out" | sed -n '1p')
-      [ -n "$FM_BACKLOG_TRANSITION_ERROR" ] \
-        || FM_BACKLOG_TRANSITION_ERROR="tasks-axi show $id failed with no output"
-      return "$command_status"
-    fi
-    body=$(printf '%s\n' "$out" | sed -n 's/^  body: //p' | head -1 \
-      | LC_ALL=C perl -MJSON::PP -e '
-        local $/;
-        my $shown = <STDIN>;
-        $shown =~ s/\s+\z//;
-        exit 0 if $shown eq "" || $shown eq "-";
-        my $value = $shown =~ /\A"/ ? decode_json($shown) : $shown;
-        print $value unless $value eq "-";
-      ') || {
-      FM_BACKLOG_TRANSITION_ERROR="could not decode the task body of $id"
-      return 1
-    }
-    line="Deliverable of the finished work: $deliverable"
-    case $'\n'"$body"$'\n' in
-      *$'\n'"$line"$'\n'*) ;;
-      *)
-        new_body=$line
-        [ -z "$body" ] || new_body=$(printf '%s\n\n%s' "$body" "$line")
-        tmp=$(umask 077; mktemp "${TMPDIR:-/tmp}/fm-backlog-retain-body.XXXXXX") || {
-          FM_BACKLOG_TRANSITION_ERROR="cannot stage the deliverable for $id"
-          return 1
-        }
-        if ! printf '%s\n' "$new_body" > "$tmp"; then
-          rm -f -- "$tmp"
-          FM_BACKLOG_TRANSITION_ERROR="cannot stage the deliverable for $id"
-          return 1
-        fi
-        if ! fm_backlog_mutate "$authorized_data" update "$id" --body-file "$tmp"; then
-          rm -f -- "$tmp"
-          return 1
-        fi
-        rm -f -- "$tmp"
-        ;;
-    esac
+    fm_backlog_append_deliverable "$authorized_data" "$id" "$deliverable" || return 1
   fi
   fm_backlog_mutate "$authorized_data" reopen "$id"
 }
@@ -668,11 +694,49 @@ fm_backlog_dispatch_rollback() {
   return 0
 }
 
+# tasks-axi's typed `--pr` link accepts the GitHub pull-request form only, so a
+# pull-request URL from any other forge is recorded as a deliverable body line
+# and the close itself runs without `--pr`. bin/fm-pr-lib.sh's fm_pr_url_parse
+# is the single provider classifier; any URL it does not resolve to github,
+# including one it cannot parse at all, stays plain text on the row.
+fm_backlog_pr_link_typed() {  # <url>
+  fm_pr_url_parse "$1" || return 1
+  [ "$FM_PR_PROVIDER" = github ]
+}
+
+# Split one close's recorded flags into the ones tasks-axi can carry and the
+# deliverable body lines that must carry the rest, so both the teardown that
+# writes the record and the recovery that replays it close a Forgejo or GitLab
+# pull request exactly like a GitHub one. Sets FM_BACKLOG_CLOSE_ARGS.
+fm_backlog_close_done_args() {  # <data-dir> <id> [flag...]
+  local data=$1 id=$2 flag value
+  FM_BACKLOG_CLOSE_ARGS=()
+  shift 2
+  while [ "$#" -ge 2 ]; do
+    flag=$1
+    value=$2
+    shift 2
+    case "$flag" in
+      --pr)
+        if fm_backlog_pr_link_typed "$value"; then
+          FM_BACKLOG_CLOSE_ARGS+=(--pr "$value")
+        else
+          fm_backlog_append_deliverable "$data" "$id" "PR $value" || return 1
+        fi
+        ;;
+      *) FM_BACKLOG_CLOSE_ARGS+=("$flag" "$value") ;;
+    esac
+  done
+  [ "$#" -eq 0 ] || FM_BACKLOG_CLOSE_ARGS+=("$1")
+  return 0
+}
+
 fm_backlog_close_transition() {
   local meta=$1 marker=$2 data=$3 id=$4 state=$5
   shift 5
   [ -z "$meta" ] || fm_backlog_record_remove "$meta" "task record" "$state" || return 1
-  fm_backlog_done "$data" "$id" "$@" || return 1
+  fm_backlog_close_done_args "$data" "$id" "$@" || return 1
+  fm_backlog_done "$data" "$id" "${FM_BACKLOG_CLOSE_ARGS[@]+"${FM_BACKLOG_CLOSE_ARGS[@]}"}" || return 1
   fm_backlog_record_remove "$marker" "pending-close record" "$state"
 }
 
