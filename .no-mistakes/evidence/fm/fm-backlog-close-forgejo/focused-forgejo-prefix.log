@@ -1,0 +1,1 @@
+not ok - forgejo teardown failed: error: atomic-close-forgejo-b6's endpoint and local copy are cleaned up, but its backlog item could not be closed atomically (error: Task pr link must be an http(s) pull request URL ending in /pull/<number>); the pending close is recorded and the next session start retries it

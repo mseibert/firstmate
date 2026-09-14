@@ -1,0 +1,76 @@
+=== pending-close markers before session start ===
+--- state/cjc-11.backlog-close
+id=cjc-11
+data=/tmp/fm-manual-forgejo.7PRYkX/home/data
+spawn_gen=spawn-cjc-11
+arg=--pr
+arg=https://forgejo.seibert.tools/seibert.group/customer-journey-contract/pulls/12
+--- state/cj-384.backlog-close
+id=cj-384
+data=/tmp/fm-manual-forgejo.7PRYkX/home/data
+spawn_gen=spawn-cj-384
+arg=--pr
+arg=https://forgejo.seibert.tools/seibert.group/customer-journeys/pulls/404
+
+=== session start #1: bootstrap reconcile lines ===
+BACKLOG_RECONCILE: cj-384: recorded backlog close could not be replayed: error: Task pr link must be an http(s) pull request URL ending in /pull/<number>
+BACKLOG_RECONCILE: cjc-11: recorded backlog close could not be replayed: error: Task pr link must be an http(s) pull request URL ending in /pull/<number>
+bootstrap exit: 0
+
+=== resulting backlog rows (tasks-axi show --full) ===
+--- cjc-11
+task:
+  id: cjc-11
+  title: item for cjc-11
+  state: in_flight
+  blocked: no
+  blocked_by: none
+  held: no
+  hold_reason: "-"
+  hold_kind: "-"
+  hold_until: "-"
+  kind: ship
+  repo: "-"
+  priority: "-"
+  created: 2026-09-14
+  closed: "-"
+  deps: none
+  links: none
+  body: ""
+--- cj-384
+task:
+  id: cj-384
+  title: item for cj-384
+  state: in_flight
+  blocked: no
+  blocked_by: none
+  held: no
+  hold_reason: "-"
+  hold_kind: "-"
+  hold_until: "-"
+  kind: ship
+  repo: "-"
+  priority: "-"
+  created: 2026-09-14
+  closed: "-"
+  deps: none
+  links: none
+  body: ""
+
+=== pending-close markers after session start #1 ===
+still present: state/cjc-11.backlog-close
+still present: state/cj-384.backlog-close
+
+=== session start #2: bootstrap reconcile lines (idempotent re-run) ===
+BACKLOG_RECONCILE: cj-384: recorded backlog close could not be replayed: error: Task pr link must be an http(s) pull request URL ending in /pull/<number>
+BACKLOG_RECONCILE: cjc-11: recorded backlog close could not be replayed: error: Task pr link must be an http(s) pull request URL ending in /pull/<number>
+
+=== final backlog file ===
+# Backlog
+
+## In flight
+- [ ] cj-384 - item for cj-384 (kind: ship) (since 2026-09-14)
+- [ ] cjc-11 - item for cjc-11 (kind: ship) (since 2026-09-14)
+
+## Queued
+## Done

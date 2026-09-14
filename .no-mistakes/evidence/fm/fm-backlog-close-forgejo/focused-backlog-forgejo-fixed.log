@@ -1,0 +1,10 @@
+ok - completion closes a local-only ship, with its landing note, before reporting success
+ok - completion closes a scout item against its report
+ok - completion records a Forgejo pull request on the body and closes without a typed link
+ok - completion keeps a GitHub pull request as tasks-axi's typed link
+ok - session start finishes a close an interrupted cleanup recorded but never landed
+ok - session start replays a recorded Forgejo close onto the body without a typed link
+ok - recovery backfills recorded links onto already Done items
+ok - recovery rejects malformed PR URL values
+ok - recovery rejects close-marker arguments outside its protocol
+ok - session start leaves a captain-held item where the captain put it

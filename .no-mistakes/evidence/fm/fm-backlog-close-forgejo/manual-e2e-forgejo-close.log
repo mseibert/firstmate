@@ -1,0 +1,76 @@
+=== pending-close markers before session start ===
+--- state/cjc-11.backlog-close
+id=cjc-11
+data=/tmp/fm-manual-forgejo.pYzYkA/home/data
+spawn_gen=spawn-cjc-11
+arg=--pr
+arg=https://forgejo.seibert.tools/seibert.group/customer-journey-contract/pulls/12
+--- state/cj-384.backlog-close
+id=cj-384
+data=/tmp/fm-manual-forgejo.pYzYkA/home/data
+spawn_gen=spawn-cj-384
+arg=--pr
+arg=https://forgejo.seibert.tools/seibert.group/customer-journeys/pulls/404
+
+=== session start #1: bootstrap reconcile lines ===
+BOOTSTRAP_INFO: closed the backlog item for cj-384 that an interrupted cleanup left open
+BOOTSTRAP_INFO: closed the backlog item for cjc-11 that an interrupted cleanup left open
+bootstrap exit: 0
+
+=== resulting backlog rows (tasks-axi show --full) ===
+--- cjc-11
+task:
+  id: cjc-11
+  title: item for cjc-11
+  state: done
+  blocked: no
+  blocked_by: none
+  held: no
+  hold_reason: "-"
+  hold_kind: "-"
+  hold_until: "-"
+  kind: ship
+  repo: "-"
+  priority: "-"
+  created: "-"
+  closed: 2026-09-14
+  deps: none
+  links: none
+  body: "Deliverable of the finished work: PR https://forgejo.seibert.tools/seibert.group/customer-journey-contract/pulls/12"
+--- cj-384
+task:
+  id: cj-384
+  title: item for cj-384
+  state: done
+  blocked: no
+  blocked_by: none
+  held: no
+  hold_reason: "-"
+  hold_kind: "-"
+  hold_until: "-"
+  kind: ship
+  repo: "-"
+  priority: "-"
+  created: "-"
+  closed: 2026-09-14
+  deps: none
+  links: none
+  body: "Deliverable of the finished work: PR https://forgejo.seibert.tools/seibert.group/customer-journeys/pulls/404"
+
+=== pending-close markers after session start #1 ===
+consumed: state/cjc-11.backlog-close
+consumed: state/cj-384.backlog-close
+
+=== session start #2: bootstrap reconcile lines (idempotent re-run) ===
+(no BACKLOG_RECONCILE and no close replay line)
+
+=== final backlog file ===
+# Backlog
+
+## In flight
+## Queued
+## Done
+- [x] cjc-11 - item for cjc-11 (kind: ship) (done 2026-09-14)
+  Deliverable of the finished work: PR https://forgejo.seibert.tools/seibert.group/customer-journey-contract/pulls/12
+- [x] cj-384 - item for cj-384 (kind: ship) (done 2026-09-14)
+  Deliverable of the finished work: PR https://forgejo.seibert.tools/seibert.group/customer-journeys/pulls/404

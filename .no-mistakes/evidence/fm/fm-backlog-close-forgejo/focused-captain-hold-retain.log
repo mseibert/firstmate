@@ -1,0 +1,3 @@
+ok - cleanup leaves a captain-held work item open with its deliverable, and only an answer closes it
+ok - an interrupted cleanup keeps the captain call recoverable and session start retains it
+ok - cleanup retains captain calls in the configured backlog
