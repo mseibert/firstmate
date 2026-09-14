@@ -1,0 +1,95 @@
+=== P1: PRE-FIX, mirror-less seibert/main 7 behind origin/seibert/main ===
+  local main mirror exists: no
+--- pre-fix fm-update.sh output ---
+firstmate: skipped: cannot read main
+reread-firstmate: no
+restart-secondmates: none
+nudge-secondmates: none
+-----------------------------------
+  PASS: pre-fix run reports the reported skip
+  PASS: pre-fix run leaves the line behind
+
+=== P2: FIXED, same mirror-less 7-behind world ===
+--- fixed fm-update.sh output ---
+firstmate: updated c85cc97..0312c1d (fast-forwarded origin/seibert/main; instructions changed: AGENTS.md)
+reread-firstmate: yes
+restart-secondmates: none
+nudge-secondmates: none
+---------------------------------
+  PASS: fixed run reports an update
+  PASS: fixed run names the direct line fast-forward
+  PASS: no 'cannot read main' skip
+  PASS: line advanced to origin/seibert/main tip
+  PASS: line stayed on seibert/main
+  PASS: advance is a single-parent fast-forward
+  PASS: created main mirror is at origin/main
+  PASS: created main mirror carries no commits of its own
+  PASS: mirror is not checked out in any worktree
+  PASS: instruction change from the remote line flips the reread gate
+  PASS: instruction change is named
+
+=== P3: GUARD, mirror-less line behind but dirty working tree ===
+--- output ---
+firstmate: skipped: dirty working tree
+reread-firstmate: no
+restart-secondmates: none
+nudge-secondmates: none
+--------------
+  PASS: dirty fork line is skipped
+  PASS: dirty line did not move
+  PASS: local edit preserved
+  PASS: no stash entry was created
+
+=== P4: mirror-less line with own commits + upstream advanced ===
+--- output ---
+firstmate: updated c690f0c..1c754a5 (merged main)
+reread-firstmate: no
+restart-secondmates: none
+nudge-secondmates: none
+--------------
+  PASS: mirror-less line with own commits updates
+  PASS: missing mirror is created and merged
+  PASS: no 'cannot read main' skip
+  PASS: line's own commit survived
+  PASS: upstream origin/main reconciled into the line
+  PASS: line stayed on seibert/main
+
+=== P5: GUARD, self-modified (diverged) main mirror with a remote line advance ===
+--- output ---
+firstmate: skipped: main diverged from origin/main
+reread-firstmate: no
+restart-secondmates: none
+nudge-secondmates: none
+--------------
+  PASS: diverged mirror skips the whole update
+  PASS: diverged mirror was not moved
+  PASS: line was not fast-forwarded past the guard
+
+=== P6: ADVERSARIAL, UNPUSHED own commit + moved remote line is never force-moved ===
+--- output ---
+firstmate: already current
+reread-firstmate: no
+restart-secondmates: none
+nudge-secondmates: none
+--------------
+  PASS: no forced fast-forward of a diverged line
+  PASS: line tip not force-moved onto the remote
+  PASS: line tip differs from remote (unpushed commit kept)
+  PASS: unpushed own commit still reachable
+  PASS: line stayed on seibert/main
+  PASS: working tree still clean
+  PASS: no stash entry was created
+
+=== P7: BOUNDARY, mirror-less line already on origin/seibert/main ===
+--- output ---
+firstmate: already current
+reread-firstmate: no
+restart-secondmates: none
+nudge-secondmates: none
+--------------
+  PASS: already-current mirror-less line stays a no-op
+  PASS: no false update reported
+  PASS: HEAD unchanged
+  PASS: missing mirror still created ref-only at origin/main
+
+=== RESULT: 37 passed, 0 failed ===
