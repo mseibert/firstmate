@@ -368,6 +368,35 @@ test_forgejo_ci_falls_back_to_head_scoped_tasks() {
   pass "forgejo CI falls back to head-scoped tasks when no commit status exists"
 }
 
+test_forgejo_cancelled_run_is_not_red_and_not_green() {
+  local dir
+  dir=$(forgejo_case forgejo-cancelled-ci)
+  forgejo_verdict_comment \
+    "2026-09-09T10:45:53Z" "2026-09-09T09:11:07Z" \
+    'Reviewed this pull request — **Good to merge (LGTM).** <!-- crabd:tracking -->' > "$dir/comments.json"
+  printf '%s\n' '{"state":"","total_count":0}' > "$dir/status.json"
+  printf '%s\n' '{"workflow_runs":[{"name":"ci","status":"success","head_sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},{"name":"Behavior portable serial 4","status":"cancelled","head_sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}]}' > "$dir/tasks.json"
+
+  run_case "$dir" "https://forgejo.example.test/group/project/pulls/186" --timeout 0
+
+  expect_code 1 "$RC" "forgejo cancelled run"
+  assert_not_contains "$OUT" 'action-required: ci red' \
+    "a cancelled workflow run must never read as red CI"
+  assert_not_contains "$OUT" 'ready:' \
+    "a cancelled workflow run must never read as green CI"
+  assert_contains "$OUT" 'ci not green (state=pending)' \
+    "a cancelled workflow run must hold the head as not-passed"
+
+  printf '%s\n' '{"workflow_runs":[{"name":"Behavior portable serial 4","status":"cancelled","head_sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},{"name":"lint","status":"failure","head_sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}]}' > "$dir/tasks.json"
+
+  run_case "$dir" "https://forgejo.example.test/group/project/pulls/186" --timeout 0
+
+  expect_code 4 "$RC" "forgejo cancelled run beside a real failure"
+  assert_contains "$OUT" 'action-required: ci red' \
+    "a real failure beside a cancelled run must still read red"
+  pass "forgejo cancelled run is neither red nor green, and never hides a failure"
+}
+
 test_github_fresh_verdict() {
   local dir
   dir=$(github_case github-fresh)
@@ -454,6 +483,32 @@ test_github_red_ci_is_action_required() {
   assert_contains "$OUT" 'action-required: ci red on head bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' \
     "red CI must be reported as action required"
   pass "github red CI exits action-required"
+}
+
+test_github_cancelled_check_is_not_red_and_not_green() {
+  local dir
+  dir=$(github_case github-cancelled-ci)
+  printf '%s' '[{"user":{"login":"seibert-pr-agent[bot]"},"created_at":"2026-09-09T11:05:00Z","updated_at":"2026-09-09T11:05:00Z","body":"**Verdict:** Good to merge"}]' > "$dir/comments.json"
+  printf '%s\n' '[{"bucket":"pass","name":"ci","state":"SUCCESS"},{"bucket":"cancel","name":"Behavior portable serial 4","state":"CANCELLED"}]' > "$dir/checks.json"
+
+  run_case "$dir" "https://github.com/example/repo/pull/42" --timeout 0
+
+  expect_code 1 "$RC" "github cancelled check"
+  assert_not_contains "$OUT" 'action-required: ci red' \
+    "a cancelled check must never read as red CI"
+  assert_not_contains "$OUT" 'ready:' \
+    "a cancelled check must never read as green CI"
+  assert_contains "$OUT" 'ci not green (state=pending)' \
+    "a cancelled check must hold the head as not-passed"
+
+  printf '%s\n' '[{"bucket":"cancel","name":"Behavior portable serial 4","state":"CANCELLED"},{"bucket":"fail","name":"lint","state":"FAILURE"}]' > "$dir/checks.json"
+
+  run_case "$dir" "https://github.com/example/repo/pull/42" --timeout 0
+
+  expect_code 4 "$RC" "github cancelled check beside a real failure"
+  assert_contains "$OUT" 'action-required: ci red' \
+    "a real failure beside a cancelled check must still read red"
+  pass "github cancelled check is neither red nor green, and never hides a failure"
 }
 
 test_github_no_checks_is_unknown_not_green() {
@@ -583,12 +638,14 @@ test_forgejo_nits_found_is_mergeable
 test_forgejo_pending_ci_blocks_ready_and_no_ci_escapes
 test_forgejo_red_ci_is_action_required
 test_forgejo_ci_falls_back_to_head_scoped_tasks
+test_forgejo_cancelled_run_is_not_red_and_not_green
 test_github_fresh_verdict
 test_github_older_verdict_comment_does_not_cover_head
 test_github_blocking_verdict
 test_github_missing_verdict_comment
 test_github_pending_ci_blocks_ready_and_no_ci_escapes
 test_github_red_ci_is_action_required
+test_github_cancelled_check_is_not_red_and_not_green
 test_github_no_checks_is_unknown_not_green
 test_forgejo_host_without_login_is_an_error
 test_bad_usage_is_an_error

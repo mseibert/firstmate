@@ -27,7 +27,8 @@
 # A verdict is fresh only when its timestamp is STRICTLY NEWER than the PR
 # head's commit time; a stale verdict is never reported as ready. CI is green
 # only when the head's own checks say so; an absent or unreadable CI state is
-# unknown, never green.
+# unknown, never green. A cancelled check is neither red nor green: it holds
+# the head as not-passed, so the merge waits for a re-run on the current head.
 #
 # Usage:
 #   fm-verdict-wait.sh <pr-url> [--timeout <secs>] [--interval <secs>]
@@ -289,8 +290,8 @@ read_github_ci() {
   esac
   printf '%s' "$out" | jq -r '
     if length == 0 then "unknown"
-    elif any(.[]; (.bucket // "") == "fail" or (.bucket // "") == "cancel") then "red"
-    elif any(.[]; (.bucket // "") == "pending") then "pending"
+    elif any(.[]; (.bucket // "") == "fail") then "red"
+    elif any(.[]; (.bucket // "") == "pending" or (.bucket // "") == "cancel") then "pending"
     else "green" end' 2>/dev/null
 }
 
@@ -315,7 +316,7 @@ read_forgejo_ci() {  # <sha>
   printf '%s' "$json" | jq -r --arg sha "$1" '
     [ .workflow_runs[]? | select((.head_sha // "") == $sha) ]
     | if length == 0 then "unknown"
-      elif any(.[]; (.status // "") == "failure" or (.status // "") == "error" or (.status // "") == "cancelled") then "red"
+      elif any(.[]; (.status // "") == "failure" or (.status // "") == "error") then "red"
       elif all(.[]; (.status // "") == "success" or (.status // "") == "skipped") then "green"
       else "pending" end' 2>/dev/null
 }
