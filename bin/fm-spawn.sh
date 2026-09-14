@@ -1349,7 +1349,20 @@ EOF
         exit 1
         ;;
     esac
-    RELAUNCH_STATE=$(fm_backend_agent_state "$BACKEND" "$RELAUNCH_TARGET")
+    # A freshly created window's login shell runs its startup files (uptime,
+    # last, ...) in the foreground for a moment, which the classifier correctly
+    # reports as `ambiguous`. Requiring the very next read to be `dead` would
+    # abort the relaunch after the old agent is already stopped and the window
+    # already recreated. Let the endpoint settle instead: poll it for a bounded
+    # wait until it reads `dead`, and refuse only if it never does. The safety
+    # contract is unchanged - a replacement still launches only onto a
+    # positively agent-free endpoint.
+    RELAUNCH_STATE=
+    for _ in $(seq 1 60); do
+      RELAUNCH_STATE=$(fm_backend_agent_state "$BACKEND" "$RELAUNCH_TARGET")
+      [ "$RELAUNCH_STATE" != dead ] || break
+      sleep 1
+    done
     [ "$RELAUNCH_STATE" = dead ] || {
       echo "error: task $ID's recreated endpoint reads '$RELAUNCH_STATE' rather than a positively agent-free endpoint; refusing to launch a replacement into it" >&2
       exit 1

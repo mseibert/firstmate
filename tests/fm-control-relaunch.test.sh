@@ -1665,6 +1665,96 @@ test_relaunch_recreates_a_missing_window_in_the_recorded_worktree() {
   pass "fm-control relaunch: a missing recorded window is recreated in the recorded worktree and replaced"
 }
 
+# A freshly recreated window's login shell runs its startup files (uptime,
+# last, ...) in the foreground for a moment, so the recovery-grade classifier's
+# first reads of the new endpoint are `ambiguous`, not `dead`. The recreate arm
+# must let that settle instead of aborting after the old agent was stopped and
+# the window already recreated (2026-09-12 incident recovery).
+test_relaunch_recreated_endpoint_settles_before_the_dead_verdict() {
+  local dir out rc
+  dir=$(new_case recreated-startup-race rl48)
+  add_ship_task "$dir" rl48 claude
+  printf 'zsh' > "$dir/fake/command"
+  : > "$dir/fake/windows"
+  mv "$dir/fakebin/tmux" "$dir/fakebin/tmux-real"
+  cat > "$dir/fakebin/tmux" <<SH
+#!/usr/bin/env bash
+set -u
+D="$dir/fake"
+case "\${1:-}" in
+  display-message)
+    for a in "\$@"; do
+      case "\$a" in
+        *pane_current_command*)
+          if [ -f "\$D/recreated" ]; then
+            reads=0
+            [ -f "\$D/startup-reads" ] && reads=\$(cat "\$D/startup-reads")
+            if [ "\$reads" -lt 3 ]; then
+              printf '%s\n' "\$((reads + 1))" > "\$D/startup-reads"
+              printf 'uptime\n'
+              exit 0
+            fi
+          fi
+          ;;
+      esac
+    done
+    ;;
+  new-window)
+    printf '0\n' > "\$D/startup-reads"
+    : > "\$D/recreated"
+    ;;
+esac
+exec "$dir/fakebin/tmux-real" "\$@"
+SH
+  chmod +x "$dir/fakebin/tmux"
+  out=$(run_control "$dir" rl48 relaunch --note "recover after session death"); rc=$?
+  expect_code 0 "$rc" "a recreated endpoint whose startup settles to a plain shell should relaunch"$'\n'"$out"
+  assert_contains "$out" "relaunched rl48 harness=claude" "the outcome should report the replacement"
+  [ "$(cat "$dir/fake/startup-reads")" -ge 3 ] \
+    || fail "the recreate arm must keep polling past the startup reads"
+  assert_grep 'encode launch-brief' "$dir/fake/literal" "the replacement agent was not launched"
+  assert_grep 'fm-rl48' "$dir/fake/windows" "the recorded window was not recreated"
+  pass "fm-control relaunch: a recreated endpoint's shell startup settles before the dead verdict"
+}
+
+# The settle wait must never widen the launch contract: an endpoint that never
+# reads agent-free is refused, and no replacement bytes are delivered.
+test_relaunch_recreated_endpoint_that_never_settles_is_refused() {
+  local dir out rc
+  dir=$(new_case recreated-never-settles rl49)
+  add_ship_task "$dir" rl49 claude
+  printf 'zsh' > "$dir/fake/command"
+  : > "$dir/fake/windows"
+  mv "$dir/fakebin/tmux" "$dir/fakebin/tmux-real"
+  cat > "$dir/fakebin/tmux" <<SH
+#!/usr/bin/env bash
+set -u
+D="$dir/fake"
+case "\${1:-}" in
+  display-message)
+    for a in "\$@"; do
+      case "\$a" in
+        *pane_current_command*)
+          [ ! -f "\$D/recreated" ] || { printf 'uptime\n'; exit 0; }
+          ;;
+      esac
+    done
+    ;;
+  new-window)
+    : > "\$D/recreated"
+    ;;
+esac
+exec "$dir/fakebin/tmux-real" "\$@"
+SH
+  chmod +x "$dir/fakebin/tmux"
+  out=$(run_control "$dir" rl49 relaunch --note "recover after session death"); rc=$?
+  expect_code 1 "$rc" "a recreated endpoint that never reads agent-free should refuse"$'\n'"$out"
+  assert_contains "$out" "recreated endpoint reads 'ambiguous'" \
+    "the refusal should name the endpoint's actual state"
+  [ ! -s "$dir/fake/literal" ] || fail "a refused relaunch must deliver no launch bytes"
+  pass "fm-control relaunch: a recreated endpoint that never settles is refused without a launch"
+}
+
 test_direct_spawn_relaunch_recreates_a_missing_window() {
   local dir out rc
   dir=$(new_case missing-window-direct rl43)
@@ -1885,6 +1975,8 @@ test_spawn_relaunch_refuses_contradicting_flags
 test_spawn_relaunch_refuses_an_unrecorded_task
 test_spawn_relaunch_refuses_a_pane_outside_the_worktree
 test_relaunch_recreates_a_missing_window_in_the_recorded_worktree
+test_relaunch_recreated_endpoint_settles_before_the_dead_verdict
+test_relaunch_recreated_endpoint_that_never_settles_is_refused
 test_direct_spawn_relaunch_recreates_a_missing_window
 test_relaunch_restores_a_missing_recorded_session
 test_direct_spawn_relaunch_restores_a_missing_session
