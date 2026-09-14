@@ -43,6 +43,9 @@
 #                the configured merge authority approves, firstmate merges to local main
 # The direct-PR and no-mistakes definitions of done additionally anchor the verdict-head ordering:
 # rebase onto the current main as the last code step, then request the verdict, then freeze the branch.
+# The direct-PR definition of done also makes the five-lens gate mandatory: the
+# worker runs the five lenses over the branch diff and records each lens's result
+# in the PR body before opening it.
 # no-mistakes-prod-only is a registry policy, not a task mode; resolve it to one of
 # the three concrete modes at intake before calling this script.
 # The generated ship brief records the chosen mode as a fixed machine-readable
