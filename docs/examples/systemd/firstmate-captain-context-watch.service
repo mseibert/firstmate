@@ -1,0 +1,31 @@
+# firstmate-captain-context-watch.service - systemd --user unit for the captain
+# context watch
+#
+# Tracked TEMPLATE, not a live unit. The watch
+# (bin/fm-captain-context-watch.sh) measures the captain session's context from
+# outside that session and performs the gated restart. This unit is what makes
+# it survive the very restart it performs: a watcher that dies with the session
+# it restarts is not one, so the loop never runs inside a session and
+# Restart=always brings it back after a crash, a reboot, or a cgroup cleanup.
+#
+# bin/fm-captain-context-watch-arm.sh renders this template by substituting
+# @FM_HOME@ with the resolved operational home and @FM_CCW_WATCH@ with the
+# watch script, then installs the result at
+# ~/.config/systemd/user/firstmate-captain-context-watch.service. Do not install
+# or edit this file by hand; the arm helper owns the installed copy.
+[Unit]
+Description=Firstmate captain context watch (external captain-session restart gate)
+After=default.target
+
+[Service]
+Type=simple
+ExecStart=@FM_CCW_WATCH@ run
+WorkingDirectory=@FM_HOME@
+Environment=HOME=%h
+Environment=FM_HOME=@FM_HOME@
+Environment=PATH=/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target
