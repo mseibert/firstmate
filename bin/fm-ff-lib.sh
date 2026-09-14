@@ -17,14 +17,16 @@
 # ancestry rules.
 #
 # The durable seibert/main fork line is where the PRIMARY checkout may sit instead
-# of the upstream default branch. The origin update path first fast-forwards the
-# line itself onto origin/seibert/main when the line carries no own commits, then
-# advances the clean `main` mirror to origin/<default> as a REF-ONLY fast-forward
-# (the mirror never gets its own commits) and MERGES that mirror into seibert/main
-# for the upstream reconciliation. A missing `main` mirror is created REF-ONLY at
-# origin/<default> first, so a line with own commits updates instead of skipping.
-# Every guard stays in force: offline, dirty, broken-mirror, or unmergeable
-# targets are skipped untouched, never forced.
+# of the upstream default branch. The origin update path keeps the clean `main`
+# mirror at origin/<default> as a REF-ONLY fast-forward, creating it REF-ONLY when
+# it is missing (the mirror never gets its own commits), then fast-forwards the
+# line itself onto origin/seibert/main when the line carries no own commits, and
+# MERGES the mirror into seibert/main for the upstream reconciliation, so a line
+# with own commits updates instead of skipping. Every guard stays in force:
+# offline, dirty, diverged or checked-out mirrors, and failed advances are skipped
+# untouched, never forced; an upstream merge that cannot complete after the line
+# already fast-forwarded leaves that advance in place and is reported as an update
+# with the merge failure, not as a skip.
 #
 # A linked-worktree secondmate home already holds the primary's commit in the
 # shared object store, so its local-HEAD sync is a purely local fast-forward that
@@ -293,18 +295,21 @@ live_secondmate_meta_records() {
 }
 
 # Advance a checkout on the durable seibert/main fork line in origin mode (see
-# the header). A line with no own commits ahead of origin/seibert/main is first
-# fast-forwarded directly onto that remote line, so a home that only fell behind
-# OUR pushed line advances without a local `main` mirror. The clean `main` mirror
-# - which never gets its own commits - is kept at origin/<default> as a REF-ONLY
-# fast-forward, created REF-ONLY at origin/<default> when it is missing, and
-# MERGED into seibert/main for the upstream reconciliation. Every ordinary guard
-# stays in force and the line is left untouched when any of them trips: an
+# the header). The clean `main` mirror - which never gets its own commits - is
+# first kept at origin/<default> as a REF-ONLY fast-forward, created REF-ONLY at
+# origin/<default> when it is missing, and MERGED into seibert/main for the
+# upstream reconciliation. A line with no own commits ahead of origin/seibert/main
+# is fast-forwarded directly onto that remote line, so a home that only fell
+# behind OUR pushed line advances without a local `main` mirror. Every ordinary
+# guard stays in force and the line is left untouched when any of them trips: an
 # offline fetch, a dirty working tree (checked before this helper runs), a
 # self-modified (diverged) `main` mirror, a `main` mirror checked out in another
-# worktree, or a merge that cannot complete are all skipped, never forced. A line
-# with own (unpushed) commits is never rebased or force-moved: it goes through
-# the mirror merge path like before. Sets FF_STATUS and FF_INSTR like ff_target.
+# worktree, or a failed fast-forward are all skipped, never forced. A merge that
+# cannot complete after this run already fast-forwarded the line leaves that
+# advance in place and reports it as an update with the merge failure; without
+# such an advance it skips untouched. A line with own (unpushed) commits is never
+# rebased or force-moved: it goes through the mirror merge path like before. Sets
+# FF_STATUS and FF_INSTR like ff_target.
 ff_line_origin() {
   local dir=$1 label=$2 default=$3 base=$4 out before before_short after instr
   local mirror mirror_rev mirror_base line_base advanced_ff=no
@@ -489,10 +494,10 @@ ff_target() {
     return 0
   fi
 
-  # On the seibert/main fork line an origin update first fast-forwards the line
-  # onto origin/seibert/main when it has no own commits, then keeps the clean
-  # `main` mirror at origin/<default> (creating it REF-ONLY when missing) and
-  # MERGES it into the line for the upstream reconciliation. The local-HEAD sync
+  # On the seibert/main fork line an origin update keeps the clean `main` mirror
+  # at origin/<default> (creating it REF-ONLY when missing), fast-forwards the
+  # line onto origin/seibert/main when it has no own commits, and MERGES the
+  # mirror into the line for the upstream reconciliation. The local-HEAD sync
   # needs no merge: its base is already a commit of this line, so seibert/main is
   # fast-forwarded like the default branch below.
   if [ "$cur" = "seibert/main" ] && [ "$base_mode" = origin ]; then
