@@ -217,6 +217,7 @@ Enforce that ordering structurally instead of by discipline:
 2. Rebase onto the current main as the LAST code step, so the branch is up to date and mergeable.
 3. Request the verdict only after that rebase: $verdict_request.
 4. Freeze the branch until the verdict has landed and is verified to cover your head: after step 3, make no commits and run no rebase until the verdict's timestamp is newer than the branch head it must cover.
+5. Read the verdict timestamp correctly per forge. Ein frisches Verdict auf Forgejo erkennst du am updated_at des crabd-Tracking-Kommentars, NICHT an created_at und NICHT daran, dass ein neuer Kommentar erscheint. crabd editiert denselben Kommentar. Vergleiche updated_at gegen die Commit-Zeit deines Kopfes. Auf GitHub ist es umgekehrt.
 
 Before every verdict request, check the PR's target base first: it must be the project's intended integration branch, never the default branch.
 On the firstmate fork that base is seibert/main, and a PR pointed at main trips the red "PR must be raised via no-mistakes" check - the early warning for a wrong base, not a broken check.
