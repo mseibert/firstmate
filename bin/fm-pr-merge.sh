@@ -133,22 +133,25 @@ PR_NUMBER=$FM_PR_NUMBER
 PROJECT_URL="https://$FM_PR_HOST/$FM_PR_PATH"
 shift 2
 EXPECTED_HEAD=
+EXPECTED_HEAD_GIVEN=0
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --expected-head)
       [ "$#" -ge 2 ] || { echo "error: --expected-head requires a commit id" >&2; exit 2; }
       EXPECTED_HEAD=$2
+      EXPECTED_HEAD_GIVEN=1
       shift 2
       ;;
     --expected-head=*)
       EXPECTED_HEAD=${1#--expected-head=}
+      EXPECTED_HEAD_GIVEN=1
       shift
       ;;
     *) break ;;
   esac
 done
 [ "${1:-}" = "--" ] && shift
-if [ -n "$EXPECTED_HEAD" ] && ! fm_pr_head_valid "$EXPECTED_HEAD"; then
+if [ "$EXPECTED_HEAD_GIVEN" -eq 1 ] && ! fm_pr_head_valid "$EXPECTED_HEAD"; then
   echo "error: --expected-head is not a commit id" >&2
   exit 2
 fi

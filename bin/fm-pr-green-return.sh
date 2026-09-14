@@ -302,12 +302,13 @@ policy_repo_allowlisted() { # <name>...
 # an unmatched sensitive path would be the dangerous one.
 glob_matches() {
   local path=$1 glob=$2 stripped base
+  # Reject real traversal segments only: a legal filename such as `a..b.ts`
+  # still reaches the globs, while `../x`, `x/../y` and `x/..` never do.
+  case "$path" in
+    ''|..|../*|*/../*|*/..) return 1 ;;
+  esac
   # The policy's globs are data, so every case pattern below is deliberately an
   # unquoted expansion: quoting it would match the literal glob text instead.
-  # shellcheck disable=SC2254
-  case "$path" in
-    ''|*..*) return 1 ;;
-  esac
   # shellcheck disable=SC2254
   case "$glob" in
     *'**/'*)
@@ -424,13 +425,24 @@ PATHS
 
 # ---------------------------------------------------------------- gate -------
 
+# names_open_finding <text>: the open-finding wording the gate check treats as
+# a stop, shared by the table rows and the per-lens result lines.
+names_open_finding() {
+  printf '%s\n' "$1" \
+    | grep -Eiq 'nicht[ -]?clean|not[[:space:]]+clean|findings?[[:space:]]*:[[:space:]]*[1-9][0-9]*' \
+    || printf '%s\n' "$1" | grep -Eiwq 'majors?|must-?fix|should-?fix|hold|rework|offen|open|leaks?'
+}
+
 # gate_clean <body>: hard stop 1. The policy owner's clarification accepts
-# `Result: clean`, a table in which every lens ran and no finding is open, or a
-# per-lens result for every lens that positively names a clean result; a missing
-# block, fewer than five lens results, a table with an open finding, or a lens
-# result in any other wording trips the stop.
+# `Result: clean`, a table in which every data row ran and its result cells
+# prove no finding is open, or a per-lens result for every lens that positively
+# names a clean result; a missing block, fewer than five lens results, a row
+# naming an open finding, a non-numeric result cell whose leading counts do not
+# cover the findings, an unclassifiable row, or a lens result in any other
+# wording trips the stop.
 gate_clean() {
-  local body=$1 section clean table_rows table_ok result_lines prose_ok
+  local body=$1 section clean table_rows result_lines prose_ok
+  local ran findings fixed total open findings_num fixed_num
   section=$(printf '%s\n' "$body" | awk '
     /^#+[ \t]/ {
       line = tolower($0)
@@ -451,41 +463,62 @@ gate_clean() {
     | grep -Eic '^[[:space:]>-]*result:[[:space:]]*clean[[:space:]]*$' || true)
   [ "${clean:-0}" -gt 0 ] && return 0
 
-  # Table variant: every data row ran, and no row has a finding beyond its
-  # fixed count. A table that reports an open finding trips the stop.
+  # Every result line is checked for open-finding wording before any table or
+  # prose verdict, so a clean-looking table cannot hide one.
+  result_lines=$(printf '%s\n' "$section" | sed 's/[*_`]//g' \
+    | grep -Ei '(result|verdikt|ergebnis)[[:space:]]*:.*[^[:space:]]' || true)
+  if [ -n "$result_lines" ] && names_open_finding "$result_lines"; then
+    return 1
+  fi
+
+  # Table variant: every data row is classified, never dropped. A row passes
+  # only when it ran and its result cells show no open finding; a non-numeric
+  # result cell is accepted only when both cells lead with counts that cover the
+  # findings. An unclassifiable row holds.
   table_rows=$(printf '%s\n' "$section" | awk -F'|' '
     NF >= 5 {
       lens = $2; ran = $3; findings = $4; fixed = $5
       gsub(/^[ \t]+|[ \t]+$/, "", lens); gsub(/^[ \t]+|[ \t]+$/, "", ran)
       gsub(/^[ \t]+|[ \t]+$/, "", findings); gsub(/^[ \t]+|[ \t]+$/, "", fixed)
       if (lens == "" || tolower(lens) == "lens" || lens ~ /^-+$/) next
-      if (findings ~ /^[0-9]+$/ && fixed ~ /^[0-9]+$/) print ran "\t" findings "\t" fixed
+      gsub(/\t/, " ", ran); gsub(/\t/, " ", findings); gsub(/\t/, " ", fixed)
+      print ran "\t" findings "\t" fixed
     }
   ')
   if [ -n "$table_rows" ]; then
-    table_ok=$(printf '%s\n' "$table_rows" | awk -F'\t' '
-      { total++; if (tolower($1) !~ /^(yes|ja|true)$/) open = 1; if ($2 + 0 > $3 + 0) open = 1 }
-      END { if (total >= 5 && !open) print "1" }
-    ')
-    if [ -n "$table_ok" ]; then return 0; fi
+    total=0
+    open=0
+    while IFS=$'\t' read -r ran findings fixed; do
+      total=$((total + 1))
+      case "$ran" in
+        [yY][eE][sS]|[jJ][aA]|[tT][rR][uU][eE]) ;;
+        *) open=1; continue ;;
+      esac
+      if names_open_finding "$findings $fixed"; then
+        open=1
+        continue
+      fi
+      case "$findings" in
+        [0-9]*) findings_num=${findings%%[!0-9]*} ;;
+        *) findings_num= ;;
+      esac
+      case "$fixed" in
+        [0-9]*) fixed_num=${fixed%%[!0-9]*} ;;
+        *) fixed_num= ;;
+      esac
+      if [ -z "$findings_num" ] || [ -z "$fixed_num" ] \
+        || [ "$fixed_num" -lt "$findings_num" ]; then
+        open=1
+      fi
+    done < <(printf '%s\n' "$table_rows")
+    if [ "$total" -ge 5 ] && [ "$open" -eq 0 ]; then return 0; fi
     return 1
   fi
 
   # Per-lens prose variant: at least five lens result entries, each positively
   # naming a clean result (`clean`, `passed`/`pass`, or a `kein`/`no blocker`
-  # entry). Any other wording, or a line naming an open finding, trips the stop
-  # even when five other entries look clean.
-  result_lines=$(printf '%s\n' "$section" | sed 's/[*_`]//g' \
-    | grep -Ei '(result|verdikt|ergebnis)[[:space:]]*:.*[^[:space:]]' || true)
+  # entry). The open-finding wording was already refused above.
   [ -n "$result_lines" ] || return 1
-  if printf '%s\n' "$result_lines" \
-    | grep -Eiq 'nicht[ -]?clean|not[[:space:]]+clean|findings?[[:space:]]*:[[:space:]]*[1-9][0-9]*'; then
-    return 1
-  fi
-  if printf '%s\n' "$result_lines" \
-    | grep -Eiwq 'majors?|must-?fix|should-?fix|hold|rework|offen|open|leaks?'; then
-    return 1
-  fi
   prose_ok=$(printf '%s\n' "$result_lines" | tr '[:upper:]' '[:lower:]' | awk '
     {
       if (match($0, /(result|verdikt|ergebnis)[ \t]*:/)) {

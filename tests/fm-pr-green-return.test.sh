@@ -19,8 +19,9 @@
 #   (d) a repo with no checks holds and names hard stop 4
 #   (e) a foreign author holds and names hard stop 6
 #   (f) a missing or open five-lens gate holds and names hard stop 1, per-lens
-#       prose results outside the clean forms hold, and clean per-lens prose or
-#       a clean table passes
+#       prose results outside the clean forms hold, a table row naming an open
+#       finding or lacking covering counts holds while a covered refuted cell
+#       passes, and clean per-lens prose or a clean table passes
 #   (g) a missing, negative, or stale review verdict holds and names hard stop 2
 #   (g) the advisory review verdict holds only a blocking verdict or an
 #       unreadable channel, and names hard stop 2, while a missing or stale
@@ -720,6 +721,29 @@ test_sensitive_diff_holds_hard_stop_5() {
   out=$(report_case "$dir" "$NOW_LATE")
   assert_contains "$out" $'t1\tdue\tready' "a non-workflow .forgejo path was held"
 
+  # A legal filename with two consecutive dots still reaches the sensitive
+  # globs; only real traversal segments are excluded.
+  dir=$(make_case sensitive-forgejo-dotdot)
+  write_policy "$dir" programmieren-community
+  write_meta "$dir" t1 "https://forgejo.example/seibert.group/programmieren-community/pulls/365" programmieren-community
+  tea_green "$dir"
+  jq -n '[{filename: "src/auth/a..b.ts"}]' > "$dir/fix/tea-files.json"
+  scan_hold_wake "$dir" "$NOW_LATE" >/dev/null
+  keys=$(queue_keys "$dir")
+  rows=$(queue_rows "$dir")
+  assert_contains "$keys" "pr-green-return:t1" "a double-dot filename on auth ground did not hold"
+  assert_contains "$rows" "hard stop 5" "a double-dot filename on auth ground did not name hard stop 5"
+  assert_contains "$rows" "src/auth/a..b.ts" "the hold payload did not name the double-dot path"
+  assert_not_contains "$rows" "merge it bound now" "a double-dot filename on auth ground queued a merge wake"
+
+  dir=$(make_case sensitive-forgejo-dotdot-normal)
+  write_policy "$dir" programmieren-community
+  write_meta "$dir" t1 "https://forgejo.example/seibert.group/programmieren-community/pulls/365" programmieren-community
+  tea_green "$dir"
+  jq -n '[{filename: "src/a..b.ts"}]' > "$dir/fix/tea-files.json"
+  out=$(report_case "$dir" "$NOW_LATE")
+  assert_contains "$out" $'t1\tdue\tready' "a non-sensitive double-dot filename was held"
+
   # A rename out of a sensitive path contributes its old path, so the change
   # still holds under hard stop 5; a rename within non-sensitive paths stays due.
   dir=$(make_case sensitive-forgejo-rename-out)
@@ -1322,6 +1346,128 @@ test_gate_prose_does_not_accept_open_findings() {
   pass "per-lens prose results outside the clean forms hold; clean prose and clean tables pass"
 }
 
+test_gate_table_never_drops_a_data_row() {
+  local dir out
+
+  # A sixth row that names an open finding must hold even though the five lens
+  # rows are numeric-clean, and the trailing Result line must not be skipped.
+  dir=$(make_case gate-table-open-row)
+  write_policy "$dir" programmieren-community
+  write_meta "$dir" t1 "https://forgejo.example/seibert.group/programmieren-community/pulls/365" programmieren-community
+  tea_green "$dir"
+  tea_set_body "$dir" '## Five-Lens-Block
+
+| Lens | Ran | Findings | Fixed |
+|---|---|---|---|
+| code-review | yes | 0 | 0 |
+| maintainability-review | yes | 0 | 0 |
+| architecture-system-design-reviewer | yes | 0 | 0 |
+| design-decision-questioner | yes | 0 | 0 |
+| self-containment-review | yes | 0 | 0 |
+| security-review (zusaetzlich) | yes | 1 offen | 0 |
+
+Result: 1 finding open - see security-review
+'
+  scan_hold_wake "$dir" "$NOW_LATE" >/dev/null
+  assert_contains "$(queue_keys "$dir")" "pr-green-return:t1" "a sixth row naming an open finding was dropped"
+  assert_contains "$(queue_rows "$dir")" "hard stop 1" "the open sixth row did not name hard stop 1"
+  assert_not_contains "$(queue_rows "$dir")" "merge it bound now" "the open sixth row queued a merge mandate"
+
+  # The open row holds on its own too, without any trailing Result line.
+  dir=$(make_case gate-table-open-row-only)
+  write_policy "$dir" programmieren-community
+  write_meta "$dir" t1 "https://forgejo.example/seibert.group/programmieren-community/pulls/365" programmieren-community
+  tea_green "$dir"
+  tea_set_body "$dir" '## Five-Lens-Block
+
+| Lens | Ran | Findings | Fixed |
+|---|---|---|---|
+| code-review | yes | 0 | 0 |
+| maintainability-review | yes | 0 | 0 |
+| architecture-system-design-reviewer | yes | 0 | 0 |
+| design-decision-questioner | yes | 0 | 0 |
+| self-containment-review | yes | 0 | 0 |
+| security-review (zusaetzlich) | yes | 1 offen | 0 |
+'
+  out=$(report_case "$dir" "$NOW_LATE")
+  assert_contains "$out" "hard-stop-1" "an open table row was accepted without a Result line"
+
+  # A clean table whose trailing Result line names an open finding also holds.
+  dir=$(make_case gate-table-open-result)
+  write_policy "$dir" programmieren-community
+  write_meta "$dir" t1 "https://forgejo.example/seibert.group/programmieren-community/pulls/365" programmieren-community
+  tea_green "$dir"
+  tea_set_body "$dir" '## Five-Lens-Block
+
+| Lens | Ran | Findings | Fixed |
+|---|---|---|---|
+| code-review | yes | 0 | 0 |
+| maintainability-review | yes | 0 | 0 |
+| architecture-system-design-reviewer | yes | 0 | 0 |
+| design-decision-questioner | yes | 0 | 0 |
+| self-containment-review | yes | 0 | 0 |
+
+Result: 1 finding open - see security-review
+'
+  out=$(report_case "$dir" "$NOW_LATE")
+  assert_contains "$out" "hard-stop-1" "a clean table hid an open Result line"
+
+  # A non-numeric cell whose leading counts cover the findings stays clean.
+  dir=$(make_case gate-table-refuted)
+  write_policy "$dir" programmieren-community
+  write_meta "$dir" t1 "https://forgejo.example/seibert.group/programmieren-community/pulls/365" programmieren-community
+  tea_green "$dir"
+  tea_set_body "$dir" '## Five-Lens-Block
+
+| Lens | Ran | Findings | Fixed |
+|---|---|---|---|
+| code-review | yes | 6 | 6 (1 widerlegt) |
+| maintainability-review | yes | 0 | 0 |
+| architecture-system-design-reviewer | yes | 0 | 0 |
+| design-decision-questioner | yes | 0 | 0 |
+| self-containment-review | yes | 0 | 0 |
+'
+  out=$(report_case "$dir" "$NOW_LATE")
+  assert_contains "$out" $'t1\tdue\tready' "a refuted-but-covered result cell was rejected"
+
+  # A non-numeric row that cannot be classified holds.
+  dir=$(make_case gate-table-unclassifiable)
+  write_policy "$dir" programmieren-community
+  write_meta "$dir" t1 "https://forgejo.example/seibert.group/programmieren-community/pulls/365" programmieren-community
+  tea_green "$dir"
+  tea_set_body "$dir" '## Five-Lens-Block
+
+| Lens | Ran | Findings | Fixed |
+|---|---|---|---|
+| code-review | yes | 0 | 0 |
+| maintainability-review | yes | 0 | 0 |
+| architecture-system-design-reviewer | yes | 0 | 0 |
+| design-decision-questioner | yes | 0 | 0 |
+| self-containment-review | yes | n/a | n/a |
+'
+  out=$(report_case "$dir" "$NOW_LATE")
+  assert_contains "$out" "hard-stop-1" "an unclassifiable table row was accepted"
+
+  # A non-numeric row whose count does not cover the findings holds.
+  dir=$(make_case gate-table-uncovered)
+  write_policy "$dir" programmieren-community
+  write_meta "$dir" t1 "https://forgejo.example/seibert.group/programmieren-community/pulls/365" programmieren-community
+  tea_green "$dir"
+  tea_set_body "$dir" '## Five-Lens-Block
+
+| Lens | Ran | Findings | Fixed |
+|---|---|---|---|
+| code-review | yes | 6 | 2 (1 widerlegt) |
+| maintainability-review | yes | 0 | 0 |
+| architecture-system-design-reviewer | yes | 0 | 0 |
+| design-decision-questioner | yes | 0 | 0 |
+| self-containment-review | yes | 0 | 0 |
+'
+  out=$(report_case "$dir" "$NOW_LATE")
+  assert_contains "$out" "hard-stop-1" "an uncovered non-numeric row was accepted"
+  pass "a table row naming an open finding or lacking covering counts holds; a covered refuted cell passes"
+}
+
 test_forgejo_file_list_pagination() {
   local dir keys rows
   # A full first page forces a second request; the sensitive path on that second
@@ -1419,6 +1565,7 @@ test_no_checks_hold_and_name_hard_stop_4
 test_foreign_pr_holds_hard_stop_6
 test_gate_holds_hard_stop_1
 test_gate_prose_does_not_accept_open_findings
+test_gate_table_never_drops_a_data_row
 test_verdict_channel_is_advisory_and_holds_only_on_a_blocking_read
 test_sensitive_diff_holds_hard_stop_5
 test_forgejo_file_list_pagination

@@ -83,6 +83,9 @@
 #   (bf) a refused Forgejo merge propagates without claiming it landed
 #   (bg) a Forgejo URL that is not exactly owner/repository is refused
 #   (bh) the Forgejo poll wakes on the parsed merged field alone, not on prose
+#   (bi) an expected head equal to the live head merges, a mismatch or malformed
+#       or explicitly empty value refuses before any merge, and GitHub refuses
+#       the flag it cannot compare
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -1791,6 +1794,57 @@ test_expected_head_invalid_refuses_before_recording() {
   pass "fm-pr-merge refuses a malformed expected head before recording or reading anything"
 }
 
+test_expected_head_empty_value_refuses_before_recording() {
+  local case_dir rc head
+  case_dir=$(make_gitlab_case expected-head-empty-equals)
+
+  set +e
+  run_pr_merge "$case_dir" task-x1 "$MR_URL" --expected-head= \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 2 "$rc" "expected-head-empty-equals: an empty expected head should be a usage error"
+  assert_grep "--expected-head is not a commit id" "$case_dir/stderr" \
+    "expected-head-empty-equals: the empty value was not refused as malformed"
+  assert_no_grep "pr=$MR_URL" "$case_dir/state/task-x1.meta" \
+    "expected-head-empty-equals: state was recorded before the refusal"
+  [ ! -s "$case_dir/glab.log" ] \
+    || fail "expected-head-empty-equals: glab was invoked despite the empty value"
+
+  case_dir=$(make_gitlab_case expected-head-empty-argument)
+  set +e
+  run_pr_merge "$case_dir" task-x1 "$MR_URL" --expected-head "" \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 2 "$rc" "expected-head-empty-argument: an empty expected head should be a usage error"
+  assert_grep "--expected-head is not a commit id" "$case_dir/stderr" \
+    "expected-head-empty-argument: the empty value was not refused as malformed"
+  assert_no_grep "pr=$MR_URL" "$case_dir/state/task-x1.meta" \
+    "expected-head-empty-argument: state was recorded before the refusal"
+  [ ! -s "$case_dir/glab.log" ] \
+    || fail "expected-head-empty-argument: glab was invoked despite the empty value"
+
+  # On GitHub an explicitly given empty value must not slip past the refusal
+  # the header documents for a head this path cannot compare.
+  head=6666666666666666666666666666666666666666
+  case_dir=$(make_case expected-head-empty-github)
+  mkdir -p "$case_dir/wt"
+  add_gh_mocks "$case_dir" "$head"
+  : > "$case_dir/gh-axi.log"
+  set +e
+  run_pr_merge "$case_dir" task-x1 https://github.com/my-org/my-repo/pull/126 --expected-head= \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+  expect_code 2 "$rc" "expected-head-empty-github: an empty expected head should be a usage error"
+  [ ! -s "$case_dir/gh-axi.log" ] \
+    || fail "expected-head-empty-github: a merge was attempted with an empty expected head"
+  pass "fm-pr-merge refuses an explicitly empty expected head instead of treating it as no expectation"
+}
+
 test_expected_head_on_github_refuses() {
   local case_dir rc head
   head=6666666666666666666666666666666666666666
@@ -2787,6 +2841,7 @@ test_expected_head_matching_the_live_head_merges
 test_expected_head_mismatch_refuses_before_any_merge
 test_expected_head_is_stripped_before_extra_args
 test_expected_head_invalid_refuses_before_recording
+test_expected_head_empty_value_refuses_before_recording
 test_expected_head_on_github_refuses
 test_gitlab_unreadable_state_refuses
 test_gitlab_invalid_head_refuses
