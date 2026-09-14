@@ -1,0 +1,47 @@
+pane pid before death: 1326504
+windows: control fm-ep2 
+server gone check: no server running on /tmp/tmux-1018/fm-live-s2-1326460
+796682 pi
+813579 pi
+831046 pi
+834934 pi
+850020 pi
+859693 pi
+1084324 pi
+1183285 pi
+1281469 pi
+1283739 pi
+1289142 pi
+1292010 pi
+1299327 pi
+1299992 pi
+1305067 pi
+1307338 pi
+1319664 pi
+1324706 pi
+1372779 pi
+1578220 pi
+=== relaunch on a gone server/session ===
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+●  WATCHER DOWN - SUPERVISION IS OFF
+●  1 task(s) in flight, but no watcher has a fresh beacon (last beat: never, grace 300s).
+●  Trust the emitted supervision protocol for this harness; do not use shell & for watcher repair.
+●  This is a supervision warning only; the guarded operation WILL still run.
+●  repair a missing or failed watcher cycle with the Pi tool fm_watch_arm_pi, or restart Pi with -e /home/mseibert/.no-mistakes/worktrees/4a711a5cbbc5/01M2GS99VJ8DMKAF5QGM5WG55K/.pi/extensions/fm-primary-turnend-guard.ts -e /home/mseibert/.no-mistakes/worktrees/4a711a5cbbc5/01M2GS99VJ8DMKAF5QGM5WG55K/.pi/extensions/fm-primary-pi-watch.ts if the extensions are not loaded.
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+relaunched ep2 harness=pi from=pi model=default effort=default backend=tmux endpoint=firstmate:fm-ep2 worktree=/tmp/fm-live-ep/s2.ElNH9x/wt
+rc=0
+sessions: firstmate 
+windows: bash fm-ep2 
+recreated cwd: /tmp/fm-live-ep/s2.ElNH9x/wt
+recreated command: pi
+=== journal tail ===
+phase=complete
+exit_result=endpoint-missing
+=== recreated pane capture (end-user surface) ===
+ ⚡ est. 115 tok/s · avg 177 tok/s · ~1.3k tok · 7.2s · deepseek-v41-flash-max
+── ⠴ Working ───────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+/tmp/fm-live-ep/s2.ElNH9x/wt (task-s2.ElNH9x)
+0.1%/1.0M (auto)                (vllm-firstmate) deepseek-v41-flash-max • medium

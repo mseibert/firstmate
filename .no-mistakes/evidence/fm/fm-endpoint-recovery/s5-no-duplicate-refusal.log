@@ -1,0 +1,46 @@
+windows before: control fm-ep5-renamed 
+agent pane cwd: /tmp/fm-live-ep/s5.O6LhLn/wt
+=== relaunch of the name-missing window with a live worktree agent ===
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+●  WATCHER DOWN - SUPERVISION IS OFF
+●  1 task(s) in flight, but no watcher has a fresh beacon (last beat: never, grace 300s).
+●  Trust the emitted supervision protocol for this harness; do not use shell & for watcher repair.
+●  This is a supervision warning only; the guarded operation WILL still run.
+●  repair a missing or failed watcher cycle with the Pi tool fm_watch_arm_pi, or restart Pi with -e /home/mseibert/.no-mistakes/worktrees/4a711a5cbbc5/01M2GS99VJ8DMKAF5QGM5WG55K/.pi/extensions/fm-primary-turnend-guard.ts -e /home/mseibert/.no-mistakes/worktrees/4a711a5cbbc5/01M2GS99VJ8DMKAF5QGM5WG55K/.pi/extensions/fm-primary-pi-watch.ts if the extensions are not loaded.
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+error: task ep5's recorded window firstmate:fm-ep5 is gone from tmux session 'firstmate', but that session still hosts a live agent or an unattributable process in the recorded worktree /tmp/fm-live-ep/s5.O6LhLn/wt; refusing to launch a second agent onto the same work - reconcile the renamed or moved window first
+error: the replacement agent for ep5 could not be launched on pi
+error: ep5's recorded endpoint was already gone, so no agent was stopped and a live agent may still own the recorded worktree; the replacement did not launch, and its durable record plus the recorded progress note are preserved at /tmp/fm-live-ep/s5.O6LhLn/wt
+rc=1
+windows after: control fm-ep5-renamed 
+renamed agent still running: pi
+=== journal ===
+v1
+task=ep5
+phase=failed:launching
+ts=2026-09-14T21:35:01Z
+backend=tmux
+endpoint=firstmate:fm-ep5
+worktree=/tmp/fm-live-ep/s5.O6LhLn/wt
+kind=ship
+from_harness=pi
+from_model=default
+from_effort=default
+to_harness=pi
+to_model=default
+to_effort=default
+rollback=prior-record-kept
+=== meta unchanged? ===
+window=firstmate:fm-ep5
+harness=pi
+=== assertions ===
+PASS rc nonzero
+PASS refusal names the live worktree agent
+PASS rollback says no agent stopped
+PASS rollback does not claim a stop
+PASS no duplicate window
+=== unchanged renamed-window pane capture (the original agent is untouched) ===
+
+────────────────────────────────────────────────────────────────────────────────
+/tmp/fm-live-ep/s5.O6LhLn/wt (task-s5.O6LhLn)
+0.0%/1.0M (auto)                (vllm-firstmate) deepseek-v41-flash-max • medium

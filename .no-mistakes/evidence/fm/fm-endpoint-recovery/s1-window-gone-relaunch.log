@@ -1,0 +1,58 @@
+LAB=/tmp/fm-live-ep/s1.d6GE1v SOCKET=fm-live-s1-1322359
+pane command: pi
+windows: control fm-ep1 
+windows after kill: control 
+=== relaunch ===
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+●  WATCHER DOWN - SUPERVISION IS OFF
+●  1 task(s) in flight, but no watcher has a fresh beacon (last beat: never, grace 300s).
+●  Trust the emitted supervision protocol for this harness; do not use shell & for watcher repair.
+●  This is a supervision warning only; the guarded operation WILL still run.
+●  repair a missing or failed watcher cycle with the Pi tool fm_watch_arm_pi, or restart Pi with -e /home/mseibert/.no-mistakes/worktrees/4a711a5cbbc5/01M2GS99VJ8DMKAF5QGM5WG55K/.pi/extensions/fm-primary-turnend-guard.ts -e /home/mseibert/.no-mistakes/worktrees/4a711a5cbbc5/01M2GS99VJ8DMKAF5QGM5WG55K/.pi/extensions/fm-primary-pi-watch.ts if the extensions are not loaded.
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+relaunched ep1 harness=pi from=pi model=default effort=default backend=tmux endpoint=firstmate:fm-ep1 worktree=/tmp/fm-live-ep/s1.d6GE1v/wt
+rc=0
+windows after relaunch: control fm-ep1 
+recreated cwd: /tmp/fm-live-ep/s1.d6GE1v/wt
+recreated command: pi
+=== journal ===
+v1
+task=ep1
+phase=complete
+ts=2026-09-14T21:35:57Z
+backend=tmux
+endpoint=firstmate:fm-ep1
+worktree=/tmp/fm-live-ep/s1.d6GE1v/wt
+kind=ship
+from_harness=pi
+from_model=default
+from_effort=default
+to_harness=pi
+to_model=default
+to_effort=default
+worktree_head=a940c16dc360f0b9aa095cef97314ae09c4eec3a
+worktree_dirty=no
+note_file=/tmp/fm-live-ep/s1.d6GE1v/home/state/ep1.control-relaunch.note
+exit_result=endpoint-missing
+=== meta ===
+window=firstmate:fm-ep1
+endpoint_task_id=ep1
+worktree=/tmp/fm-live-ep/s1.d6GE1v/wt
+project=/tmp/fm-live-ep/s1.d6GE1v/proj
+harness=pi
+kind=ship
+mode=no-mistakes
+yolo=off
+tasktmp=/tmp/fm-ep1
+model=default
+effort=default
+busy_gen=g1789421755.1324016.20874
+spawn_gen=s1789421755.1323153.21231
+control_relaunch_tx=1322987.20260914T213554Z.14326
+=== recreated pane capture (end-user surface) ===
+ ⚡ est. 174 tok/s · avg 191 tok/s · ~1.4k tok · 7.4s · deepseek-v41-flash-max
+── ⠦ Working ───────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+/tmp/fm-live-ep/s1.d6GE1v/wt (task-s1.d6GE1v)
+0.1%/1.0M (auto)                (vllm-firstmate) deepseek-v41-flash-max • medium

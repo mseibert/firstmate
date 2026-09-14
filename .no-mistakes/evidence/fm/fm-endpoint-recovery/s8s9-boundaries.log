@@ -1,0 +1,22 @@
+windows: control fm-unrelated 
+unrelated agent cwd: /tmp/fm-live-ep/s89.UbeNBE/other-wt
+=== plain exit on a missing endpoint must still refuse (no --allow-missing leak) ===
+error: task ep9's recorded endpoint is gone, so there is no agent to stop; reconcile the task before any further control action
+rc=1
+PASS plain exit still refuses
+PASS plain exit claims no stop
+=== relaunch with a live agent in ANOTHER worktree must still recover ===
+relaunched ep10 harness=pi from=pi model=default effort=default backend=tmux endpoint=firstmate:fm-ep10 worktree=/tmp/fm-live-ep/s89.UbeNBE/wt
+rc=0
+windows: control fm-unrelated fm-ep10 
+ep10 cwd: /tmp/fm-live-ep/s89.UbeNBE/wt
+ep10 command: pi
+unrelated agent still: pi
+PASS unrelated live agent did not block recovery
+=== recreated ep10 pane capture ===
+ deepseek-v41-flash-max
+────────────────────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+/tmp/fm-live-ep/s89.UbeNBE/wt (task-s89.UbeNBE)
+↑2.7k ↓501 R2.3k CH45.8% 0.5%/1.0M (auto)        deepseek-v41-flash-max • medium

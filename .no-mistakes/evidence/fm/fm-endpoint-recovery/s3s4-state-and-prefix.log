@@ -1,0 +1,29 @@
+=== S3: a gone window must not let a stale busy record read as work in progress ===
+stale busy record: v1 gen=g1789421733.1313385.16886 seq=2 state=busy source=pi-ext event=agent-start ts=1789421733
+--- crew-state while the window still exists (the record is a live busy verdict) ---
+state: working · source: pane · harness busy (pi-ext)
+--- crew-state after the window is gone, same stale record ---
+state: unknown · source: none · backend target gone: firstmate:fm-ep3
+PASS gone window does not read working
+PASS gone window reads unknown with gone-class evidence
+
+=== S4: a gone window name must not read alive from a longer-named sibling ===
+windows: control fm-ep4-def 
+--- real-tmux probe contrast for the gone name firstmate:fm-ep4 ---
+display-message (old probe) rc: 0  pane=%2
+list-panes exact (new probe) rc: 1  msg=can't find window: fm-ep4
+--- crew-state ep4 ---
+state: unknown · source: none · backend target gone: firstmate:fm-ep4
+PASS sibling did not answer for the gone name
+--- digest endpoint lines (real fm-session-start.sh) ---
+--- ep3 ---
+endpoint: dead (backend=tmux window=firstmate:fm-ep3)
+--- ep4 ---
+endpoint: dead (backend=tmux window=firstmate:fm-ep4)
+PASS digest reports the gone window dead
+--- relaunch ep4 must recreate its own window, never adopt the sibling ---
+relaunched ep4 harness=pi from=pi model=default effort=default backend=tmux endpoint=firstmate:fm-ep4 worktree=/tmp/fm-live-ep/s34.JgiVsA/wt
+windows: control fm-ep4-def fm-ep4 
+ep4 cwd: /tmp/fm-live-ep/s34.JgiVsA/wt
+ep4 command: pi
+PASS relaunch created the exact window

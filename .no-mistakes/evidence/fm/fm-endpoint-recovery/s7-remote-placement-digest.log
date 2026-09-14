@@ -1,0 +1,15 @@
+=== FLEET STATE endpoint lines (real fm-session-start.sh digest) ===
+--- ep7 ---
+endpoint: remote (host=build-host.example) - liveness not probed locally
+--- ep8 ---
+endpoint: dead (backend=tmux window=firstmate:fm-ep8)
+PASS remote record reported by placement
+PASS local gone window reported dead
+=== local tmux probes issued by the digest (none may name the remote record) ===
+PASS no local probe named the remote record
+1:list-panes -t =firstmate:=fm-ep8
+2:list-panes -t =firstmate:=fm-ep8
+4:list-panes -t =firstmate:=fm-ep8
+=== exact-probe contrast on real tmux for the gone local window ===
+display-message (old probe) rc: 0  pane=%0
+list-panes exact (new probe) rc: 1  msg=can't find window: fm-ep8
