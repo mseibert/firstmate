@@ -374,14 +374,18 @@ test_forgejo_cancelled_run_is_not_red_and_not_green() {
   forgejo_verdict_comment \
     "2026-09-09T10:45:53Z" "2026-09-09T09:11:07Z" \
     'Reviewed this pull request — **Good to merge (LGTM).** <!-- crabd:tracking -->' > "$dir/comments.json"
-  printf '%s\n' '{"state":"","total_count":0}' > "$dir/status.json"
+
+  # Forgejo publishes a cancelled job as a commit status with state=failure, so
+  # the combined status is the normal path and must be resolved against the
+  # head's workflow runs rather than read as red on its own.
+  printf '%s\n' '{"state":"failure","total_count":2}' > "$dir/status.json"
   printf '%s\n' '{"workflow_runs":[{"name":"ci","status":"success","head_sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},{"name":"Behavior portable serial 4","status":"cancelled","head_sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}]}' > "$dir/tasks.json"
 
   run_case "$dir" "https://forgejo.example.test/group/project/pulls/186" --timeout 0
 
-  expect_code 1 "$RC" "forgejo cancelled run"
+  expect_code 1 "$RC" "forgejo cancelled run behind a combined failure"
   assert_not_contains "$OUT" 'action-required: ci red' \
-    "a cancelled workflow run must never read as red CI"
+    "a cancelled workflow run behind a combined failure must never read as red CI"
   assert_not_contains "$OUT" 'ready:' \
     "a cancelled workflow run must never read as green CI"
   assert_contains "$OUT" 'ci not green (state=pending)' \
@@ -394,7 +398,37 @@ test_forgejo_cancelled_run_is_not_red_and_not_green() {
   expect_code 4 "$RC" "forgejo cancelled run beside a real failure"
   assert_contains "$OUT" 'action-required: ci red' \
     "a real failure beside a cancelled run must still read red"
-  pass "forgejo cancelled run is neither red nor green, and never hides a failure"
+
+  printf '%s\n' '{"workflow_runs":[{"name":"ci","status":"success","head_sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}]}' > "$dir/tasks.json"
+
+  run_case "$dir" "https://forgejo.example.test/group/project/pulls/186" --timeout 0
+
+  expect_code 4 "$RC" "forgejo combined failure no run explains"
+  assert_contains "$OUT" 'action-required: ci red' \
+    "a combined failure that no workflow run explains must stay red"
+
+  rm -f "$dir/tasks.json"
+
+  run_case "$dir" "https://forgejo.example.test/group/project/pulls/186" --timeout 0
+
+  expect_code 4 "$RC" "forgejo combined failure with unreadable runs"
+  assert_contains "$OUT" 'action-required: ci red' \
+    "a combined failure whose workflow runs cannot be read must stay red"
+
+  printf '%s\n' '{"state":"","total_count":0}' > "$dir/status.json"
+  printf '%s\n' '{"workflow_runs":[{"name":"ci","status":"success","head_sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},{"name":"Behavior portable serial 4","status":"cancelled","head_sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}]}' > "$dir/tasks.json"
+
+  run_case "$dir" "https://forgejo.example.test/group/project/pulls/186" --timeout 0
+
+  expect_code 1 "$RC" "forgejo cancelled run with no commit status"
+  assert_not_contains "$OUT" 'action-required: ci red' \
+    "a cancelled workflow run must never read as red CI"
+  assert_not_contains "$OUT" 'ready:' \
+    "a cancelled workflow run must never read as green CI"
+  assert_contains "$OUT" 'ci not green (state=pending)' \
+    "a cancelled workflow run must hold the head as not-passed"
+
+  pass "forgejo cancelled run is neither red nor green on the combined-status and fallback paths"
 }
 
 test_github_fresh_verdict() {

@@ -295,8 +295,25 @@ read_github_ci() {
     else "green" end' 2>/dev/null
 }
 
+forgejo_runs_verdict() {  # <sha> <mode: fallback|resolve-failure>
+  local json verdict
+  json=$(tea_read "/repos/$OWNER/$REPO/actions/tasks?limit=100") || return 1
+  verdict=$(printf '%s' "$json" | jq -r --arg sha "$1" --arg mode "$2" '
+    [ .workflow_runs[]? | select((.head_sha // "") == $sha) ]
+    | if any(.[]; (.status // "") == "failure" or (.status // "") == "error") then "red"
+      elif ($mode == "resolve-failure") then
+        if any(.[]; (.status // "") == "cancelled") then "pending" else "red" end
+      elif length == 0 then "unknown"
+      elif all(.[]; (.status // "") == "success" or (.status // "") == "skipped") then "green"
+      else "pending" end' 2>/dev/null) || return 1
+  case "$verdict" in
+    red|pending|green|unknown) printf '%s' "$verdict" ;;
+    *) return 1 ;;
+  esac
+}
+
 read_forgejo_ci() {  # <sha>
-  local json state total
+  local json state total verdict
   json=$(tea_read "/repos/$OWNER/$REPO/commits/$1/status") || return 1
   total=$(printf '%s' "$json" | jq -r '.total_count // 0' 2>/dev/null) || return 1
   state=$(printf '%s' "$json" | jq -r '.state // ""' 2>/dev/null) || return 1
@@ -307,18 +324,16 @@ read_forgejo_ci() {  # <sha>
     case "$state" in
       success) printf 'green' ;;
       pending) printf 'pending' ;;
-      failure|error) printf 'red' ;;
+      failure)
+        verdict=$(forgejo_runs_verdict "$1" resolve-failure) || verdict=red
+        printf '%s' "$verdict"
+        ;;
+      error) printf 'red' ;;
       *) printf 'unknown' ;;
     esac
     return 0
   fi
-  json=$(tea_read "/repos/$OWNER/$REPO/actions/tasks?limit=100") || return 1
-  printf '%s' "$json" | jq -r --arg sha "$1" '
-    [ .workflow_runs[]? | select((.head_sha // "") == $sha) ]
-    | if length == 0 then "unknown"
-      elif any(.[]; (.status // "") == "failure" or (.status // "") == "error") then "red"
-      elif all(.[]; (.status // "") == "success" or (.status // "") == "skipped") then "green"
-      else "pending" end' 2>/dev/null
+  forgejo_runs_verdict "$1" fallback
 }
 
 POLL_HEAD=
