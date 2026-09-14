@@ -1895,6 +1895,13 @@ SH
   out=$(run_control "$dir" rl50 relaunch --note "recover after session death"); rc=$?
   expect_code 1 "$rc" "a renamed window still hosting its agent should refuse the relaunch"$'\n'"$out"
   assert_contains "$out" "still hosts a live agent" "the refusal should name the live agent in the recorded worktree"
+  assert_contains "$out" "no agent was stopped" "the rollback should report that no agent was stopped"
+  assert_contains "$out" "a live agent may still own the recorded worktree" \
+    "the rollback should warn that the worktree may still hold the live agent"
+  assert_not_contains "$out" "was stopped but the replacement did not launch" \
+    "the rollback must not claim the recorded endpoint's agent was stopped"
+  assert_not_contains "$out" "no agent is running" \
+    "the rollback must not assert the recorded worktree is agent-free"
   [ ! -s "$dir/fake/literal" ] || fail "a refused relaunch must deliver no launch bytes"
   [ ! -e "$dir/fake/new-windows" ] || fail "a refused relaunch must not create a replacement window"
   assert_grep 'rollback=prior-record-kept' "$dir/home/state/rl50.control-relaunch" \

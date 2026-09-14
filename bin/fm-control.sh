@@ -624,7 +624,11 @@ relaunch_rollback() {
         echo "error: $ID was relaunched on $TARGET_HARNESS but no running agent could be confirmed; its work is preserved at $WT" >&2
       else
         journal_write "failed:$RELAUNCH_PHASE" "rollback=prior-record-kept" || true
-        echo "error: $ID's agent was stopped but the replacement did not launch; no agent is running, and its work plus the recorded progress note are preserved at $WT" >&2
+        if [ "${exit_result:-}" = endpoint-missing ]; then
+          echo "error: $ID's recorded endpoint was already gone, so no agent was stopped and a live agent may still own the recorded worktree; the replacement did not launch, and its durable record plus the recorded progress note are preserved at $WT" >&2
+        else
+          echo "error: $ID's agent was stopped but the replacement did not launch; no agent is running, and its work plus the recorded progress note are preserved at $WT" >&2
+        fi
       fi
       ;;
   esac
