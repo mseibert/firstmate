@@ -1,0 +1,29 @@
+== BASE script (5592cb6) vs MyPaperVault-like repo: AGENTS.md + Claude.md (real memory) ==
+--- before: entries ---
+AGENTS.md
+Claude.md
+--- run base script ---
+updated: added ## Maintaining this file to AGENTS.md and wrote CLAUDE.md @AGENTS.md pointer in /tmp/fm-ensure-baseline.NMLdtX/mpv-base
+exit=0
+--- after: entries ---
+AGENTS.md
+Claude.md
+CLAUDE.md
+--- CLAUDE.md contents (the newly added case variant) ---
+<!-- Points Claude at AGENTS.md via import; edit AGENTS.md, not this file. -->
+@AGENTS.md
+
+== BASE script vs repo with only Claude.md (no AGENTS.md) ==
+--- before: entries ---
+Claude.md
+--- run base script ---
+created: AGENTS.md and CLAUDE.md @AGENTS.md pointer in /tmp/fm-ensure-baseline.NMLdtX/only-claude-base
+exit=0
+--- after: entries ---
+AGENTS.md
+Claude.md
+CLAUDE.md
+--- Claude.md still original? ---
+# MyPaperVault memory
+
+Build with make.

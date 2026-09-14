@@ -1,0 +1,26 @@
+== Each new test run individually against the PRE-FIX script (base commit tree) ==
+
+### test_claude_case_variant_is_reused_as_pointer_target
+not ok - Claude.md was not promoted to AGENTS.md (missing: 'promoted:')
+--- output ---
+created: AGENTS.md and CLAUDE.md @AGENTS.md pointer in /tmp/fm-ensure-agents-md.9WOuou/claude-variant-upper
+exit=1
+
+### test_agents_md_with_claude_case_variant_pointer_stays_unchanged
+not ok - AGENTS.md with a Claude.md pointer was not reported unchanged (missing: 'unchanged:')
+--- output ---
+wrote: CLAUDE.md @AGENTS.md pointer in /tmp/fm-ensure-agents-md.PRCxg8/agents-with-claude-variant-pointer
+exit=1
+
+### test_distinct_claude_case_variant_is_refused
+not ok - expected a non-zero exit for distinct AGENTS.md and Claude.md
+exit=1
+
+### test_multiple_claude_case_variants_are_refused
+not ok - expected a non-zero exit for two CLAUDE.md case variants
+exit=1
+
+### test_empty_project_creates_only_standard_names
+ok - fm-ensure-agents-md.sh: an empty project creates only the standard file names
+exit=0
+

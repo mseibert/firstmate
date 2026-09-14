@@ -1,0 +1,56 @@
+== FIXED script (894212a) vs MyPaperVault-like repo: AGENTS.md + Claude.md (real memory) ==
+--- before: entries ---
+AGENTS.md
+Claude.md
+--- run fixed script ---
+conflict: both AGENTS.md and Claude.md are real files in /tmp/fm-ensure-fixed.yaMDGC/mpv-fixed; reconcile them manually
+exit=1
+--- after: entries ---
+AGENTS.md
+Claude.md
+no second CLAUDE.md spelling created
+
+== FIXED script vs repo with only Claude.md (no AGENTS.md) ==
+--- before: entries ---
+Claude.md
+--- run fixed script ---
+promoted: moved Claude.md to AGENTS.md and wrote Claude.md @AGENTS.md pointer in /tmp/fm-ensure-fixed.yaMDGC/only-claude-fixed
+exit=0
+--- after: entries ---
+AGENTS.md
+Claude.md
+--- Claude.md (now the pointer, project spelling preserved) ---
+<!-- Points Claude at AGENTS.md via import; edit AGENTS.md, not this file. -->
+@AGENTS.md
+--- AGENTS.md (promoted from Claude.md) ---
+# MyPaperVault memory
+
+Build with make.
+
+## Maintaining this file
+
+Keep this file for knowledge useful to almost every future agent session in this project.
+Do not repeat what the codebase already shows; point to the authoritative file or command instead.
+Prefer rewriting or pruning existing entries over appending new ones.
+When updating this file, preserve this bar for all agents and keep entries concise.
+
+== FIXED script idempotent re-run on the promoted repo ==
+unchanged: AGENTS.md with Claude.md @AGENTS.md pointer in /tmp/fm-ensure-fixed.yaMDGC/only-claude-fixed
+exit=0
+AGENTS.md
+Claude.md
+
+== FIXED script vs repo with only lowercase claude.md ==
+promoted: moved claude.md to AGENTS.md and wrote claude.md @AGENTS.md pointer in /tmp/fm-ensure-fixed.yaMDGC/only-claude-lower-fixed
+exit=0
+AGENTS.md
+claude.md
+--- claude.md pointer ---
+<!-- Points Claude at AGENTS.md via import; edit AGENTS.md, not this file. -->
+@AGENTS.md
+
+== FIXED script vs two distinct variants Claude.md + claude.md ==
+conflict: CLAUDE.md case variants claude.md and Claude.md both exist in /tmp/fm-ensure-fixed.yaMDGC/two-variants-fixed; keep only one so the pointer is not split across spellings
+exit=1
+claude.md
+Claude.md

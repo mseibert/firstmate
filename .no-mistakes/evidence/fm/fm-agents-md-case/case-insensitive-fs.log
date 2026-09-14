@@ -1,0 +1,48 @@
+== End-user scenario on a REAL case-insensitive filesystem (ext4 casefold, /tmp/fm-ensure-ci-mnt/repo) ==
+on-disk case check: CaseProbe is readable as caseprobe => case-insensitive
+
+---- Scenario 1: project convention is Claude.md (MyPaperVault-like), no AGENTS.md ----
+### PRE-FIX script
+before: Claude.md 
+promoted: moved CLAUDE.md to AGENTS.md and wrote CLAUDE.md @AGENTS.md pointer in /tmp/fm-ensure-ci-mnt/repo/pre-fix
+exit=0
+after:  AGENTS.md CLAUDE.md 
+Claude.md still present under project spelling? yes
+AGENTS.md content: # MyPaperVault memory
+
+### FIXED script
+before: Claude.md 
+promoted: moved Claude.md to AGENTS.md and wrote Claude.md @AGENTS.md pointer in /tmp/fm-ensure-ci-mnt/repo/fixed
+exit=0
+after:  AGENTS.md Claude.md 
+Claude.md still present under project spelling? yes
+Claude.md content now:
+<!-- Points Claude at AGENTS.md via import; edit AGENTS.md, not this file. -->
+@AGENTS.md
+AGENTS.md content:
+# MyPaperVault memory
+
+Build with make.
+
+## Maintaining this file
+
+Keep this file for knowledge useful to almost every future agent session in this project.
+Do not repeat what the codebase already shows; point to the authoritative file or command instead.
+Prefer rewriting or pruning existing entries over appending new ones.
+When updating this file, preserve this bar for all agents and keep entries concise.
+
+---- Scenario 2: AGENTS.md + real Claude.md (the reported collision setup) ----
+### PRE-FIX script
+conflict: both AGENTS.md and CLAUDE.md are real files in /tmp/fm-ensure-ci-mnt/repo/mpv-pre; reconcile them manually
+exit=1
+entries after: AGENTS.md Claude.md 
+
+### FIXED script
+conflict: both AGENTS.md and Claude.md are real files in /tmp/fm-ensure-ci-mnt/repo/mpv-fixed; reconcile them manually
+exit=1
+entries after: AGENTS.md Claude.md 
+
+---- Scenario 3: idempotent re-run after fix on case-insensitive FS ----
+unchanged: AGENTS.md with Claude.md @AGENTS.md pointer in /tmp/fm-ensure-ci-mnt/repo/fixed
+exit=0
+entries after re-run: AGENTS.md Claude.md 
