@@ -46,6 +46,8 @@
 #   (s) an invalid wait configuration stops the scan before any wake
 #   (t) config/pr-green-return sets the wait when no env override is present
 #   (u) a task without a pr= line, and a secondmate meta, are not candidates
+#   (v) a candidate killed inside a slow provider call still advances the
+#       persisted rotation, so the next scan evaluates the candidates behind it
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -108,6 +110,7 @@ SH
   cat > "$dir/fakebin/tea" <<'SH'
 #!/usr/bin/env bash
 printf 'tea %s\n' "$*" >> "$FM_TEST_LOG"
+[ -z "${FM_TEST_TEA_SLEEP:-}" ] || sleep "$FM_TEST_TEA_SLEEP"
 fixed=$FM_TEST_FIX
 case "${1:-} ${2:-}" in
   "api /user") cat "$fixed/tea-user.json" ;;
@@ -860,7 +863,7 @@ test_forgejo_due_with_fresh_crabd_verdict() {
   rows=$(queue_rows "$dir")
   assert_contains "$keys" "pr-green-return:t1" "a green Forgejo PR with a fresh crabd verdict was not due"
   assert_contains "$rows" "due" "the Forgejo due payload is missing"
-  assert_contains "$rows" "bin/fm-pr-merge.sh t1 https://forgejo.example/seibert.group/programmieren-community/pulls/365" "the Forgejo due payload is missing the bound merge command"
+  assert_contains "$rows" "bin/fm-pr-merge.sh t1 https://forgejo.example/seibert.group/programmieren-community/pulls/365 --expected-head $HEAD" "the Forgejo due payload is missing the head-bound merge command"
   assert_no_grep "merge " "$dir/fix/calls.log" "the scan attempted a merge verb"
   pass "a Forgejo PR with a fresh crabd verdict is due"
 }
@@ -907,7 +910,7 @@ test_gitlab_needs_no_verdict_channel() {
   rows=$(queue_rows "$dir")
   assert_contains "$keys" "pr-green-return:t1" "a GitLab MR without a policy verdict channel was not due"
   assert_not_contains "$rows" "do not merge" "a GitLab MR queued a verdict hold"
-  assert_contains "$rows" "bin/fm-pr-merge.sh t1 https://gitlab.example/group/project/-/merge_requests/7" "the GitLab due payload is missing the bound merge command"
+  assert_contains "$rows" "bin/fm-pr-merge.sh t1 https://gitlab.example/group/project/-/merge_requests/7 --expected-head $HEAD" "the GitLab due payload is missing the head-bound merge command"
   pass "GitLab has no policy verdict channel, and a verdict that cannot arrive does not hold"
 }
 
@@ -959,6 +962,41 @@ test_every_candidate_is_evaluated_in_one_scan() {
   assert_contains "$keys" "pr-green-return:t1" "the first candidate was not evaluated"
   assert_contains "$keys" "pr-green-return:t2" "the second candidate was not evaluated"
   pass "every candidate is evaluated in one scan"
+}
+
+test_slow_candidate_does_not_starve_the_rotation() {
+  local dir rc
+  dir=$(make_case slow-candidate)
+  write_policy "$dir" programmieren-community project
+  write_meta "$dir" t1 "https://forgejo.example/seibert.group/programmieren-community/pulls/365" programmieren-community
+  write_meta "$dir" t2 "https://gitlab.example/group/project/-/merge_requests/7" project
+  tea_green "$dir"
+  glab_green "$dir"
+
+  # t1's forge hangs past the scan backstop, so the first scan is killed while
+  # t1 is being attempted and its wake is never queued.
+  set +e
+  scan_case "$dir" "$NOW_LATE" FM_TEST_TEA_SLEEP=10 \
+    FM_PR_GREEN_RETURN_BUDGET_SECS=2 FM_PR_GREEN_RETURN_CMD_TIMEOUT=30 >/dev/null
+  rc=$?
+  set -e
+  expect_code 0 "$rc" "slow-candidate: a backstop-killed scan is not a scan failure"
+  assert_not_contains "$(queue_keys "$dir")" "pr-green-return:t1" \
+    "the slow candidate queued a wake before its provider answered"
+
+  # The next scan starts after the attempted candidate, so the GitLab candidate
+  # behind it is evaluated and queues its wake even though t1 hangs again.
+  set +e
+  scan_case "$dir" "$NOW_LATE" FM_TEST_TEA_SLEEP=10 \
+    FM_PR_GREEN_RETURN_BUDGET_SECS=2 FM_PR_GREEN_RETURN_CMD_TIMEOUT=30 >/dev/null
+  rc=$?
+  set -e
+  expect_code 0 "$rc" "slow-candidate: the second backstop-killed scan is not a scan failure"
+  assert_contains "$(queue_keys "$dir")" "pr-green-return:t2" \
+    "the candidate behind the slow one was starved by the killed scan"
+  assert_not_contains "$(queue_keys "$dir")" "pr-green-return:t1" \
+    "the slow candidate queued a wake without answering"
+  pass "a candidate killed inside a slow provider call advances the rotation for the next scan"
 }
 
 test_watcher_surfaces_the_green_return_check_wake() {
@@ -1397,6 +1435,7 @@ test_gitlab_needs_no_verdict_channel
 test_report_is_read_only_and_names_the_hold
 test_scan_cadence_suppresses_repeat_work
 test_every_candidate_is_evaluated_in_one_scan
+test_slow_candidate_does_not_starve_the_rotation
 test_watcher_surfaces_the_green_return_check_wake
 test_invalid_wait_config_fails_closed
 test_config_file_sets_the_wait

@@ -10,9 +10,11 @@
 # verdict for the configured wait, queues a check wake for MAIN:
 #   - due  (green + mergeable + no policy hold + repo allowlisted + a forge
 #     whose merge path can bind a head): the wake carries the mandate to merge
-#     through bin/fm-pr-merge.sh bound to the head this scan verified, which is
-#     Forgejo's head_commit_id and GitLab's --sha. The scan itself never merges,
-#     and only main-owned check wakes can carry that mandate.
+#     through bin/fm-pr-merge.sh with --expected-head naming the head this scan
+#     verified, and the merge path refuses a live head that differs. The merge
+#     itself is bound to the verified head by Forgejo's head_commit_id and
+#     GitLab's --sha. The scan itself never merges, and only main-owned check
+#     wakes can carry that mandate.
 #   - held (a policy hard stop, the allowlist default ask, or a GitHub PR whose
 #     merge path cannot bind the head): the wake names the reason and asks for
 #     the captain's decision instead of a merge.
@@ -1214,8 +1216,8 @@ queue_wake() { # <key> <payload>
 }
 
 wake_payload_due() {
-  printf 'check: green-return %s due: PR %s head %s has been green and mergeable for %ss with no policy hold - merge it bound now: bin/fm-pr-merge.sh %s %s\n' \
-    "$1" "$PR_URL" "$PR_HEAD" "$2" "$1" "$PR_URL"
+  printf 'check: green-return %s due: PR %s head %s has been green and mergeable for %ss with no policy hold - merge it bound now: bin/fm-pr-merge.sh %s %s --expected-head %s\n' \
+    "$1" "$PR_URL" "$PR_HEAD" "$2" "$1" "$PR_URL" "$PR_HEAD"
 }
 
 wake_payload_held() {
@@ -1329,8 +1331,19 @@ record_gc() {
   done
 }
 
+scan_marker_write() { # <cursor>
+  local cursor=$1 tmp
+  tmp=$(mktemp "$STATE/.last-pr-green-return.XXXXXX") || return 1
+  {
+    printf 'epoch=%s\n' "$(now_epoch)"
+    printf 'cursor=%s\n' "$cursor"
+  } > "$tmp" || { rm -f -- "$tmp"; return 1; }
+  chmod 600 "$tmp" 2>/dev/null || true
+  mv -f -- "$tmp" "$SCAN_MARKER" || { rm -f -- "$tmp"; return 1; }
+}
+
 scan_locked() {
-  local now wait cursor id meta last='' deadline ordered candidates marker_tmp
+  local now wait cursor id meta last='' deadline ordered candidates
   now=$(now_epoch)
   wait_secs || return $?
   wait=$WAIT_SECS_RESOLVED
@@ -1360,19 +1373,17 @@ scan_locked() {
     fi
     meta="$STATE/$id.meta"
     fm_pr_metadata_identity_parse "$meta" || continue
+    # Persist this candidate as the rotation start before it is attempted, so a
+    # scan killed inside a slow candidate resumes after it instead of starving
+    # every later candidate behind the same slow one.
+    scan_marker_write "$id" || return 1
     process_task "$id" "$meta" "$now" "$wait" || true
     last=$id
   done <<IDS
 $ordered
 IDS
 
-  marker_tmp=$(mktemp "$STATE/.last-pr-green-return.XXXXXX") || return 1
-  {
-    printf 'epoch=%s\n' "$(now_epoch)"
-    printf 'cursor=%s\n' "${last:-$cursor}"
-  } > "$marker_tmp" || { rm -f -- "$marker_tmp"; return 1; }
-  chmod 600 "$marker_tmp" 2>/dev/null || true
-  mv -f -- "$marker_tmp" "$SCAN_MARKER" || { rm -f -- "$marker_tmp"; return 1; }
+  scan_marker_write "${last:-$cursor}" || return 1
   return 0
 }
 

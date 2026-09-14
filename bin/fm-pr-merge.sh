@@ -58,6 +58,13 @@
 # URL, nor --sha on GitLab or Forgejo because the head comes only from the live
 # read.
 #
+# An optional --expected-head <sha>, given before the -- separator, names the
+# head the caller's own scan verified. On GitLab and Forgejo a live head that
+# differs refuses before any merge call, so a mandate issued for an older head
+# can never land on a moved one; the forge binding still uses the verified live
+# head. GitHub cannot compare a head at all, so it refuses the flag rather than
+# silently dropping the expectation.
+#
 # A Forgejo pull request is merged through `tea api` with an explicit JSON body
 # rather than a CLI subcommand, because tea's own `pulls merge` cannot bind the
 # merge to a head commit and that binding is not optional. The body carries
@@ -87,7 +94,7 @@
 # destination, normal-case deduplication, and at-least-once recovery.
 # A landed merge whose outcome cannot be written is reported loudly rather than
 # misreported as a failed merge.
-# Usage: fm-pr-merge.sh <task-id> <pr-url> [-- <extra forge merge args>]
+# Usage: fm-pr-merge.sh <task-id> <pr-url> [--expected-head <sha>] [-- <extra forge merge args>]
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -125,7 +132,26 @@ PR_NUMBER=$FM_PR_NUMBER
 # rebuilt from the parsed identity rather than read from any ambient default.
 PROJECT_URL="https://$FM_PR_HOST/$FM_PR_PATH"
 shift 2
+EXPECTED_HEAD=
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --expected-head)
+      [ "$#" -ge 2 ] || { echo "error: --expected-head requires a commit id" >&2; exit 2; }
+      EXPECTED_HEAD=$2
+      shift 2
+      ;;
+    --expected-head=*)
+      EXPECTED_HEAD=${1#--expected-head=}
+      shift
+      ;;
+    *) break ;;
+  esac
+done
 [ "${1:-}" = "--" ] && shift
+if [ -n "$EXPECTED_HEAD" ] && ! fm_pr_head_valid "$EXPECTED_HEAD"; then
+  echo "error: --expected-head is not a commit id" >&2
+  exit 2
+fi
 
 caller_has_merge_method() {
   local arg
@@ -212,6 +238,12 @@ reject_head_overrides() {
 reject_repo_overrides "$@" || exit 1
 case "$PROVIDER" in
   gitlab|forgejo) reject_head_overrides "$@" || exit 1 ;;
+  github)
+    if [ -n "$EXPECTED_HEAD" ]; then
+      echo "error: refusing --expected-head for a GitHub pull request: this merge path cannot bind the merge to a head" >&2
+      exit 1
+    fi
+    ;;
 esac
 
 # Task-derived paths are constructed only after the canonical ID validation.
@@ -324,6 +356,11 @@ FIELDS
     echo "error: could not read the GitLab merge request head commit before merging" >&2
     return 1
   fi
+  if [ -n "$EXPECTED_HEAD" ] && [ "$EXPECTED_HEAD" != "$live_head" ]; then
+    printf 'error: refusing to merge %s: the expected head %s is not the live head %s\n' \
+      "$URL" "$EXPECTED_HEAD" "$live_head" >&2
+    return 1
+  fi
   # A rebase moves the head and leaves the recorded value behind, so the
   # disagreement is reported and the live head is what gets verified and merged.
   if [ -n "$RECORDED_HEAD" ] && [ "$RECORDED_HEAD" != "$live_head" ]; then
@@ -409,6 +446,11 @@ FIELDS
 
   if ! fm_pr_head_valid "$live_head"; then
     echo "error: could not read the Forgejo pull request head commit before merging" >&2
+    return 1
+  fi
+  if [ -n "$EXPECTED_HEAD" ] && [ "$EXPECTED_HEAD" != "$live_head" ]; then
+    printf 'error: refusing to merge %s: the expected head %s is not the live head %s\n' \
+      "$URL" "$EXPECTED_HEAD" "$live_head" >&2
     return 1
   fi
   # A rebase moves the head and leaves the recorded value behind, so the

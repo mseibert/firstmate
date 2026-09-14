@@ -1689,6 +1689,130 @@ test_gitlab_stale_recorded_head_is_reported() {
   pass "fm-pr-merge reports a stale recorded head and verifies the live one"
 }
 
+test_expected_head_matching_the_live_head_merges() {
+  local case_dir rc merge_line body
+  case_dir=$(make_gitlab_case expected-head-match)
+
+  set +e
+  run_pr_merge "$case_dir" task-x1 "$MR_URL" --expected-head "$MR_HEAD" \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 0 "$rc" "expected-head-match: the expected head is the live head, so the merge should proceed"
+  merge_line=$(glab_merge_line "$case_dir/glab.log")
+  [ "$merge_line" = "GITLAB_HOST=$MR_HOST mr merge 7 -R $MR_PROJECT_URL --sha $MR_HEAD --yes" ] \
+    || fail "expected-head-match: unexpected merge invocation: '$merge_line'"
+  case "$merge_line" in
+    *--expected-head*) fail "expected-head-match: the expected head was forwarded to glab" ;;
+  esac
+
+  case_dir=$(make_forgejo_case expected-head-forgejo-match)
+  set +e
+  run_pr_merge "$case_dir" task-x1 "$FJ_URL" --expected-head "$FJ_HEAD" \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 0 "$rc" "expected-head-forgejo-match: the expected head is the live head, so the merge should proceed"
+  body=$(tea_merge_body "$case_dir/tea-body.log")
+  [ "$body" = "{\"Do\":\"merge\",\"head_commit_id\":\"$FJ_HEAD\"}" ] \
+    || fail "expected-head-forgejo-match: unexpected merge body: '$body'"
+  pass "an expected head equal to the live head still merges on both forges"
+}
+
+test_expected_head_mismatch_refuses_before_any_merge() {
+  local case_dir rc
+  case_dir=$(make_gitlab_case expected-head-moved)
+
+  set +e
+  run_pr_merge "$case_dir" task-x1 "$MR_URL" --expected-head "$MR_STALE_HEAD" \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" "expected-head-moved: a moved GitLab head should refuse"
+  assert_grep "the expected head $MR_STALE_HEAD is not the live head $MR_HEAD" "$case_dir/stderr" \
+    "expected-head-moved: the refusal did not name both heads"
+  [ -z "$(glab_merge_line "$case_dir/glab.log")" ] \
+    || fail "expected-head-moved: a merge was attempted for a moved head"
+
+  case_dir=$(make_forgejo_case expected-head-forgejo-moved)
+  set +e
+  run_pr_merge "$case_dir" task-x1 "$FJ_URL" --expected-head "$FJ_STALE_HEAD" \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" "expected-head-forgejo-moved: a moved Forgejo head should refuse"
+  assert_grep "the expected head $FJ_STALE_HEAD is not the live head $FJ_HEAD" "$case_dir/stderr" \
+    "expected-head-forgejo-moved: the refusal did not name both heads"
+  assert_absent "$case_dir/tea-merge-called" \
+    "expected-head-forgejo-moved: a merge was sent for a moved head"
+  [ ! -s "$case_dir/tea-body.log" ] \
+    || fail "expected-head-forgejo-moved: a merge body was built for a moved head"
+  pass "an expected head that differs from the live head refuses before any merge on both forges"
+}
+
+test_expected_head_is_stripped_before_extra_args() {
+  local case_dir rc merge_line
+  case_dir=$(make_gitlab_case expected-head-extra-args)
+
+  set +e
+  run_pr_merge "$case_dir" task-x1 "$MR_URL" --expected-head "$MR_HEAD" -- --remove-source-branch \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 0 "$rc" "expected-head-extra-args: the merge should proceed"
+  merge_line=$(glab_merge_line "$case_dir/glab.log")
+  [ "$merge_line" = "GITLAB_HOST=$MR_HOST mr merge 7 -R $MR_PROJECT_URL --sha $MR_HEAD --yes --remove-source-branch" ] \
+    || fail "expected-head-extra-args: the expected head was not stripped before forwarding: '$merge_line'"
+  pass "the expected head is stripped before the forge extra arguments are forwarded"
+}
+
+test_expected_head_invalid_refuses_before_recording() {
+  local case_dir rc
+  case_dir=$(make_gitlab_case expected-head-invalid)
+
+  set +e
+  run_pr_merge "$case_dir" task-x1 "$MR_URL" --expected-head not-a-commit \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 2 "$rc" "expected-head-invalid: a malformed expected head should be a usage error"
+  assert_grep "--expected-head is not a commit id" "$case_dir/stderr" \
+    "expected-head-invalid: the malformed value was not named"
+  assert_no_grep "pr=$MR_URL" "$case_dir/state/task-x1.meta" \
+    "expected-head-invalid: state was recorded before the refusal"
+  [ ! -s "$case_dir/glab.log" ] \
+    || fail "expected-head-invalid: glab was invoked despite the malformed value"
+  pass "fm-pr-merge refuses a malformed expected head before recording or reading anything"
+}
+
+test_expected_head_on_github_refuses() {
+  local case_dir rc head
+  head=6666666666666666666666666666666666666666
+  case_dir=$(make_case expected-head-github)
+  mkdir -p "$case_dir/wt"
+  add_gh_mocks "$case_dir" "$head"
+  : > "$case_dir/gh-axi.log"
+
+  set +e
+  run_pr_merge "$case_dir" task-x1 https://github.com/my-org/my-repo/pull/126 --expected-head "$head" \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" "expected-head-github: a GitHub expected head should refuse"
+  assert_grep "cannot bind the merge to a head" "$case_dir/stderr" \
+    "expected-head-github: the refusal did not name the unbound merge path"
+  [ ! -s "$case_dir/gh-axi.log" ] \
+    || fail "expected-head-github: a merge was attempted with an unverifiable expected head"
+  pass "fm-pr-merge refuses an expected head on GitHub, where no live head can be compared"
+}
+
 test_gitlab_unreadable_state_refuses() {
   local case_dir rc name
   for name in view-fails not-an-object split-value; do
@@ -2659,6 +2783,11 @@ test_gitlab_merge_failure_propagates
 test_gitlab_each_condition_refuses_independently
 test_gitlab_reports_every_failing_condition
 test_gitlab_stale_recorded_head_is_reported
+test_expected_head_matching_the_live_head_merges
+test_expected_head_mismatch_refuses_before_any_merge
+test_expected_head_is_stripped_before_extra_args
+test_expected_head_invalid_refuses_before_recording
+test_expected_head_on_github_refuses
 test_gitlab_unreadable_state_refuses
 test_gitlab_invalid_head_refuses
 test_gitlab_missing_tool_refuses_before_recording
