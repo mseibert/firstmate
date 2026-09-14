@@ -3108,7 +3108,7 @@ JS
 }
 
 test_interactive_terminal_e2e() {
-  local project config home session_file export_file export_dom default_snapshot expanded_snapshot hidden_snapshot active_before_snapshot active_hidden_snapshot export_snapshot export_settled_snapshot restored_snapshot working_snapshot working_response_snapshot restarted_snapshot resumed_restored_snapshot hash_before hash_after now version chrome chrome_pid chrome_wait chrome_reap_wait active_wait active_screen_wait boat_frame_one boat_frame_two boat_resized_snapshot boat_focus_snapshot boat_cleared_snapshot boat_hull_line boat_sail_line boat_column_one boat_column_two boat_line boat_color_snapshot boat_color_line boat_water_snapshot boat_water_line boat_water_first boat_water_changed boat_narrow_snapshot boat_narrow_sails boat_freeze_snapshot boat_resume_snapshot boat_freeze_column boat_freeze_sail boat_resume_column boat_resume_sail
+  local project config home session_file export_file export_dom default_snapshot expanded_snapshot hidden_snapshot active_before_snapshot active_hidden_snapshot export_snapshot export_settled_snapshot restored_snapshot working_snapshot working_response_snapshot restarted_snapshot resumed_restored_snapshot hash_before hash_after now version chrome chrome_pid chrome_wait chrome_reap_wait chrome_stderr active_wait active_screen_wait boat_frame_one boat_frame_two boat_resized_snapshot boat_focus_snapshot boat_cleared_snapshot boat_hull_line boat_sail_line boat_column_one boat_column_two boat_line boat_color_snapshot boat_color_line boat_water_snapshot boat_water_line boat_water_first boat_water_changed boat_narrow_snapshot boat_narrow_sails boat_freeze_snapshot boat_resume_snapshot boat_freeze_column boat_freeze_sail boat_resume_column boat_resume_sail
   if ! command -v pi >/dev/null 2>&1 || ! command -v tmux >/dev/null 2>&1; then
     echo "skip: pi or tmux not found for Pi calm interactive E2E"
     return 0
@@ -3122,6 +3122,7 @@ test_interactive_terminal_e2e() {
   session_file="$TMP_ROOT/calm-session.jsonl"
   export_file="$TMP_ROOT/calm-export.html"
   export_dom="$TMP_ROOT/calm-export-dom.html"
+  chrome_stderr="$TMP_ROOT/calm-chrome-stderr.log"
   default_snapshot="$TMP_ROOT/default.txt"
   expanded_snapshot="$TMP_ROOT/expanded.txt"
   hidden_snapshot="$TMP_ROOT/hidden.txt"
@@ -3555,17 +3556,22 @@ const synthetic = entries.find((entry) => entry.type === "custom_message" && ent
 if (!synthetic || synthetic.display) process.exit(1);
 JS
   chrome=$(find_chrome) || fail "Chrome or Chromium is required for rendered export DOM assertions"
+  # A cold headless Chrome start on a loaded CI runner can exceed 10 seconds
+  # even though the render itself is synchronous, so wait on the complete
+  # document with real headroom instead of failing a healthy export.
+  # --disable-dev-shm-usage keeps the renderer off a constrained /dev/shm.
   "$chrome" \
     --headless=new \
     --disable-gpu \
     --no-sandbox \
+    --disable-dev-shm-usage \
     --user-data-dir="$TMP_ROOT/chrome-profile" \
     --virtual-time-budget=2000 \
     --dump-dom \
-    "file://$export_file" >"$export_dom" 2>/dev/null &
+    "file://$export_file" >"$export_dom" 2>"$chrome_stderr" &
   chrome_pid=$!
   chrome_wait=0
-  while kill -0 "$chrome_pid" 2>/dev/null && [ "$chrome_wait" -lt 100 ]; do
+  while kill -0 "$chrome_pid" 2>/dev/null && [ "$chrome_wait" -lt 600 ]; do
     grep -Fq '</html>' "$export_dom" 2>/dev/null && break
     sleep 0.1
     chrome_wait=$((chrome_wait + 1))
@@ -3583,7 +3589,7 @@ JS
   fi
   wait "$chrome_pid" 2>/dev/null || true
   grep -Fq '</html>' "$export_dom" 2>/dev/null \
-    || fail "could not render calm-mode HTML export DOM"
+    || fail "could not render calm-mode HTML export DOM: $(tail -c 500 "$chrome_stderr" 2>/dev/null | tr '\n' ' ')"
   node - "$export_dom" <<'JS' || fail "rendered export DOM violated the Calm conversation boundary"
 const dom = require("node:fs").readFileSync(process.argv[2], "utf8");
 const messages = dom.match(/<div id="messages">([\s\S]*?)<\/main>/)?.[1];
