@@ -145,7 +145,7 @@ Timeouts are hang tripwires rather than expected healthy durations.
 
 ## Cancelled checks are not red CI
 
-`bin/fm-verdict-wait.sh` is the one CI reader every worker uses on both forges, and it holds a `cancelled` check or workflow run as not-passed: never red, so it cannot by itself produce the `action-required: ci red` exit, and never green, so it cannot authorize a merge.
+`bin/fm-verdict-wait.sh` is the one CI reader for both forges, and it holds a `cancelled` check or workflow run as not-passed: never red, so it cannot by itself produce the `action-required: ci red` exit, and never green, so it cannot authorize a merge.
 The bounded wait names `ci not green (state=pending)` and keeps waiting for a re-run on the current head instead.
 Forgejo has no cancelled state in its combined commit status - it publishes a cancelled job as `failure` with the description `Has been cancelled` - so the reader resolves a combined `failure` against the head's workflow runs from `/actions/tasks`: a cancelled run with no real failing run holds the head as not-passed, a real failing run stays red, and a failure no workflow run explains also stays red.
 That rule is the captain's `~/.claude/pr-policy.md` entry for the case; that file is captain-private and is not edited from this repo, so this copy carries the wording into the change that implements it.
