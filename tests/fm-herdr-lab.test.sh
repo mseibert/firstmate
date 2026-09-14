@@ -234,6 +234,50 @@ SH
   pass "fm-herdr-lab: timed-out provisioning cancels the launch before teardown"
 }
 
+test_cancel_provision_signals_only_the_recorded_launch() {
+  local live_pid start
+  sleep 1000 &
+  live_pid=$!
+  start=$(bash -c '. "$1"; fm_pid_start "$2"' _ "$ROOT/bin/fm-wake-lib.sh" "$live_pid") \
+    || fail "could not read the fixture process start identity"
+
+  # A pid-space wrap hands the recorded number to another process. Its start
+  # identity differs, so cancellation must neither signal nor wait on it.
+  fm_herdr_lab_cancel_provision "$live_pid" 'starttime=1' || true
+  kill -0 "$live_pid" 2>/dev/null \
+    || fail "cancellation signalled a pid whose start identity no longer matched the launch"
+  fm_herdr_lab_cancel_provision "$live_pid" '' || true
+  kill -0 "$live_pid" 2>/dev/null \
+    || fail "cancellation signalled a pid with no recorded start identity"
+
+  fm_herdr_lab_cancel_provision "$live_pid" "$start" || true
+  if kill -0 "$live_pid" 2>/dev/null; then
+    kill -KILL "$live_pid" 2>/dev/null || true
+    wait "$live_pid" 2>/dev/null || true
+    fail "cancellation left the process whose start identity matched the launch running"
+  fi
+  wait "$live_pid" 2>/dev/null || true
+  pass "fm-herdr-lab: cancellation signals only the recorded launch identity"
+}
+
+# Sourcing the lab helper must not initialize the wake library's state paths: the
+# real-Herdr event-wait smoke test sources this helper first and the wake library
+# later under its own scratch state, and a lab-time FM_WAKE_QUEUE would make the
+# watcher fast-path enqueue outside that scratch state.
+test_sourcing_the_lab_helper_leaves_wake_state_uninitialized() {
+  local observed
+  observed=$(env -u FM_STATE_OVERRIDE -u FM_WAKE_QUEUE -u FM_WAKE_QUEUE_LOCK -u STATE \
+    FM_LAB_SOURCE_ROOT="$ROOT" bash <<'SH'
+set -u
+. "$FM_LAB_SOURCE_ROOT/bin/fm-herdr-lab.sh"
+printf '%s|%s\n' "${FM_WAKE_QUEUE-<unset>}" "${STATE-<unset>}"
+SH
+) || fail "could not source the lab helper in a clean shell"
+  [ "$observed" = '<unset>|<unset>' ] \
+    || fail "sourcing the lab helper initialized wake-library state ('$observed')"
+  pass "fm-herdr-lab: sourcing the lab helper leaves the wake library uninitialized"
+}
+
 test_refuses_unsafe_names
 test_provision_run_and_guarded_teardown
 test_missing_tripwire_blocks_destruction
@@ -241,3 +285,5 @@ test_changed_default_trips_after_teardown
 test_stopped_owned_lab_can_reprovision
 test_failed_delete_retains_tripwire
 test_timed_out_provision_cancels_late_launch
+test_cancel_provision_signals_only_the_recorded_launch
+test_sourcing_the_lab_helper_leaves_wake_state_uninitialized
