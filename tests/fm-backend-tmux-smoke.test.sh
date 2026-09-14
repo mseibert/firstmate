@@ -188,6 +188,27 @@ if fm_backend_target_exists tmux "smok:$PREFIX_WINDOW" "$PREFIX_WINDOW"; then
 fi
 pass "real tmux: fm_backend_target_exists resolves names, indices, ids, and panes exactly, never by prefix"
 
+# --- session ensure ----------------------------------------------------------
+# The missing-endpoint relaunch re-establishes a recorded session whose server
+# died. fm_backend_tmux_session_ensure must create that exact session, and must
+# not confuse a longer-named sibling for the requested name.
+
+RESTORED_SESSION="$SESSION-restored"
+if tmux has-session -t "=$RESTORED_SESSION" 2>/dev/null; then
+  fail "the session-ensure fixture session already exists"
+fi
+fm_backend_tmux_session_ensure "$RESTORED_SESSION" \
+  || fail "fm_backend_tmux_session_ensure did not create the missing session"
+tmux has-session -t "=$RESTORED_SESSION" \
+  || fail "fm_backend_tmux_session_ensure did not leave the created session resolvable"
+fm_backend_tmux_session_ensure "$SESSION-restor" \
+  || fail "fm_backend_tmux_session_ensure refused a session whose name is a prefix of an existing one"
+tmux has-session -t "=$SESSION-restor" \
+  || fail "fm_backend_tmux_session_ensure treated a longer-named session as the requested exact name"
+tmux has-session -t "=$RESTORED_SESSION" \
+  || fail "fm_backend_tmux_session_ensure disturbed the longer-named sibling session"
+pass "real tmux: fm_backend_tmux_session_ensure creates a missing session exactly"
+
 # --- kill and recovery-grade missing-window classification ------------------
 
 fm_backend_tmux_kill "$TARGET"

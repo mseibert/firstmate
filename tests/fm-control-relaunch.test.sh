@@ -110,10 +110,31 @@ case "${1:-}" in
     done
     printf 'fakepane\n'; exit 0 ;;
   capture-pane) printf '╭────╮\n│    │\n╰────╯\n'; exit 0 ;;
-  list-windows) [ -f "$D/windows" ] && cat "$D/windows"; exit 0 ;;
+  list-windows)
+    # A fixture opts into a gone session/server with the session-gone marker;
+    # new-session clears it. Without the marker the recorded session exists.
+    [ -f "$D/session-gone" ] && { printf 'no server running on /tmp/fm-fake-socket\n' >&2; exit 1; }
+    [ -f "$D/windows" ] && cat "$D/windows"
+    exit 0 ;;
+  has-session)
+    [ ! -f "$D/session-gone" ] && exit 0
+    printf 'no server running on /tmp/fm-fake-socket\n' >&2
+    exit 1 ;;
+  new-session)
+    session=
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        -s) session=${2:-}; shift 2 ;;
+        *) shift ;;
+      esac
+    done
+    printf '%s\n' "$session" >> "$D/new-sessions"
+    rm -f "$D/session-gone"
+    exit 0 ;;
   list-panes)
     # The exact-existence probe real tmux answers with an error for a missing
     # window or session (bin/fm-backend.sh's fm_backend_target_exists).
+    [ -f "$D/session-gone" ] && exit 1
     target=""
     prev=""
     for a in "$@"; do
@@ -128,6 +149,7 @@ case "${1:-}" in
     # The endpoint-creation primitive: record the requested name and working
     # directory so a test can prove WHERE a recreated endpoint landed, and
     # append the created name to the inventory the state reads see.
+    [ -f "$D/session-gone" ] && exit 1
     shift
     wname= cwd=
     while [ $# -gt 0 ]; do
@@ -1659,6 +1681,50 @@ test_direct_spawn_relaunch_recreates_a_missing_window() {
   pass "fm-spawn --relaunch: recreates an authoritatively missing endpoint in the recorded worktree"
 }
 
+# A tmux server death takes the recorded session itself, so the recreate arm
+# must re-establish the container before it can create the window. The durable
+# window= identity stays unchanged: the same session and window name return.
+test_relaunch_restores_a_missing_recorded_session() {
+  local dir out rc
+  dir=$(new_case missing-session rl46)
+  add_ship_task "$dir" rl46 claude
+  # The server died with the session; a fresh pane hosts a plain shell.
+  printf 'zsh' > "$dir/fake/command"
+  : > "$dir/fake/windows"
+  : > "$dir/fake/session-gone"
+  out=$(run_control "$dir" rl46 relaunch --note "recover after server death"); rc=$?
+  expect_code 0 "$rc" "a missing recorded session should be restored and the window recreated"$'\n'"$out"
+  assert_contains "$out" "relaunched rl46 harness=claude" "the outcome should report the replacement"
+  assert_grep 'fmses' "$dir/fake/new-sessions" "the recorded session was not re-established"
+  assert_grep 'fm-rl46' "$dir/fake/windows" "the recorded window was not recreated"
+  [ "$(meta_field "$dir" rl46 window)" = "fmses:fm-rl46" ] \
+    || fail "the durable window identity must not change, got: $(meta_field "$dir" rl46 window)"
+  [ "$(cat "$dir/fake/new-window.cwd")" = "$dir/wt" ] \
+    || fail "the window must be recreated in the recorded worktree, got: $(cat "$dir/fake/new-window.cwd" 2>/dev/null)"
+  assert_grep 'phase=complete' "$dir/home/state/rl46.control-relaunch" \
+    "the relaunch transaction did not complete"
+  assert_grep 'exit_result=endpoint-missing' "$dir/home/state/rl46.control-relaunch" \
+    "the journal should record that no agent was left to stop"
+  pass "fm-control relaunch: a missing recorded session is restored and the window recreated in it"
+}
+
+test_direct_spawn_relaunch_restores_a_missing_session() {
+  local dir out rc
+  dir=$(new_case missing-session-direct rl47)
+  add_ship_task "$dir" rl47 claude
+  printf 'zsh' > "$dir/fake/command"
+  : > "$dir/fake/windows"
+  : > "$dir/fake/session-gone"
+  out=$(run_spawn "$dir" rl47 --relaunch --harness claude); rc=$?
+  expect_code 0 "$rc" "a direct relaunch of a missing session should restore it"$'\n'"$out"
+  assert_grep 'fmses' "$dir/fake/new-sessions" "the direct relaunch did not restore the recorded session"
+  assert_grep 'fm-rl47' "$dir/fake/windows" "the direct relaunch did not recreate the recorded window"
+  [ "$(meta_field "$dir" rl47 window)" = "fmses:fm-rl47" ] \
+    || fail "the direct relaunch changed the durable window identity"
+  assert_grep 'encode launch-brief' "$dir/fake/literal" "the direct relaunch did not launch a replacement"
+  pass "fm-spawn --relaunch: restores a missing recorded session before recreating the endpoint"
+}
+
 # The duplicate safeguard is the create primitive's own exact pre-check. This
 # stages the race the control lock cannot cover - a window appearing between the
 # missing-state read and the creation - and requires the relaunch to refuse
@@ -1820,6 +1886,8 @@ test_spawn_relaunch_refuses_an_unrecorded_task
 test_spawn_relaunch_refuses_a_pane_outside_the_worktree
 test_relaunch_recreates_a_missing_window_in_the_recorded_worktree
 test_direct_spawn_relaunch_recreates_a_missing_window
+test_relaunch_restores_a_missing_recorded_session
+test_direct_spawn_relaunch_restores_a_missing_session
 test_relaunch_missing_window_refuses_a_racing_duplicate
 test_relaunch_recreates_a_missing_herdr_pane_in_the_recorded_workspace
 test_relaunch_reverifies_an_already_in_flight_item_instead_of_rewriting_it

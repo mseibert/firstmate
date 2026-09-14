@@ -60,6 +60,16 @@ fm_backend_tmux_send_text_submit() {  # <target> <text> <retries> <enter-sleep> 
   fm_tmux_submit_core "$@"
 }
 
+# fm_backend_tmux_session_ensure: ensure a detached session named <session>
+# exists, creating it when it is exactly absent. The exact-match target keeps
+# a longer-named sibling from standing in for the recorded session; returns
+# nonzero when the session cannot be established.
+fm_backend_tmux_session_ensure() {  # <session>
+  local session=$1
+  tmux has-session -t "=$session" 2>/dev/null && return 0
+  tmux new-session -d -s "$session"
+}
+
 # fm_backend_tmux_container_ensure: reuse the current tmux session when
 # firstmate itself runs inside tmux, else ensure a dedicated detached
 # "firstmate" session exists. Mirrors fm-spawn.sh's container-ensure block;
@@ -68,7 +78,7 @@ fm_backend_tmux_container_ensure() {
   if [ -n "${TMUX:-}" ]; then
     tmux display-message -p '#S'
   else
-    tmux has-session -t firstmate 2>/dev/null || tmux new-session -d -s firstmate
+    fm_backend_tmux_session_ensure firstmate
     printf 'firstmate'
   fi
 }

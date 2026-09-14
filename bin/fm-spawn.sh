@@ -1316,6 +1316,10 @@ if [ "$RELAUNCH" -eq 1 ]; then
     case "$BACKEND" in
       tmux)
         RELAUNCH_SES=${RELAUNCH_TARGET%%:*}
+        fm_backend_tmux_session_ensure "$RELAUNCH_SES" || {
+          echo "error: task $ID's recorded tmux session '$RELAUNCH_SES' is gone and could not be restored; no agent was launched" >&2
+          exit 1
+        }
         RELAUNCH_WT_TARGET=$(fm_backend_tmux_create_task "$RELAUNCH_SES" "fm-$ID" "$RELAUNCH_WT") || {
           echo "error: task $ID's recorded tmux endpoint $RELAUNCH_TARGET is gone and could not be recreated in its recorded worktree $RELAUNCH_WT; no agent was launched" >&2
           exit 1
