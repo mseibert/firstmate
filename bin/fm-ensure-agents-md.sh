@@ -23,6 +23,9 @@
 # filesystem (issue #389). The real-file pointer also eliminates the old
 # uppercase-literal-target dangling-symlink hazard that a CLAUDE.md -> AGENTS.md
 # link would have carried for that same mismatch.
+# Reuses an existing case variant of CLAUDE.md (for example Claude.md) as the
+# pointer target instead of adding a second spelling beside it; two distinct
+# case variants are refused for manual reconciliation.
 # This is a worktree utility for crewmates, not a supervision script, so it does
 # not call fm-guard.sh.
 # Usage: fm-ensure-agents-md.sh [repo-or-worktree-dir]
@@ -124,8 +127,8 @@ EOF
 }
 
 is_canonical_claude_pointer() {
-  [ -f "$CLAUDE" ] && [ ! -L "$CLAUDE" ] || return 1
-  claude_pointer_content | cmp -s - "$CLAUDE"
+  [ -f "$CLAUDE_TARGET" ] && [ ! -L "$CLAUDE_TARGET" ] || return 1
+  claude_pointer_content | cmp -s - "$CLAUDE_TARGET"
 }
 
 # Write the canonical pointer as a regular file. Unlink a symlink first so the
@@ -135,24 +138,24 @@ install_claude_pointer() {
   if is_canonical_claude_pointer; then
     return 0
   fi
-  if [ -L "$CLAUDE" ]; then
-    rm -- "$CLAUDE"
-  elif [ -e "$CLAUDE" ]; then
-    echo "error: internal: refuse to overwrite existing CLAUDE.md" >&2
+  if [ -L "$CLAUDE_TARGET" ]; then
+    rm -- "$CLAUDE_TARGET"
+  elif [ -e "$CLAUDE_TARGET" ]; then
+    echo "error: internal: refuse to overwrite existing $CLAUDE_TARGET" >&2
     exit 1
   fi
-  claude_pointer_content > "$CLAUDE"
+  claude_pointer_content > "$CLAUDE_TARGET"
 }
 
 is_correct_claude_symlink() {
-  [ -L "$CLAUDE" ] || return 1
-  target=$(readlink "$CLAUDE")
+  [ -L "$CLAUDE_TARGET" ] || return 1
+  target=$(readlink "$CLAUDE_TARGET")
   case "$target" in
     "$AGENTS"|"./$AGENTS") return 0 ;;
   esac
   [ -e "$AGENTS" ] || return 1
   if command -v python3 >/dev/null 2>&1; then
-    python3 - "$CLAUDE" "$AGENTS" <<'PY'
+    python3 - "$CLAUDE_TARGET" "$AGENTS" <<'PY'
 import os
 import sys
 sys.exit(0 if os.path.realpath(sys.argv[1]) == os.path.realpath(sys.argv[2]) else 1)
@@ -169,19 +172,32 @@ PY
 # Reading the real directory entries catches the mismatch on both filesystem
 # kinds; surface it for manual reconciliation instead of writing the pointer
 # against the wrong name.
+# The same scan resolves the CLAUDE.md target name: an existing case variant
+# such as Claude.md is the project's convention, so the pointer is written there
+# rather than beside it as a second spelling. Two distinct variants are
+# ambiguous and refused.
+CLAUDE_TARGET=''
 for entry in *; do
   if [ ! -e "$entry" ] && [ ! -L "$entry" ]; then
     continue
   fi
-  if [ "$entry" != "$AGENTS" ]; then
-    case "$entry" in
-      [Aa][Gg][Ee][Nn][Tt][Ss].[Mm][Dd])
+  case "$entry" in
+    [Aa][Gg][Ee][Nn][Tt][Ss].[Mm][Dd])
+      if [ "$entry" != "$AGENTS" ]; then
         echo "conflict: memory file is named $entry in $DIR but the convention is AGENTS.md; rename it to AGENTS.md so CLAUDE.md's @AGENTS.md pointer resolves portably" >&2
         exit 1
-        ;;
-    esac
-  fi
+      fi
+      ;;
+    [Cc][Ll][Aa][Uu][Dd][Ee].[Mm][Dd])
+      if [ -n "$CLAUDE_TARGET" ] && [ "$entry" != "$CLAUDE_TARGET" ]; then
+        echo "conflict: CLAUDE.md case variants $CLAUDE_TARGET and $entry both exist in $DIR; keep only one so the pointer is not split across spellings" >&2
+        exit 1
+      fi
+      CLAUDE_TARGET=$entry
+      ;;
+  esac
 done
+[ -n "$CLAUDE_TARGET" ] || CLAUDE_TARGET=$CLAUDE
 
 if [ -L "$AGENTS" ]; then
   echo "conflict: AGENTS.md is a symlink in $DIR; expected AGENTS.md to be the real file" >&2
@@ -193,72 +209,72 @@ if [ -e "$AGENTS" ] && [ ! -f "$AGENTS" ]; then
 fi
 
 if [ -e "$AGENTS" ]; then
-  if [ -L "$CLAUDE" ]; then
+  if [ -L "$CLAUDE_TARGET" ]; then
     if is_correct_claude_symlink; then
       ensure_maintenance_section
       install_claude_pointer
       if [ "$MAINT_INJECTED" -eq 1 ]; then
-        echo "updated: added ## Maintaining this file to AGENTS.md and wrote CLAUDE.md @AGENTS.md pointer in $DIR"
+        echo "updated: added ## Maintaining this file to AGENTS.md and wrote $CLAUDE_TARGET @AGENTS.md pointer in $DIR"
       else
-        echo "updated: replaced CLAUDE.md symlink with @AGENTS.md pointer in $DIR"
+        echo "updated: replaced $CLAUDE_TARGET symlink with @AGENTS.md pointer in $DIR"
       fi
       exit 0
     fi
-    echo "conflict: CLAUDE.md is a symlink in $DIR but does not point to AGENTS.md" >&2
+    echo "conflict: $CLAUDE_TARGET is a symlink in $DIR but does not point to AGENTS.md" >&2
     exit 1
   fi
-  if [ ! -e "$CLAUDE" ]; then
+  if [ ! -e "$CLAUDE_TARGET" ]; then
     ensure_maintenance_section
     install_claude_pointer
     if [ "$MAINT_INJECTED" -eq 1 ]; then
-      echo "updated: added ## Maintaining this file to AGENTS.md and wrote CLAUDE.md @AGENTS.md pointer in $DIR"
+      echo "updated: added ## Maintaining this file to AGENTS.md and wrote $CLAUDE_TARGET @AGENTS.md pointer in $DIR"
     else
-      echo "wrote: CLAUDE.md @AGENTS.md pointer in $DIR"
+      echo "wrote: $CLAUDE_TARGET @AGENTS.md pointer in $DIR"
     fi
     exit 0
   fi
-  if [ -f "$CLAUDE" ]; then
+  if [ -f "$CLAUDE_TARGET" ]; then
     if is_canonical_claude_pointer; then
       ensure_maintenance_section
       if [ "$MAINT_INJECTED" -eq 1 ]; then
         echo "updated: added ## Maintaining this file to AGENTS.md in $DIR"
       else
-        echo "unchanged: AGENTS.md with CLAUDE.md @AGENTS.md pointer in $DIR"
+        echo "unchanged: AGENTS.md with $CLAUDE_TARGET @AGENTS.md pointer in $DIR"
       fi
       exit 0
     fi
-    echo "conflict: both AGENTS.md and CLAUDE.md are real files in $DIR; reconcile them manually" >&2
+    echo "conflict: both AGENTS.md and $CLAUDE_TARGET are real files in $DIR; reconcile them manually" >&2
     exit 1
   fi
-  echo "conflict: CLAUDE.md exists in $DIR but is not a regular file or symlink" >&2
+  echo "conflict: $CLAUDE_TARGET exists in $DIR but is not a regular file or symlink" >&2
   exit 1
 fi
 
-if [ -L "$CLAUDE" ]; then
+if [ -L "$CLAUDE_TARGET" ]; then
   if is_correct_claude_symlink; then
     write_skeleton
     install_claude_pointer
-    echo "created: AGENTS.md and wrote CLAUDE.md @AGENTS.md pointer in $DIR"
+    echo "created: AGENTS.md and wrote $CLAUDE_TARGET @AGENTS.md pointer in $DIR"
     exit 0
   fi
-  echo "conflict: CLAUDE.md is a symlink in $DIR but AGENTS.md is missing and the link does not point to AGENTS.md" >&2
+  echo "conflict: $CLAUDE_TARGET is a symlink in $DIR but AGENTS.md is missing and the link does not point to AGENTS.md" >&2
   exit 1
 fi
 
-if [ -e "$CLAUDE" ]; then
-  if [ -f "$CLAUDE" ]; then
+if [ -e "$CLAUDE_TARGET" ]; then
+  if [ -f "$CLAUDE_TARGET" ]; then
     if is_canonical_claude_pointer; then
       write_skeleton
-      echo "created: AGENTS.md and kept CLAUDE.md @AGENTS.md pointer in $DIR"
+      echo "created: AGENTS.md and kept $CLAUDE_TARGET @AGENTS.md pointer in $DIR"
       exit 0
     fi
-    mv "$CLAUDE" "$AGENTS"
+    mv "$CLAUDE_TARGET" "$AGENTS"
     ensure_maintenance_section
     install_claude_pointer
-    echo "promoted: moved CLAUDE.md to AGENTS.md and wrote CLAUDE.md @AGENTS.md pointer in $DIR"
+    echo "promoted: moved $CLAUDE_TARGET to AGENTS.md and wrote $CLAUDE_TARGET @AGENTS.md pointer in $DIR"
     exit 0
   fi
-  echo "conflict: CLAUDE.md exists in $DIR but is not a regular file or symlink" >&2
+  echo "conflict: $CLAUDE_TARGET exists in $DIR but is not a regular file or symlink" >&2
   exit 1
 fi
 
