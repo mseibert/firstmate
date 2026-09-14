@@ -1,0 +1,10 @@
+== incident case: mseibert/firstmate PR #21, head 716704a7 ==
+check-run 104125421011: bucket=cancel, conclusion=CANCELLED, annotation 'The job has exceeded the maximum execution time of 20m0s'
+
+--- BEFORE (bin/fm-verdict-wait.sh @ 7d4194f~1) ---
+action-required: ci red on head 716704a73585c235a108950e94e7c14c32038a1c (2026-09-14T18:44:48Z); no fresh verdict
+exit=4
+
+--- AFTER (worktree bin/fm-verdict-wait.sh @ b4c0bfc) ---
+timeout: no fresh verdict (single read): no verdict found (no seibert-pr-agent comment with a **Verdict:** line); ci pending
+exit=1

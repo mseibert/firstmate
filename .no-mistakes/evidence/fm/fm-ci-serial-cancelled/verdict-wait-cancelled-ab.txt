@@ -1,0 +1,25 @@
+== fresh LGTM verdict on the head in every case, so the CI verdict decides ==
+
+-- GitHub, head has one cancelled check (incident shape) --
+BEFORE         exit=4  action-required: ci red on head bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb (2026-09-09T10:03:44Z); verdict "Good to merge" at 2026-09-09T11:05:00Z is fresh
+AFTER          exit=1  timeout: no fresh verdict (single read): ci not green (state=pending) with a fresh verdict "Good to merge" at 2026-09-09T11:05:00Z; ci pending
+
+-- GitHub, cancelled check beside a real failure --
+BEFORE         exit=4  action-required: ci red on head bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb (2026-09-09T10:03:44Z); verdict "Good to merge" at 2026-09-09T11:05:00Z is fresh
+AFTER          exit=4  action-required: ci red on head bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb (2026-09-09T10:03:44Z); verdict "Good to merge" at 2026-09-09T11:05:00Z is fresh
+
+-- Forgejo, combined status failure (total_count=2) whose head has a cancelled run and a success --
+BEFORE         exit=4  action-required: ci red on head aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa (2026-09-09T12:03:44+02:00); verdict "Good to merge (LGTM)." at 2026-09-09T10:45:53Z is fresh
+AFTER          exit=1  timeout: no fresh verdict (single read): ci not green (state=pending) with a fresh verdict "Good to merge (LGTM)." at 2026-09-09T10:45:53Z; ci pending
+
+-- Forgejo, combined status failure whose head has a cancelled run beside a real failure --
+BEFORE         exit=4  action-required: ci red on head aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa (2026-09-09T12:03:44+02:00); verdict "Good to merge (LGTM)." at 2026-09-09T10:45:53Z is fresh
+AFTER          exit=4  action-required: ci red on head aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa (2026-09-09T12:03:44+02:00); verdict "Good to merge (LGTM)." at 2026-09-09T10:45:53Z is fresh
+
+-- Forgejo, combined status failure that no workflow run explains (must stay red) --
+BEFORE         exit=4  action-required: ci red on head aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa (2026-09-09T12:03:44+02:00); verdict "Good to merge (LGTM)." at 2026-09-09T10:45:53Z is fresh
+AFTER          exit=4  action-required: ci red on head aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa (2026-09-09T12:03:44+02:00); verdict "Good to merge (LGTM)." at 2026-09-09T10:45:53Z is fresh
+
+-- Forgejo, no commit status (fallback path) with a cancelled run on the head --
+BEFORE         exit=4  action-required: ci red on head aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa (2026-09-09T12:03:44+02:00); verdict "Good to merge (LGTM)." at 2026-09-09T10:45:53Z is fresh
+AFTER          exit=1  timeout: no fresh verdict (single read): ci not green (state=pending) with a fresh verdict "Good to merge (LGTM)." at 2026-09-09T10:45:53Z; ci pending

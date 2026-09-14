@@ -1,0 +1,17 @@
+== serial lane cap and hint refresh, checked through executable/semantic interfaces ==
+
+-- bin/fm-test-run.sh --check-coverage --
+FM_TEST_COVERAGE ok total=194 parallel=24 serial=157 serial_shards=5 serial_unhinted=0 herdr=13
+
+-- per-shard script counts (bin/fm-test-run.sh --list --lane ... | wc -l) --
+portable-serial-1of5: 30
+portable-serial-2of5: 32
+portable-serial-3of5: 32
+portable-serial-4of5: 31
+portable-serial-5of5: 32
+
+-- .github/workflows/ci.yml parsed as YAML (python3 + pyyaml), semantic fields --
+job name:        Behavior portable serial ${{ matrix.shard }}
+timeout-minutes: 30
+shards:          [1, 2, 3, 4, 5]
+fail-fast:       False

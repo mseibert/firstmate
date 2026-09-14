@@ -1,0 +1,26 @@
+ok - forgejo fresh LGTM reads updated_at, not the stale created_at
+ok - forgejo created_at newer than the head does not fake a fresh verdict
+ok - forgejo in-flight tracking comment waits instead of reading a verdict
+ok - forgejo tracking comment without updated_at never reads fresh
+ok - forgejo unrecognized review line reports its text
+ok - forgejo without a crabd tracking comment reports no verdict
+ok - forgejo blocking verdict exits action-required instead of waiting
+ok - forgejo Nits found. is mergeable
+ok - forgejo pending CI blocks readiness and --no-ci escapes it
+ok - forgejo red CI exits action-required
+ok - forgejo CI falls back to head-scoped tasks when no commit status exists
+ok - forgejo cancelled run is neither red nor green on the combined-status and fallback paths
+ok - github fresh **Verdict:** line in the newest PR-agent comment is ready
+ok - github verdict older than the head is not ready even with a newer non-verdict comment
+ok - github blocking verdict exits action-required
+ok - github without a PR-agent verdict line reports no verdict
+ok - github pending CI blocks readiness and --no-ci escapes it
+ok - github red CI exits action-required
+ok - github cancelled check is neither red nor green, and never hides a failure
+ok - github absent CI is unknown, not green
+ok - forgejo URL on an unconfigured host is refused
+ok - bad usage and unsupported URLs exit 2
+ok - closed PR exits 2
+ok - repeated read errors fail after three attempts
+ok - the bounded wait returns as soon as a fresh verdict lands
+ok - --quiet suppresses progress lines
