@@ -314,7 +314,9 @@ case "\${1:-}" in
       [ "\$prev" = "-t" ] && target="\$a"
       prev="\$a"
     done
-    [ "\$target" = "$live" ] || exit 1
+    session=\${target%%:*}
+    window=\${target#*:}
+    [ "\${session#=}:\${window#=}" = "$live" ] || exit 1
     printf '%%1\n'
     exit 0
     ;;
@@ -1407,7 +1409,10 @@ EOF
 printf '%s\n' "\$*" >> "$tmuxlog"
 case "\${1:-}" in
   list-panes)
-    [ "\${3:-}" = "fm-sess:live-window" ] && { printf '%%1\n'; exit 0; }
+    target="\${3:-}"
+    session=\${target%%:*}
+    window=\${target#*:}
+    [ "\${session#=}:\${window#=}" = "fm-sess:live-window" ] && { printf '%%1\n'; exit 0; }
     exit 1
     ;;
 esac

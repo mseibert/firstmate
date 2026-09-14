@@ -156,6 +156,38 @@ if fm_backend_tmux_resolve_bare_selector "no-such-window-xyz" 2>/dev/null; then
 fi
 pass "real tmux: fm_backend_tmux_resolve_bare_selector fails for a window that does not exist"
 
+# --- exact target existence (no prefix resolution) ---------------------------
+# tmux resolves session and window names by prefix, so a probe for a gone
+# `fm-abc` answers while a longer-named sibling `fm-abc-def` still exists.
+# fm_backend_target_exists must answer exactly for every target form.
+
+PREFIX_WINDOW="fm-prefix-abc-def"
+PREFIX_GONE="fm-prefix-abc"
+prefix_wid=$(fm_backend_tmux_create_task "$SESSION" "$PREFIX_WINDOW" "$HOME") \
+  || fail "could not create the prefix-sibling window"
+prefix_pane=$(tmux list-panes -t "$SESSION:$PREFIX_WINDOW" -F '#{pane_id}' | head -1)
+prefix_idx=$(tmux display-message -p -t "$SESSION:$PREFIX_WINDOW" '#{window_index}')
+[ -n "$prefix_pane" ] && [ -n "$prefix_idx" ] \
+  || fail "could not resolve the prefix-sibling window's index and pane id"
+
+if fm_backend_target_exists tmux "$SESSION:$PREFIX_GONE" "$PREFIX_GONE"; then
+  fail "fm_backend_target_exists resolved a gone window name through a longer-named sibling"
+fi
+fm_backend_target_exists tmux "$SESSION:$PREFIX_WINDOW" "$PREFIX_WINDOW" \
+  || fail "fm_backend_target_exists did not resolve an exact window name"
+fm_backend_target_exists tmux "$SESSION:$prefix_idx" "$PREFIX_WINDOW" \
+  || fail "fm_backend_target_exists did not resolve a window index"
+fm_backend_target_exists tmux "$SESSION:$prefix_wid" "$PREFIX_WINDOW" \
+  || fail "fm_backend_target_exists did not resolve a window id"
+fm_backend_target_exists tmux "$prefix_pane" "$PREFIX_WINDOW" \
+  || fail "fm_backend_target_exists did not resolve a bare pane id"
+fm_backend_target_exists tmux "$SESSION:$PREFIX_WINDOW.$prefix_pane" "$PREFIX_WINDOW" \
+  || fail "fm_backend_target_exists did not resolve a session:window.pane target"
+if fm_backend_target_exists tmux "smok:$PREFIX_WINDOW" "$PREFIX_WINDOW"; then
+  fail "fm_backend_target_exists resolved a session name through a longer-named session"
+fi
+pass "real tmux: fm_backend_target_exists resolves names, indices, ids, and panes exactly, never by prefix"
+
 # --- kill and recovery-grade missing-window classification ------------------
 
 fm_backend_tmux_kill "$TARGET"

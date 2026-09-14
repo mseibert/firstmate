@@ -123,6 +123,25 @@ fm_backend_tmux_send_literal() {  # <target> <text>
   tmux send-keys -t "$1" -l "$2"
 }
 
+# fm_backend_tmux_exact_target: rewrite a tmux target into tmux's exact-match
+# form so prefix resolution can never answer for a gone session or window from
+# a longer-named neighbor. A session-qualified target gets `=` on both names;
+# window indices and the opaque @window/%pane ids are exact already, and a
+# target with no session qualifier is returned unchanged.
+fm_backend_tmux_exact_target() {  # <target>
+  local target=$1 session window
+  case "$target" in
+    *:*)
+      session=${target%%:*}
+      window=${target#*:}
+      printf '=%s:=%s' "${session#=}" "${window#=}"
+      ;;
+    *)
+      printf '%s' "$target"
+      ;;
+  esac
+}
+
 # fm_backend_tmux_kill: remove one explicitly named task window, best-effort.
 # Empty, omitted, and malformed targets return nonzero before invoking tmux so
 # tmux can never interpret an empty target as the caller's current window.
@@ -138,7 +157,7 @@ fm_backend_tmux_kill() {  # <target>
   case "$session:$window" in
     :*|*:|*:*:*) return 1 ;;
   esac
-  tmux kill-window -t "=$session:=$window" 2>/dev/null || true
+  tmux kill-window -t "$(fm_backend_tmux_exact_target "$session:$window")" 2>/dev/null || true
 }
 
 # fm_backend_tmux_current_command: <target>'s live foreground process name -

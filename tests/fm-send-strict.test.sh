@@ -50,6 +50,9 @@ case "${1:-}" in
         *) shift ;;
       esac
     done
+    case "$target" in
+      *:*) session=${target%%:*}; window=${target#*:}; target="${session#=}:${window#=}" ;;
+    esac
     if [ -n "${FM_FAKE_TMUX_DEAD_TARGET:-}" ] && [ "$target" = "$FM_FAKE_TMUX_DEAD_TARGET" ]; then
       exit 1
     fi
@@ -67,6 +70,9 @@ case "${1:-}" in
         *) shift ;;
       esac
     done
+    case "$target" in
+      *:*) session=${target%%:*}; window=${target#*:}; target="${session#=}:${window#=}" ;;
+    esac
     if [ -n "${FM_FAKE_TMUX_DEAD_TARGET:-}" ] && [ "$target" = "$FM_FAKE_TMUX_DEAD_TARGET" ]; then
       exit 1
     fi

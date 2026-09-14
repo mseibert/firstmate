@@ -121,7 +121,7 @@ case "${1:-}" in
       prev="$a"
     done
     case "$target" in
-      *:*) [ -f "$D/windows" ] && grep -Fqx "${target#*:}" "$D/windows" && exit 0 ;;
+      *:*) window=${target#*:}; [ -f "$D/windows" ] && grep -Fqx "${window#=}" "$D/windows" && exit 0 ;;
     esac
     exit 1 ;;
   new-window)
