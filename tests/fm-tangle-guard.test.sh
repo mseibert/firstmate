@@ -9,7 +9,8 @@
 #   GUARD 1 (prevention) - the brief asserts isolation before its branch step, and
 #            fm-spawn refuses to launch unless the resolved worktree is isolated.
 #   GUARD 2 (detection)  - fm-guard and fm-bootstrap alarm when the primary is on
-#            a feature branch, and stay silent on the default branch or detached.
+#            a feature branch, and stay silent on the default branch, the
+#            seibert/main fork line, or detached.
 # These cases pin: the shared lib's branch classification, the fm-guard banner,
 # the fm-bootstrap problem line, the brief assertion ordering, and the fm-spawn
 # abort - all hermetic over temp git repos and fakebins.
@@ -45,6 +46,7 @@ test_lib_classification() {
     n=$((n + 1))
     case "$state" in
       default)  git -C "$repo" checkout -q main ;;
+      forkline) git -C "$repo" checkout -q -B seibert/main ;;
       feature)  git -C "$repo" checkout -q -B "$branch" ;;
       detached) git -C "$repo" checkout -q main; git -C "$repo" checkout -q --detach ;;
     esac
@@ -52,13 +54,14 @@ test_lib_classification() {
     [ "$out" = "$expect" ] || fail "$label: expected tangle='$expect', got '$out'"
   done <<'ROWS'
 on the default branch is healthy|default||
+on the durable seibert/main fork line is healthy|forkline|seibert/main|
 on a feature branch is the tangle|feature|fm/readme-restructure-d3|fm/readme-restructure-d3
 detached HEAD on default is healthy (worktrees, secondmate homes)|detached||
 ROWS
   # A non-git directory is not a tangle and must not error.
   out=$(fm_primary_tangle_branch "$TMP_ROOT" || true)
   [ -z "$out" ] || fail "non-git dir wrongly reported a tangle: '$out'"
-  pass "fm_primary_tangle_branch: feature branch alarms; default/detached/non-git stay silent"
+  pass "fm_primary_tangle_branch: feature branch alarms; default/fork-line/detached/non-git stay silent"
 }
 
 # --- GUARD 2a: fm-guard banner ----------------------------------------------
@@ -78,6 +81,10 @@ test_guard_banner() {
   git -C "$repo" checkout -q --detach
   out=$(run_guard "$repo")
   assert_not_contains "$out" "WORKTREE TANGLE" "guard alarmed on a detached HEAD (legitimate worktree state)"
+
+  git -C "$repo" checkout -q -B seibert/main
+  out=$(run_guard "$repo")
+  assert_not_contains "$out" "WORKTREE TANGLE" "guard alarmed on the durable seibert/main fork line (allowed primary state)"
 
   git -C "$repo" checkout -q -B fm/tangle-aa1
   out=$(run_guard "$repo")
@@ -108,6 +115,10 @@ test_bootstrap_line() {
   git -C "$repo" checkout -q --detach
   out=$(run_bootstrap "$repo" | grep '^TANGLE:' || true)
   [ -z "$out" ] || fail "bootstrap emitted a TANGLE line on a detached HEAD: $out"
+
+  git -C "$repo" checkout -q -B seibert/main
+  out=$(run_bootstrap "$repo" | grep '^TANGLE:' || true)
+  [ -z "$out" ] || fail "bootstrap emitted a TANGLE line on the seibert/main fork line: $out"
 
   git -C "$repo" checkout -q -B fm/tangle-bb2
   out=$(run_bootstrap "$repo" | grep '^TANGLE:' || true)
