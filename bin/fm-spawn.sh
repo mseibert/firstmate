@@ -1316,6 +1316,10 @@ if [ "$RELAUNCH" -eq 1 ]; then
     case "$BACKEND" in
       tmux)
         RELAUNCH_SES=${RELAUNCH_TARGET%%:*}
+        if fm_backend_tmux_session_live_agent_in "$RELAUNCH_SES" "$RELAUNCH_WT"; then
+          echo "error: task $ID's recorded window $RELAUNCH_TARGET is gone from tmux session '$RELAUNCH_SES', but that session still hosts a live agent or an unattributable process in the recorded worktree $RELAUNCH_WT; refusing to launch a second agent onto the same work - reconcile the renamed or moved window first" >&2
+          exit 1
+        fi
         fm_backend_tmux_session_ensure "$RELAUNCH_SES" || {
           echo "error: task $ID's recorded tmux session '$RELAUNCH_SES' is gone and could not be restored; no agent was launched" >&2
           exit 1

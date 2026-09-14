@@ -35,6 +35,7 @@ trap cleanup_all EXIT
 cleanup_all() {
   "$REAL_TMUX" -L "$SOCKET" kill-server >/dev/null 2>&1 || true
   [ -n "${SHIM_DIR:-}" ] && rm -rf "$SHIM_DIR"
+  [ -n "${SCAN_ROOT:-}" ] && rm -rf "$SCAN_ROOT"
 }
 
 # A `tmux` shim on PATH that transparently redirects every call to the private
@@ -208,6 +209,42 @@ tmux has-session -t "=$SESSION-restor" \
 tmux has-session -t "=$RESTORED_SESSION" \
   || fail "fm_backend_tmux_session_ensure disturbed the longer-named sibling session"
 pass "real tmux: fm_backend_tmux_session_ensure creates a missing session exactly"
+
+# --- session live-agent scan (the relaunch reconcile) ------------------------
+# A name-based `missing` verdict must not license a second agent while the
+# recorded session still runs one in the recorded worktree, so the scan must
+# find that agent, and must not mistake a plain shell or an agent in another
+# worktree for it.
+
+SCAN_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/fm-backend-scan.XXXXXX")
+AGENT_WT="$SCAN_ROOT/agent-wt"
+SHELL_WT="$SCAN_ROOT/shell-wt"
+OTHER_WT="$SCAN_ROOT/other-wt"
+mkdir -p "$AGENT_WT" "$SHELL_WT" "$OTHER_WT"
+AGENT_WINDOW="fm-scan-agent"
+SHELL_WINDOW="fm-scan-shell"
+fm_backend_tmux_create_task "$SESSION" "$AGENT_WINDOW" "$AGENT_WT" \
+  || fail "could not create the scan fixture's agent window"
+fm_backend_tmux_create_task "$SESSION" "$SHELL_WINDOW" "$SHELL_WT" \
+  || fail "could not create the scan fixture's shell window"
+fm_backend_tmux_send_text_line "$SESSION:$AGENT_WINDOW" "bash -c 'exec -a claude sleep 60'"
+AGENT_SEEN=false
+for _ in $(seq 1 100); do
+  if fm_backend_tmux_session_live_agent_in "$SESSION" "$AGENT_WT"; then
+    AGENT_SEEN=true
+    break
+  fi
+  sleep 0.1
+done
+[ "$AGENT_SEEN" = true ] \
+  || fail "fm_backend_tmux_session_live_agent_in did not report the live agent in the recorded worktree"
+if fm_backend_tmux_session_live_agent_in "$SESSION" "$SHELL_WT"; then
+  fail "fm_backend_tmux_session_live_agent_in reported an agent for a worktree holding only a shell"
+fi
+if fm_backend_tmux_session_live_agent_in "$SESSION" "$OTHER_WT"; then
+  fail "fm_backend_tmux_session_live_agent_in reported an agent for a worktree with no pane"
+fi
+pass "real tmux: fm_backend_tmux_session_live_agent_in finds an agent in its worktree and ignores shells and other worktrees"
 
 # --- kill and recovery-grade missing-window classification ------------------
 

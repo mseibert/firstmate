@@ -133,7 +133,9 @@ case "${1:-}" in
     exit 0 ;;
   list-panes)
     # The exact-existence probe real tmux answers with an error for a missing
-    # window or session (bin/fm-backend.sh's fm_backend_target_exists).
+    # window or session (bin/fm-backend.sh's fm_backend_target_exists), while
+    # a session-only target lists every pane in the session (the relaunch
+    # reconcile's worktree scan reads this form).
     [ -f "$D/session-gone" ] && exit 1
     target=""
     prev=""
@@ -143,6 +145,7 @@ case "${1:-}" in
     done
     case "$target" in
       *:*) window=${target#*:}; [ -f "$D/windows" ] && grep -Fqx "${window#=}" "$D/windows" && exit 0 ;;
+      '='*) [ -f "$D/panes" ] && cat "$D/panes"; exit 0 ;;
     esac
     exit 1 ;;
   new-window)
@@ -1856,6 +1859,85 @@ SH
   pass "fm-control relaunch: a racing duplicate window refuses instead of adding a second window"
 }
 
+# A `missing` verdict is name-based: a window whose name was lost (an
+# automatic rename slipping through, or a captain's rename/move) still hosts
+# its live agent in the recorded worktree. The recreate arm must refuse rather
+# than launch a second agent onto the same work, because the name-based
+# verdict is a trigger, never proof that the task is agent-free.
+test_relaunch_missing_window_refuses_a_renamed_window_that_still_hosts_the_agent() {
+  local dir out rc
+  dir=$(new_case renamed-window-live-agent rl50)
+  add_ship_task "$dir" rl50 claude
+  # The recorded name is absent from the inventory, but the pane under its
+  # renamed window still runs the agent in the recorded worktree; a window
+  # recreated for the task would host a plain shell, so only the pane probe can
+  # see the duplicate.
+  printf 'zsh' > "$dir/fake/command"
+  : > "$dir/fake/windows"
+  printf '%%7 %s\n' "$dir/wt" > "$dir/fake/panes"
+  mv "$dir/fakebin/tmux" "$dir/fakebin/tmux-real"
+  cat > "$dir/fakebin/tmux" <<SH
+#!/usr/bin/env bash
+set -u
+case "\${1:-}" in
+  display-message)
+    for a in "\$@"; do
+      [ "\$a" = '%7' ] || continue
+      case "\$*" in
+        *pane_current_command*) printf 'claude\n'; exit 0 ;;
+      esac
+    done
+    ;;
+esac
+exec "$dir/fakebin/tmux-real" "\$@"
+SH
+  chmod +x "$dir/fakebin/tmux"
+  out=$(run_control "$dir" rl50 relaunch --note "recover after session death"); rc=$?
+  expect_code 1 "$rc" "a renamed window still hosting its agent should refuse the relaunch"$'\n'"$out"
+  assert_contains "$out" "still hosts a live agent" "the refusal should name the live agent in the recorded worktree"
+  [ ! -s "$dir/fake/literal" ] || fail "a refused relaunch must deliver no launch bytes"
+  [ ! -e "$dir/fake/new-windows" ] || fail "a refused relaunch must not create a replacement window"
+  assert_grep 'rollback=prior-record-kept' "$dir/home/state/rl50.control-relaunch" \
+    "the refused transaction should keep the prior durable record"
+  pass "fm-control relaunch: refuses to recreate a window while a renamed sibling still hosts the agent"
+}
+
+# The scan is scoped to the recorded worktree: a session that hosts other
+# tasks' live agents must not block recovery of a task whose own worktree is
+# agent-free, or a dead session's tasks could never be relaunched while any
+# sibling task stays up.
+test_relaunch_missing_window_recreates_when_the_live_agent_is_elsewhere() {
+  local dir out rc
+  dir=$(new_case renamed-window-elsewhere rl51)
+  add_ship_task "$dir" rl51 claude
+  printf 'zsh' > "$dir/fake/command"
+  : > "$dir/fake/windows"
+  mkdir -p "$dir/other-wt"
+  printf '%%7 %s\n' "$dir/other-wt" > "$dir/fake/panes"
+  mv "$dir/fakebin/tmux" "$dir/fakebin/tmux-real"
+  cat > "$dir/fakebin/tmux" <<SH
+#!/usr/bin/env bash
+set -u
+case "\${1:-}" in
+  display-message)
+    for a in "\$@"; do
+      [ "\$a" = '%7' ] || continue
+      case "\$*" in
+        *pane_current_command*) printf 'claude\n'; exit 0 ;;
+      esac
+    done
+    ;;
+esac
+exec "$dir/fakebin/tmux-real" "\$@"
+SH
+  chmod +x "$dir/fakebin/tmux"
+  out=$(run_control "$dir" rl51 relaunch --note "recover after session death"); rc=$?
+  expect_code 0 "$rc" "a live agent outside the recorded worktree must not block the recreate"$'\n'"$out"
+  assert_contains "$out" "relaunched rl51 harness=claude" "the outcome should report the replacement"
+  assert_grep 'fm-rl51' "$dir/fake/windows" "the recorded window was not recreated"
+  pass "fm-control relaunch: a live agent outside the recorded worktree does not block the recreate"
+}
+
 # herdr is the second recovery-grade backend: its missing state is an
 # authoritative pane_not_found, and its create primitive recreates the task tab
 # in the RECORDED workspace. The recreated tab/pane ids are carried into the
@@ -1981,6 +2063,8 @@ test_direct_spawn_relaunch_recreates_a_missing_window
 test_relaunch_restores_a_missing_recorded_session
 test_direct_spawn_relaunch_restores_a_missing_session
 test_relaunch_missing_window_refuses_a_racing_duplicate
+test_relaunch_missing_window_refuses_a_renamed_window_that_still_hosts_the_agent
+test_relaunch_missing_window_recreates_when_the_live_agent_is_elsewhere
 test_relaunch_recreates_a_missing_herdr_pane_in_the_recorded_workspace
 test_relaunch_reverifies_an_already_in_flight_item_instead_of_rewriting_it
 test_relaunch_moves_a_drifted_item_back_in_flight
