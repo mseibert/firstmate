@@ -233,11 +233,12 @@ EOF
 }
 
 # Shared five-lens rule text for both PR-opening definitions of done: the lens
-# list with its one-line focus, the per-lens result table, and the two-sided
-# Result rule. <lens-intro> opens the lens list, <table-intro> introduces the
-# table, the optional <between> sits between them, and the optional <heading>
-# is emitted directly above the table. Emitted with no trailing blank line so
-# callers can append their own mode-specific sentences.
+# list with its one-line focus, the per-lens result table, the two-sided Result
+# rule, and the bounded re-run rule that keeps every later fix gated.
+# <lens-intro> opens the lens list, <table-intro> introduces the table, the
+# optional <between> sits between them, and the optional <heading> is emitted
+# directly above the table. Emitted with no trailing blank line so callers can
+# append their own mode-specific sentences.
 fm_five_lens_rules_block() {  # <lens-intro> <table-intro> [<between>] [<heading>]
   local lens_intro=$1 table_intro=$2 between=${3:-} heading=${4:-}
   cat <<EOF
@@ -263,6 +264,7 @@ EOF
   printf '\n'
   cat <<'EOF'
 End it with `Result: clean` only when every `Ran` cell says `yes` and no finding remains open; otherwise name what is not clean there, as `Result: 1 finding open - see <lens>` or `Result: 1 lens did not report - see <lens>`.
+Fix findings and re-run the lenses each fix affects, up to three rounds (a round is one lens pass plus its fixes; a later round re-runs only the lenses a fix affects); a lens that could not run is retried once before it is recorded as not-run.
 EOF
 }
 
@@ -283,7 +285,6 @@ EOF
     "Record one row per lens in the PR body - whether it ran, how many findings it reported, how many you fixed - in this shape, replacing every placeholder with the real result:" \
     "" "## Five-lens gate"
   cat <<'EOF'
-Fix findings and re-run the lenses each fix affects, up to three rounds (a round is one lens pass plus its fixes; a later round re-runs only the lenses a fix affects); a lens that could not run is retried once before it is recorded as not-run.
 Run the gate on the branch content you are about to push, after the rebase and before the verdict request and freeze in the ordering above; re-run the lenses affected by any later change - a fix, or a rebase that changed the diff - so every pushed line has been gated.
 If the final result is not clean, append `done: PR {url} - five-lens gate: <what is not clean>` instead of the plain done line, so the open gate reaches firstmate with the ready signal.
 
@@ -308,6 +309,7 @@ EOF
     "Fix what they find and push the fixes as an ADDITIONAL commit on the same branch; when nothing was found, push nothing and say so in the comment."
   cat <<'EOF'
 The comment must name the FINAL head SHA and the CI state on that head; after a fix commit the gate covers the head after that commit, not the pipeline head.
+The pipeline verdict covers the pipeline head, and the five-lens comment plus CI cover the final head after any lens fix - that split is this mode's accepted tradeoff.
 Keep the order strict: lenses, then fixes, then push, then the comment.
 Never merge the PR; the configured merge authority decides.
 The captain's merge policy accepts this exact-titled comment as the five-lens evidence on a no-mistakes PR, so it satisfies the merge gate; a comment with any other title does not count.
@@ -365,7 +367,7 @@ Do not include \`## Firstmate spec\`, later Firstmate build constraints, or your
 The \`--intent\` string you pass must be self-sufficient: that string plus the codebase must let a reader reconstruct roughly the same specification, without depending on a separate report, a PR, or context that lives only in this conversation.
 When the captain's intent refers to a report, decision, or PR ("do items 1, 2, 3, and 7 of the report"), write the substance of the referenced items into \`--intent\` in the captain's terms, not only the pointer; that substance is the captain's ask by reference, while Firstmate's build instructions and your own decisions still stay out.
 This replaces the no-mistakes skill's advice to enrich \`--intent\` with decisions and tradeoffs; that advice does not apply to Firstmate-dispatched work.
-Do not hand-edit, commit, or fix findings yourself while a run is active - the pipeline applies every fix.
+Do not hand-edit, commit, or fix findings yourself while a run is active - the pipeline applies every fix; the post-pipeline five-lens pass below is the designated worker-owned commit step.
 
 One drive call blocks until the next gate or outcome, which routinely outlives what your harness lets a single command run: Claude Code kills a command at ten minutes maximum, while one fix round is capped around thirty minutes and up to three rounds chain.
 So background the drive call and poll \`no-mistakes axi status\` from a separate call instead of sitting in one blocking hold your harness will kill.

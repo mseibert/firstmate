@@ -453,8 +453,37 @@ test_verdict_head_ordering_in_verdict_modes() {
 # no-mistakes carries the same five lenses as a PR comment through its own block
 # (test_five_lens_comment_in_no_mistakes_dod), and local-only opens no PR and
 # must stay free of both.
+
+# Shared five-lens rule text both PR-opening modes emit through
+# fm_five_lens_rules_block: the fresh-context rule, the five lens foci, the
+# per-lens table, the two-sided Result rule, and the bounded re-run rule. Each
+# mode's test calls this, then pins its own mode-specific sentences.
+assert_five_lens_rules() {  # <brief> <label>
+  local brief=$1 label=$2 lens
+  assert_grep "each in its own fresh context (a subagent or a fresh session)" "$brief" \
+    "$label DOD must require a fresh-context pass per lens without assuming one dispatch mechanism"
+  assert_grep "\`code-review\` (correctness), \`maintainability-review\` (rot, bandaids, speculative scaffolding), \`architecture-system-design-reviewer\` (structural fit and defended choices), \`design-decision-questioner\` (challenge the decisions), \`self-containment-review\` (context a repo reader cannot resolve)" "$brief" \
+    "$label DOD must define all five lens foci in the emitted block"
+  assert_grep "| Lens | Ran | Findings | Fixed |" "$brief" \
+    "$label DOD must carry the per-lens table header"
+  for lens in code-review maintainability-review architecture-system-design-reviewer design-decision-questioner self-containment-review; do
+    assert_grep "| $lens | <yes or no> | <n> | <n> |" "$brief" \
+      "$label DOD must carry the $lens placeholder row"
+  done
+  assert_grep "\`Result: clean\` only when every \`Ran\` cell says \`yes\` and no finding remains open" "$brief" \
+    "$label DOD must define clean as every lens ran and nothing is open"
+  assert_grep "\`Result: 1 finding open - see <lens>\`" "$brief" \
+    "$label DOD must show the open-finding Result shape"
+  assert_grep "\`Result: 1 lens did not report - see <lens>\`" "$brief" \
+    "$label DOD must show the not-reported Result shape"
+  assert_grep "up to three rounds (a round is one lens pass plus its fixes; a later round re-runs only the lenses a fix affects)" "$brief" \
+    "$label DOD must define the round cap and its partial re-run scope"
+  assert_grep "a lens that could not run is retried once before it is recorded as not-run" "$brief" \
+    "$label DOD must bound the retry before an honest not-run record"
+}
+
 test_five_lens_gate_in_direct_pr_dod() {
-  local home id brief mode lens
+  local home id brief lens
   home="$TMP_ROOT/five-lens-home"
   mkdir -p "$home/data"
 
@@ -466,28 +495,9 @@ test_five_lens_gate_in_direct_pr_dod() {
     "direct-PR DOD must make the Five-lens gate section mandatory in the PR body"
   assert_grep "a missing, incomplete, or unreported gate counts exactly like an open finding" "$brief" \
     "direct-PR DOD must state why a missing or unreported gate is a hard stop"
-  assert_grep "each in its own fresh context (a subagent or a fresh session)" "$brief" \
-    "direct-PR DOD must require a fresh-context pass per lens without assuming one dispatch mechanism"
-  assert_grep "\`code-review\` (correctness), \`maintainability-review\` (rot, bandaids, speculative scaffolding), \`architecture-system-design-reviewer\` (structural fit and defended choices), \`design-decision-questioner\` (challenge the decisions), \`self-containment-review\` (context a repo reader cannot resolve)" "$brief" \
-    "direct-PR DOD must define all five lens foci in the emitted block"
-  assert_grep "| Lens | Ran | Findings | Fixed |" "$brief" \
-    "direct-PR DOD must carry the per-lens table header"
-  for lens in code-review maintainability-review architecture-system-design-reviewer design-decision-questioner self-containment-review; do
-    assert_grep "| $lens | <yes or no> | <n> | <n> |" "$brief" \
-      "direct-PR DOD must carry the $lens placeholder row"
-  done
+  assert_five_lens_rules "$brief" direct-PR
   assert_grep "replacing every placeholder with the real result" "$brief" \
     "direct-PR DOD must say the placeholder rows are not the result"
-  assert_grep "\`Result: clean\` only when every \`Ran\` cell says \`yes\` and no finding remains open" "$brief" \
-    "direct-PR DOD must define clean as every lens ran and nothing is open"
-  assert_grep "\`Result: 1 finding open - see <lens>\`" "$brief" \
-    "direct-PR DOD must show the open-finding Result shape"
-  assert_grep "\`Result: 1 lens did not report - see <lens>\`" "$brief" \
-    "direct-PR DOD must show the not-reported Result shape"
-  assert_grep "a lens that could not run is retried once before it is recorded as not-run" "$brief" \
-    "direct-PR DOD must bound the retry before an honest not-run record"
-  assert_grep "up to three rounds (a round is one lens pass plus its fixes; a later round re-runs only the lenses a fix affects)" "$brief" \
-    "direct-PR DOD must define the round cap and its partial re-run scope"
   assert_grep "re-run the lenses affected by any later change - a fix, or a rebase that changed the diff - so every pushed line has been gated" "$brief" \
     "direct-PR DOD must re-gate every later change, including a rebase that changed the diff"
   assert_grep "after the rebase and before the verdict request and freeze in the ordering above" "$brief" \
@@ -530,30 +540,19 @@ test_five_lens_comment_in_no_mistakes_dod() {
     "no-mistakes DOD must place the five-lens evidence in a PR comment"
   assert_grep "the title \`Findings and fixes from 5-lenses-review\`" "$brief" \
     "no-mistakes DOD must pin the exact comment title"
-  assert_grep "each in its own fresh context (a subagent or a fresh session)" "$brief" \
-    "no-mistakes DOD must require a fresh-context pass per lens"
-  assert_grep "\`code-review\` (correctness), \`maintainability-review\` (rot, bandaids, speculative scaffolding), \`architecture-system-design-reviewer\` (structural fit and defended choices), \`design-decision-questioner\` (challenge the decisions), \`self-containment-review\` (context a repo reader cannot resolve)" "$brief" \
-    "no-mistakes DOD must define all five lens foci in the emitted block"
+  assert_five_lens_rules "$brief" no-mistakes
+  assert_grep "the post-pipeline five-lens pass below is the designated worker-owned commit step" "$brief" \
+    "no-mistakes DOD must name the lens pass as the designated worker-owned commit step"
   assert_grep "push the fixes as an ADDITIONAL commit on the same branch" "$brief" \
     "no-mistakes DOD must push lens fixes as an additional commit"
   assert_grep "when nothing was found, push nothing and say so in the comment" "$brief" \
     "no-mistakes DOD must not push an empty fix commit"
-  assert_grep "| Lens | Ran | Findings | Fixed |" "$brief" \
-    "no-mistakes DOD must carry the per-lens table header"
-  for lens in code-review maintainability-review architecture-system-design-reviewer design-decision-questioner self-containment-review; do
-    assert_grep "| $lens | <yes or no> | <n> | <n> |" "$brief" \
-      "no-mistakes DOD must carry the $lens placeholder row"
-  done
   assert_grep "The comment must name the FINAL head SHA and the CI state on that head" "$brief" \
     "no-mistakes DOD must require the final head SHA and its CI state in the comment"
   assert_grep "after a fix commit the gate covers the head after that commit, not the pipeline head" "$brief" \
     "no-mistakes DOD must move the gate to the post-fix head"
-  assert_grep "\`Result: clean\` only when every \`Ran\` cell says \`yes\` and no finding remains open" "$brief" \
-    "no-mistakes DOD must define clean as every lens ran and nothing is open"
-  assert_grep "\`Result: 1 finding open - see <lens>\`" "$brief" \
-    "no-mistakes DOD must show the open-finding Result shape"
-  assert_grep "\`Result: 1 lens did not report - see <lens>\`" "$brief" \
-    "no-mistakes DOD must show the not-reported Result shape"
+  assert_grep "The pipeline verdict covers the pipeline head, and the five-lens comment plus CI cover the final head after any lens fix" "$brief" \
+    "no-mistakes DOD must state the accepted coverage split for the final head"
   assert_grep "Keep the order strict: lenses, then fixes, then push, then the comment." "$brief" \
     "no-mistakes DOD must pin the lens-fix-push-comment order"
   assert_grep "Never merge the PR; the configured merge authority decides." "$brief" \
