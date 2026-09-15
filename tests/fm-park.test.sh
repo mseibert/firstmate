@@ -120,6 +120,16 @@ marker_value() {  # <home> <key>
   grep "^$2=" "$1/state/t1.parked" 2>/dev/null | tail -1 | cut -d= -f2- || true
 }
 
+# count_parked <home>: number of park markers present, without ls parsing.
+count_parked() {
+  local home=$1 marker count=0
+  for marker in "$home/state"/*.parked; do
+    [ -e "$marker" ] || continue
+    count=$((count + 1))
+  done
+  printf '%s' "$count"
+}
+
 # --- eligibility ------------------------------------------------------------
 
 test_done_pr_parks_and_records_the_handoff() {
@@ -367,10 +377,10 @@ test_sweep_parks_eligible_tasks_and_skips_working_ones() {
   expect_code 0 "$rc" "the sweep must exit 0"
   [ -z "$out" ] || fail "a clean sweep must be silent (got: $out)"
   local parked
-  parked=$(ls "$home/state"/*.parked 2>/dev/null | wc -l | tr -d ' ')
+  parked=$(count_parked "$home")
   [ "$parked" -eq 1 ] || fail "sweep --limit 1 parked $parked tasks instead of one"
   run_park "$home" sweep --limit 5 >/dev/null || fail "the follow-up sweep failed"
-  parked=$(ls "$home/state"/*.parked 2>/dev/null | wc -l | tr -d ' ')
+  parked=$(count_parked "$home")
   [ "$parked" -eq 3 ] || fail "the follow-up sweep did not park the remaining tasks"
   pass "the sweep parks eligible tasks only, bounded by --limit, and stays silent"
 }

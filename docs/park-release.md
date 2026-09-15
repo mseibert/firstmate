@@ -71,7 +71,7 @@ The relaunch reuses the same endpoint and worktree and appends the note to the t
 For a landing that is trivially and cleanly complete, firstmate may skip the resume entirely: `fm-park.sh clear <task-id>` removes the marker without relaunching, and the ordinary teardown path follows.
 Cleanup therefore never depends on a worker relaunch.
 
-The merge watch stays armed while the task is parked: `bin/fm-pr-poll.sh`'s validated poll is independent of the worker, so the merge wake arrives normally and its handler resumes or clears the parked task.
+The merge watch stays armed while the task is parked: `bin/fm-pr-poll.sh`'s validated poll and `bin/fm-pr-green-return.sh`'s bound green-return scan both read the task's recorded `pr=` independently of the worker, so the merged wake and the merge mandate arrive normally and their handler resumes or clears the parked task.
 
 ## Read surfaces
 
@@ -88,5 +88,5 @@ An automatic-backend home with an unreadable backlog refuses the release before 
 
 ## Tests
 
-`tests/fm-park.test.sh` pins eligibility (done plus PR parks, working refuses, secondmate refuses, no pointer refuses), idempotency, the marker contents, the status line, resume notes and marker removal, clear, list/status, the backlog note through the gate library, the manual fallback, and the sweep.
-`tests/fm-crew-state.test.sh` pins the marker read, and `tests/fm-fleet-snapshot-view.test.sh` pins the occupancy projection.
+`tests/fm-park.test.sh` pins eligibility (done plus PR parks, working refuses, secondmate refuses, no pointer refuses), idempotency, the marker contents, the status line, resume notes and marker removal, clear, list/status, the backlog note through the gate library, the manual fallback, the sweep, and the snapshot's active-versus-parked occupancy projection.
+`tests/fm-crew-state.test.sh` pins the marker read and `tests/fm-brief.test.sh` pins the generated ship/scout release note.

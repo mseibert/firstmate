@@ -252,11 +252,17 @@ require_regular_marker() {
 }
 
 load_marker() {  # <marker-file>
-  local schema task
+  local schema task reason
   schema=$(marker_get "$1" schema)
   task=$(marker_get "$1" task)
   [ "$schema" = fm-park.v1 ] || fail "marker $1 has schema '${schema:-none}', not fm-park.v1; refusing to trust it"
   [ "$task" = "$ID" ] || fail "marker $1 names task '${task:-none}', not '$ID'; refusing to trust it"
+  reason=$(marker_get "$1" reason)
+  case "$reason" in
+    merge|decision) ;;
+    *) fail "marker $1 records reason '${reason:-none}', not merge or decision; refusing to trust it" ;;
+  esac
+  [ -n "$(marker_get "$1" pointer)" ] || fail "marker $1 has no pointer; refusing to trust it"
 }
 
 # --- eligibility ------------------------------------------------------------
@@ -371,7 +377,7 @@ park_probe() {
 
 write_marker() {  # <releasing|released>
   local tmp
-  tmp="$STATE/.$ID.parked.tmp.$$"
+  tmp=$(umask 077; mktemp "$STATE/.$ID.parked.tmp.XXXXXX") || return 1
   {
     printf 'schema=fm-park.v1\n'
     printf 'task=%s\n' "$ID"
