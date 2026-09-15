@@ -230,12 +230,20 @@ fi
 # state (e.g. done) instead of being masked as unknown. Backend-aware
 # (fm_backend_of_meta defaults absent backend= to tmux, the P1 contract): a
 # herdr task is read through fm_backend_capture instead of a bare tmux probe.
+#
+# The tmux arm uses the shared exact-existence primitive rather than a bare
+# `display-message -t`: tmux silently answers an absent window from the client's
+# active window, so the old probe reported a vanished task window as present and
+# the busy path below then read the dead agent's stale record as work in
+# progress (2026-09-12 session-death incident). `list-panes -t` fails for a
+# missing window or session, so a gone endpoint reaches the classifier arm below
+# and reports unknown instead.
 TASK_BACKEND=$(fm_backend_of_meta "$META")
 BACKEND_TARGET=$(fm_backend_target_of_meta "$META")
 EXPECTED_LABEL="fm-$ID"
 pane_readable() {  # <target>
   case "$TASK_BACKEND" in
-    tmux) tmux display-message -p -t "$1" '#{pane_id}' >/dev/null 2>&1 ;;
+    tmux) fm_backend_target_exists tmux "$1" "$EXPECTED_LABEL" ;;
     *) fm_backend_capture "$TASK_BACKEND" "$1" 1 "$EXPECTED_LABEL" >/dev/null 2>&1 ;;
   esac
 }

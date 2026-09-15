@@ -101,7 +101,10 @@ SH
 set -u
 # FM_FAKE_TMUX_MISSING: the window is authoritatively gone - every addressed
 # call fails, but the session inventory still answers successfully and simply
-# omits the window, which is what proves absence.
+# omits the window, which is what proves absence. FM_FAKE_TMUX_FALLBACK models
+# real tmux's active-window fallback for display-message even while the window
+# is gone; list-panes (the exact-existence probe) still fails, as real tmux
+# does.
 # FM_FAKE_TMUX_UNREADABLE: tmux itself cannot answer - it fails to execute (a
 # trimmed PATH) or errors non-definitively - so even the inventory fails, with
 # a message that is NOT one of the definitive no-session/no-server/no-socket
@@ -113,8 +116,14 @@ case "${1:-}" in
     # is proved by the answer rather than by an addressed call failing. Only
     # reached once display-message has already failed.
     ;;
-  display-message)
+  list-panes)
+    # The exact-existence probe real tmux answers with an error for a missing
+    # window or session. display-message below may still succeed through the
+    # active-window fallback, exactly like real tmux.
     [ "${FM_FAKE_TMUX_MISSING:-0}" = 1 ] && exit 1
+    printf '%%1\n' ;;
+  display-message)
+    [ "${FM_FAKE_TMUX_MISSING:-0}" = 1 ] && [ "${FM_FAKE_TMUX_FALLBACK:-0}" != 1 ] && exit 1
     printf '%%1\n' ;;
   capture-pane)
     [ "${FM_FAKE_TMUX_MISSING:-0}" = 1 ] && exit 1
@@ -209,6 +218,7 @@ reset_fakes() {
   FM_FAKE_BUSY_TEXT=
   FM_FAKE_TMUX_MISSING=0
   FM_FAKE_TMUX_UNREADABLE=0
+  FM_FAKE_TMUX_FALLBACK=0
   FM_FAKE_HERDR_BUSY=0
   FM_FAKE_HERDR_MISSING=0
   FM_FAKE_HERDR_READ_FAIL=0
@@ -216,7 +226,7 @@ reset_fakes() {
   FM_FAKE_HERDR_AGENT_STATUS=""
   FM_FAKE_CI_LOGS=""
   FM_FAKE_DAEMON_DOWN=0
-  export FM_FAKE_AXI_STATUS FM_FAKE_AXI_STATUS_RUN FM_FAKE_RUNS_LIST FM_FAKE_BUSY FM_FAKE_BUSY_TEXT FM_FAKE_TMUX_MISSING FM_FAKE_TMUX_UNREADABLE
+  export FM_FAKE_AXI_STATUS FM_FAKE_AXI_STATUS_RUN FM_FAKE_RUNS_LIST FM_FAKE_BUSY FM_FAKE_BUSY_TEXT FM_FAKE_TMUX_MISSING FM_FAKE_TMUX_UNREADABLE FM_FAKE_TMUX_FALLBACK
   export FM_FAKE_HERDR_BUSY FM_FAKE_HERDR_MISSING FM_FAKE_HERDR_READ_FAIL FM_FAKE_HERDR_HUSK FM_FAKE_HERDR_AGENT_STATUS FM_FAKE_CI_LOGS
   export FM_FAKE_DAEMON_DOWN
 }
@@ -1547,6 +1557,42 @@ test_dead_window_ignores_stale_status_log() {
   pass "dead window ignores stale status log"
 }
 
+# Regression (2026-09-12 session-death incident): real tmux answers
+# display-message for an absent window from the client's active window instead
+# of failing, so the old pane probe reported the vanished task window as
+# present and the busy path then read the dead agent's stale lifecycle record
+# as work in progress. Existence must come from an exact answer: a gone
+# endpoint reads unknown with gone-class evidence, never working - the stale
+# record of the agent that died with its session must not outrank its absence.
+test_missing_window_fallback_does_not_outrank_stale_busy_record() {
+  reset_fakes
+  local d out gen
+  d=$(new_case missing-fallback-stale-busy)
+  make_repo_on_branch "$d/wt" fm/feat-missing-busy
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-missing-busy.meta" "window=fm:fm-feat-missing-busy" \
+    "worktree=$d/wt" "kind=ship" "harness=pi"
+  FM_FAKE_AXI_STATUS=""
+  FM_FAKE_RUNS_LIST=""
+  # The window is gone; display-message still answers through tmux's
+  # active-window fallback, exactly as real tmux does.
+  FM_FAKE_TMUX_MISSING=1
+  FM_FAKE_TMUX_FALLBACK=1
+  # The agent's own lifecycle hook recorded a busy turn before the session
+  # died, and nothing retires that record when its endpoint vanishes.
+  gen=$("$ROOT/bin/fm-busy-event.sh" arm "$d/state" feat-missing-busy)
+  "$ROOT/bin/fm-busy-event.sh" apply "$d/state" feat-missing-busy busy --gen "$gen" \
+    --source pi-ext --event agent_start
+  out=$(run_crew_state "$d" feat-missing-busy)
+  assert_not_contains "$out" "state: working" \
+    "a missing window must never read working from a stale busy record"
+  assert_not_contains "$out" "harness busy" \
+    "a missing window must not surface the dead agent's busy verdict"
+  assert_contains "$out" "state: unknown" "a missing window with a stale record reads unknown"
+  assert_contains "$out" "backend target gone" "the missing window keeps gone-class evidence"
+  pass "a missing tmux window outranks a stale busy record"
+}
+
 # Regression (2026-09 G7 stale-claim incident, tmux half): the default backend
 # reached the same false-death path as herdr. A tmux that cannot answer at all
 # - a trimmed PATH, or any non-definitive error - made every live crew report
@@ -2304,6 +2350,7 @@ test_no_run_idle_pane_paused
 test_no_run_idle_pane_custom_paused_verb
 test_no_run_idle_secondmate_resolved_event_not_state
 test_dead_window_ignores_stale_status_log
+test_missing_window_fallback_does_not_outrank_stale_busy_record
 test_no_run_tmux_unreadable_reads_unreachable_not_gone
 test_dead_window_still_reports_terminal_run_step
 test_dead_window_still_reports_active_run_step

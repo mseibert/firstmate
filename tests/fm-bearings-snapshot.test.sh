@@ -38,6 +38,7 @@ SH
 #!/usr/bin/env bash
 case "${1:-}" in
   display-message) case "$*" in *dead-*) exit 1 ;; *) printf '%%1\n' ;; esac ;;
+  list-panes) case "$*" in *dead-*) exit 1 ;; *) printf '%%1\n' ;; esac ;;
   capture-pane)
     case "$*" in
       *fm-domain-alpha*) printf 'stale terminal summary: Phase 7 started\n> \n' ;;
@@ -2620,7 +2621,11 @@ EOF
   printf 'working: old generation\n' > "$home/state/generation-race.status"
   cat > "$fakebin/tmux" <<'SH'
 #!/usr/bin/env bash
-if [ "${1:-}" = display-message ]; then
+# Both endpoint-presence probes (display-message and the exact list-panes
+# primitive fm_backend_target_exists uses) report the same vanished endpoint and
+# trigger the generation race once: the old window is gone while a replacement
+# reuses the same target and rewrites the record mid-read.
+if [ "${1:-}" = display-message ] || [ "${1:-}" = list-panes ]; then
   if mkdir "$RACE_ONCE" 2>/dev/null; then
     tmp="$RACE_META.tmp.$$"
     cat > "$tmp" <<EOF
