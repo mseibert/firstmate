@@ -89,6 +89,29 @@ detect_own() {
     echo omp
     return
   fi
+  # CLAUDECODE and PI_CODING_AGENT can BOTH be present without either naming
+  # this process's own harness, because each survives a launch that does not
+  # clear it: a shell profile may export CLAUDECODE=1 into a hand-started Pi
+  # primary (Pi inherits it and its launcher adds PI_CODING_AGENT=true), and
+  # bin/fm-spawn.sh's claude launch line does not clear an inherited
+  # PI_CODING_AGENT, so a claude worker under a Pi primary carries both.
+  # Whichever marker is tested first then mislabels one of the two, so when
+  # both are set the process chain decides: the nearest harness ancestor is
+  # this process's real harness. A pi ancestor resolves pi; anything else - a
+  # claude ancestor, another harness, or a chain the walk cannot read - stays
+  # claude, the verdict the marker order produced before this branch, so a
+  # real claude process is never silently relabelled pi. bin/fm-spawn.sh also
+  # clears an inherited CLAUDECODE at the pi launch boundary; this branch is
+  # what covers a session a human started by hand.
+  if [ "${CLAUDECODE:-}" = "1" ] && [ "${PI_CODING_AGENT:-}" = "true" ]; then
+    case "$(detect_ancestry)" in
+      pi)
+        if [ "${FM_PI_HARNESS:-}" = pi-signed ]; then echo pi-signed; else echo pi; fi
+        ;;
+      *) echo claude ;;
+    esac
+    return
+  fi
   [ "${CLAUDECODE:-}" = "1" ] && { echo claude; return; }
   if [ "${PI_CODING_AGENT:-}" = "true" ]; then
     if [ "${FM_PI_HARNESS:-}" = pi-signed ]; then echo pi-signed; else echo pi; fi
@@ -111,7 +134,19 @@ detect_own() {
   # by ancestry alone below. Do NOT promote MUSE_CURRENT_SESSION_LOG to a marker
   # without verifying it reaches children AND that it cannot survive in a
   # multiplexer's stored environment, which is the precedence hazard above.
-  # Layer 2: walk the parent chain and match the command name.
+  # Layer 2: walk the parent chain and match the command name. The walk lives
+  # in detect_ancestry because the both-marker collision above consults the
+  # same nearest-ancestor evidence.
+  detect_ancestry
+}
+
+# Walk up to eight parents and report the nearest harness this process tree
+# runs on, or `unknown` when no ancestor is a recognized harness. The FIRST
+# match wins, so a claude worker whose backend chain was originally started
+# from a Pi session reports claude rather than the Pi process further up; the
+# both-marker branch in detect_own depends on exactly that nearest-ancestor
+# semantics.
+detect_ancestry() {
   local pid=$$ comm args argv0
   for _ in 1 2 3 4 5 6 7 8; do
     comm=$(ps -o comm= -p "$pid" 2>/dev/null) || break

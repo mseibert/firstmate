@@ -1417,8 +1417,15 @@ launch_template() {
       fi
       ;;
     opencode) printf '%s' 'OPENCODE_CONFIG_CONTENT='\''{"permission":{"*":"allow"}}'\'' opencode __MODELFLAG__--prompt "$(__OPINPUT__ encode launch-brief < __BRIEF__)"' ;;
+    # Pi is marker-ful (its launcher sets PI_CODING_AGENT=true), but its
+    # detection arm sits after CLAUDECODE, and a hand-started primary can
+    # export CLAUDECODE=1 from a shell profile that this launch would inherit
+    # into the worker. Clear that foreign marker here so a spawned worker's
+    # environment names its real harness even when the ancestry walk cannot
+    # reach the Pi process; bin/fm-harness.sh's both-marker branch is what
+    # covers a session a human started by hand.
     pi|pi-signed)
-      printf '%s' '__PIBIN____PITUIMODE__'
+      printf '%s' 'env -u CLAUDECODE __PIBIN____PITUIMODE__'
       if [ "$kind" = secondmate ]; then
         printf '%s' ' __MODELFLAG____EFFORTFLAG__-e __PITURNEND__ -e __PIWATCH__ "$(__OPINPUT__ encode launch-brief < __BRIEF__)"'
       else

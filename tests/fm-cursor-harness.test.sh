@@ -31,6 +31,13 @@ set -u
 . "$ROOT/bin/fm-busy-lib.sh"
 
 HARNESS="$ROOT/bin/fm-harness.sh"
+# bin/fm-harness.sh checks verified ENV markers before ancestry, and a suite
+# run from inside Pi inherits PI_CODING_AGENT=true alongside an ambient
+# CLAUDECODE. Every detection case below states the markers it means to test,
+# so drop the ambient foreign markers first and keep the verdict independent
+# of the harness that launched the suite.
+unset CLAUDECODE PI_CODING_AGENT FM_PI_HARNESS FM_OMP_HARNESS GROK_AGENT CURSOR_AGENT \
+  CURSOR_INVOKED_AS GEMINI_CLI ATLASSIAN_AGENT_TYPE ROVODEV_CLI
 TMP_ROOT=$(fm_test_tmproot fm-cursor-harness)
 trap 'rm -rf "$TMP_ROOT"' EXIT
 
