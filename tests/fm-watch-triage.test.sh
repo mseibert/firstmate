@@ -27,15 +27,31 @@ DRAIN="$ROOT/bin/fm-wake-drain.sh"
 
 TMP_ROOT=$(fm_test_tmproot fm-watch-triage-tests)
 
-# The suite's two historically unbounded waits, now bounded. reap's `kill`+`wait`
-# and ack_stopped_cycle's fm-wake-drain.sh runs stalled the 2026-09 serial shard
-# through a single 1000.9s gap inside test_stale_terminal_status_overridden_by_active_run,
-# which consumed the job cap and surfaced as a cancellation instead of a located
-# failure. The tick budget matches the suite's other bounded waits (wait_poll_cycle
-# 300, wait_for_exit 100); both are overridable so the regression case can
-# exercise a cap quickly.
+# The suite's historically unbounded waits, now bounded. reap's `kill`+`wait`,
+# ack_stopped_cycle's and every direct fm-wake-drain.sh run stalled the 2026-09
+# serial shard through a single 1000.9s gap inside
+# test_stale_terminal_status_overridden_by_active_run, which consumed the job cap
+# and surfaced as a cancellation instead of a located failure. The tick budget
+# matches the suite's other bounded waits (wait_poll_cycle 300, wait_for_exit
+# 100); all three are overridable so the regression case can exercise a cap
+# quickly.
 FM_TEST_REAP_LIMIT_TICKS=${FM_TEST_REAP_LIMIT_TICKS:-100}
 FM_TEST_DRAIN_LIMIT_SECS=${FM_TEST_DRAIN_LIMIT_SECS:-30}
+# A bounded drain runner needs a little longer than the drain's own bound to
+# finish and report its status, so the pid wait that follows it cannot race the
+# runner's cap.
+FM_TEST_DRAIN_WAIT_LIMIT_TICKS=${FM_TEST_DRAIN_WAIT_LIMIT_TICKS:-$((FM_TEST_DRAIN_LIMIT_SECS * 10 + 50))}
+
+# Every direct production drain run in this suite goes through this one hard
+# bound, so a drain that hangs ends as a bounded, named failure instead of
+# consuming the shard's job cap (the 2026-09 cancellation's second unbounded
+# path). Callers keep their own rc handling; the bound surfaces as
+# fm_run_timed's 124.
+drain_bounded() {  # <state> [drain args...]
+  local state=$1
+  shift
+  fm_run_timed "$FM_TEST_DRAIN_LIMIT_SECS" env FM_STATE_OVERRIDE="$state" "$DRAIN" "$@"
+}
 
 ack_stopped_cycle() {  # <state> [drain-command]
   local state=$1 drain=${2:-$DRAIN} err sequence generation rc
@@ -194,34 +210,6 @@ record_pi_busy() {  # <state-dir> <id>
   gen=$("$ROOT/bin/fm-busy-event.sh" arm "$state" "$id")
   "$ROOT/bin/fm-busy-event.sh" apply "$state" "$id" busy --gen "$gen" \
     --source pi-ext --event agent-start
-}
-
-# Wait up to <limit> 0.1s ticks for <pid> to stop being a live process, then
-# SIGKILL it and give it a short bounded grace. Returns 0 once it is gone (a
-# zombie counts as gone and is reaped here), 124 when the cap was hit. Every
-# path is polled, so even the post-SIGKILL cleanup cannot reintroduce the
-# unbounded `wait` this replaces.
-wait_pid_bounded() {  # <pid> <limit-ticks>
-  local pid=$1 limit=$2 i=0
-  while [ "$i" -lt "$limit" ]; do
-    if ! is_live_non_zombie "$pid"; then
-      wait "$pid" 2>/dev/null || true
-      return 0
-    fi
-    sleep 0.1
-    i=$((i + 1))
-  done
-  kill -KILL "$pid" 2>/dev/null || true
-  i=0
-  while [ "$i" -lt 50 ]; do
-    if ! is_live_non_zombie "$pid"; then
-      wait "$pid" 2>/dev/null || true
-      return 124
-    fi
-    sleep 0.1
-    i=$((i + 1))
-  done
-  return 124
 }
 
 # reap: stop a background watcher, bounded. SIGTERM first; a process still alive
@@ -844,7 +832,7 @@ test_turn_ended_not_working_surfaced() {
   pid=$!
   wait_for_exit "$pid" 100 || fail "watcher did not surface a turn-end whose crew is not provably working"
   grep -F "signal: $state/task.turn-ended" "$out" >/dev/null || fail "watcher did not print the surfaced turn-end signal"
-  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" 2>/dev/null || fail "drain after the surfaced turn-end failed"
+  drain_bounded "$state" > "$drain_out" 2>/dev/null || fail "drain after the surfaced turn-end failed"
   grep "$(printf '\tsignal\t')" "$drain_out" | grep -F "$state/task.turn-ended" >/dev/null || fail "surfaced turn-end was not queued"
   pass "a bare turn-end whose crew is not provably working is surfaced (the swallowed-finish fix)"
 }
@@ -1019,7 +1007,7 @@ test_turn_ended_still_pane_surfaced() {
   wait_for_exit "$pid" 100 || fail "watcher did not surface a bare turn-end from an unchanged pane"
   grep -F "signal: $state/codexstopped.turn-ended" "$out" >/dev/null \
     || fail "watcher did not print the surfaced still-pane turn-end signal"
-  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" 2>/dev/null || fail "drain after the still-pane turn-end failed"
+  drain_bounded "$state" > "$drain_out" 2>/dev/null || fail "drain after the still-pane turn-end failed"
   grep "$(printf '\tsignal\t')" "$drain_out" | grep -F "$state/codexstopped.turn-ended" >/dev/null \
     || fail "surfaced still-pane turn-end was not queued"
   unset FM_FAKE_CREW_STATE
@@ -1046,7 +1034,7 @@ test_turn_ended_malformed_prior_hash_surfaced() {
   wait_for_exit "$pid" 100 || fail "watcher absorbed a turn-end backed by a malformed prior hash"
   grep -F "signal: $state/codexmalformed.turn-ended" "$out" >/dev/null \
     || fail "watcher did not print the surfaced malformed-hash turn-end"
-  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" 2>/dev/null \
+  drain_bounded "$state" > "$drain_out" 2>/dev/null \
     || fail "drain after the malformed-hash turn-end failed"
   grep "$(printf '\tsignal\t')" "$drain_out" | grep -F "$state/codexmalformed.turn-ended" >/dev/null \
     || fail "malformed-hash turn-end was not queued"
@@ -1074,7 +1062,7 @@ test_turn_ended_trailing_newline_prior_hash_surfaced() {
   wait_for_exit "$pid" 100 || fail "watcher absorbed a turn-end backed by a newline-terminated prior hash"
   grep -F "signal: $state/codexnewline.turn-ended" "$out" >/dev/null \
     || fail "watcher did not print the surfaced newline-hash turn-end"
-  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" 2>/dev/null \
+  drain_bounded "$state" > "$drain_out" 2>/dev/null \
     || fail "drain after the newline-hash turn-end failed"
   grep "$(printf '\tsignal\t')" "$drain_out" | grep -F "$state/codexnewline.turn-ended" >/dev/null \
     || fail "newline-hash turn-end was not queued"
@@ -1104,7 +1092,7 @@ test_secondmate_turn_ended_churning_pane_surfaced() {
   wait_for_exit "$pid" 100 || fail "watcher did not surface a churning secondmate turn-end"
   grep -F "signal: $state/mate.turn-ended" "$out" >/dev/null \
     || fail "watcher did not print the surfaced churning secondmate turn-end"
-  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" 2>/dev/null \
+  drain_bounded "$state" > "$drain_out" 2>/dev/null \
     || fail "drain after the churning secondmate turn-end failed"
   grep "$(printf '\tsignal\t')" "$drain_out" | grep -F "$state/mate.turn-ended" >/dev/null \
     || fail "churning secondmate turn-end was not queued"
@@ -1133,7 +1121,7 @@ test_turn_ended_colliding_window_key_surfaced() {
   wait_for_exit "$pid" 100 || fail "watcher did not surface a turn-end with an ambiguous pane marker"
   grep -F "signal: $state/a.b.turn-ended" "$out" >/dev/null \
     || fail "watcher did not print the surfaced ambiguous-marker turn-end"
-  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" 2>/dev/null \
+  drain_bounded "$state" > "$drain_out" 2>/dev/null \
     || fail "drain after the ambiguous-marker turn-end failed"
   grep "$(printf '\tsignal\t')" "$drain_out" | grep -F "$state/a.b.turn-ended" >/dev/null \
     || fail "ambiguous-marker turn-end was not queued"
@@ -1162,7 +1150,7 @@ test_turn_ended_duplicate_endpoint_records_surfaced() {
   wait_for_exit "$pid" 100 || fail "watcher absorbed a turn-end shared by two endpoint records"
   grep -F "signal: $state/first.turn-ended" "$out" >/dev/null \
     || fail "watcher did not print the surfaced duplicate-endpoint turn-end"
-  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" 2>/dev/null \
+  drain_bounded "$state" > "$drain_out" 2>/dev/null \
     || fail "drain after the duplicate-endpoint turn-end failed"
   grep "$(printf '\tsignal\t')" "$drain_out" | grep -F "$state/first.turn-ended" >/dev/null \
     || fail "duplicate-endpoint turn-end was not queued"
@@ -1237,7 +1225,7 @@ test_turn_ended_mixed_positive_evidence_batch_default_off() {
     || fail "watcher did not print the first default-off turn-end"
   grep -F "$state/secondoff.turn-ended" "$out" >/dev/null \
     || fail "watcher did not print the second default-off turn-end"
-  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" 2>/dev/null \
+  drain_bounded "$state" > "$drain_out" 2>/dev/null \
     || fail "drain after the default-off mixed-evidence batch failed"
   grep "$(printf '\tsignal\t')" "$drain_out" | grep -F "$state/firstoff.turn-ended" >/dev/null \
     || fail "the first default-off turn-end was not queued"
@@ -1274,7 +1262,7 @@ test_status_and_turn_end_batch_never_uses_churn_evidence() {
     || fail "watcher did not print the status file from the surfaced mixed batch"
   grep -F "$state/secondturn.turn-ended" "$out" >/dev/null \
     || fail "watcher did not print the turn-end from the surfaced mixed batch"
-  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" 2>/dev/null \
+  drain_bounded "$state" > "$drain_out" 2>/dev/null \
     || fail "drain after the surfaced status-and-turn-end batch failed"
   grep "$(printf '\tsignal\t')" "$drain_out" | grep -F "$state/firststatus.status" >/dev/null \
     || fail "the status file from the surfaced mixed batch was not queued"
@@ -1310,7 +1298,7 @@ test_turn_ended_churn_absorb_off_by_default() {
   wait_for_exit "$pid" 100 || fail "watcher absorbed a churning turn-end without the opt-in flag"
   grep -F "signal: $state/codexdefault.turn-ended" "$out" >/dev/null \
     || fail "watcher did not print the surfaced default-off churning turn-end"
-  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" 2>/dev/null \
+  drain_bounded "$state" > "$drain_out" 2>/dev/null \
     || fail "drain after the default-off churning turn-end failed"
   grep "$(printf '\tsignal\t')" "$drain_out" | grep -F "$state/codexdefault.turn-ended" >/dev/null \
     || fail "default-off churning turn-end was not queued"
@@ -1349,7 +1337,7 @@ test_turn_ended_churn_absorb_bounded() {
     || fail "a perpetually churning pane deferred its turn-end past the absorb bound"
   grep -F "signal: $state/codexclock.turn-ended" "$out" >/dev/null \
     || fail "watcher did not print the turn-end surfaced by the exhausted absorb bound"
-  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" 2>/dev/null \
+  drain_bounded "$state" > "$drain_out" 2>/dev/null \
     || fail "drain after the bounded churn turn-end failed"
   grep "$(printf '\tsignal\t')" "$drain_out" | grep -F "$state/codexclock.turn-ended" >/dev/null \
     || fail "the turn-end surfaced by the exhausted absorb bound was not queued"
@@ -1380,7 +1368,7 @@ test_turn_ended_churn_timer_write_failure_surfaced() {
   wait_for_exit "$pid" 100 || fail "watcher absorbed a churning turn-end without recording its deadline"
   grep -F "signal: $state/codextimer.turn-ended" "$out" >/dev/null \
     || fail "watcher did not print the turn-end whose churn deadline could not be recorded"
-  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" 2>/dev/null \
+  drain_bounded "$state" > "$drain_out" 2>/dev/null \
     || fail "drain after the failed churn deadline write failed"
   grep "$(printf '\tsignal\t')" "$drain_out" | grep -F "$state/codextimer.turn-ended" >/dev/null \
     || fail "turn-end with an unrecordable churn deadline was not queued"
@@ -1408,7 +1396,7 @@ test_turn_ended_invalid_churn_bound_surfaced() {
   wait_for_exit "$pid" 100 || fail "watcher did not surface a turn-end with an invalid churn bound"
   grep -F "signal: $state/codexbound.turn-ended" "$out" >/dev/null \
     || fail "watcher terminated before printing the invalid-bound turn-end"
-  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" 2>/dev/null \
+  drain_bounded "$state" > "$drain_out" 2>/dev/null \
     || fail "drain after the invalid churn bound failed"
   grep "$(printf '\tsignal\t')" "$drain_out" | grep -F "$state/codexbound.turn-ended" >/dev/null \
     || fail "turn-end with an invalid churn bound was not queued"
@@ -1438,7 +1426,7 @@ test_turn_ended_oversized_churn_bound_surfaced() {
   wait_for_exit "$pid" 100 || fail "watcher did not surface a turn-end with an oversized churn bound"
   grep -F "signal: $state/codexoversized.turn-ended" "$out" >/dev/null \
     || fail "watcher terminated before printing the oversized-bound turn-end"
-  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" 2>/dev/null \
+  drain_bounded "$state" > "$drain_out" 2>/dev/null \
     || fail "drain after the oversized churn bound failed"
   grep "$(printf '\tsignal\t')" "$drain_out" | grep -F "$state/codexoversized.turn-ended" >/dev/null \
     || fail "turn-end with an oversized churn bound was not queued"
@@ -1479,7 +1467,7 @@ test_turn_ended_invalid_churn_deadline_surfaced() {
     wait_for_exit "$pid" 100 || fail "watcher did not surface a turn-end with a $variant churn deadline"
     grep -F "signal: $state/codexdeadline.turn-ended" "$out" >/dev/null \
       || fail "watcher terminated before printing the $variant-deadline turn-end"
-    FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" 2>/dev/null \
+    drain_bounded "$state" > "$drain_out" 2>/dev/null \
       || fail "drain after the $variant churn deadline failed"
     grep "$(printf '\tsignal\t')" "$drain_out" | grep -F "$state/codexdeadline.turn-ended" >/dev/null \
       || fail "turn-end with a $variant churn deadline was not queued"
@@ -1518,7 +1506,7 @@ test_turn_ended_surfaced_batch_opens_no_partial_deadline() {
     || fail "watcher did not print the first turn-end from the surfaced batch"
   grep -F "$state/second.turn-ended" "$out" >/dev/null \
     || fail "watcher did not print the second turn-end from the surfaced batch"
-  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" 2>/dev/null \
+  drain_bounded "$state" > "$drain_out" 2>/dev/null \
     || fail "drain after the surfaced churn batch failed"
   grep "$(printf '\tsignal\t')" "$drain_out" | grep -F "$state/first.turn-ended" >/dev/null \
     || fail "the first turn-end from the surfaced batch was not queued"
@@ -1546,7 +1534,7 @@ test_working_note_not_working_surfaced() {
   pid=$!
   wait_for_exit "$pid" 100 || fail "watcher did not surface a working: note whose crew has no running pipeline and an idle pane"
   grep -F "signal: $status_file" "$out" >/dev/null || fail "watcher did not print the surfaced working: signal"
-  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" 2>/dev/null || fail "drain after the surfaced working: note failed"
+  drain_bounded "$state" > "$drain_out" 2>/dev/null || fail "drain after the surfaced working: note failed"
   grep "$(printf '\tsignal\t')" "$drain_out" | grep -F "$status_file" >/dev/null || fail "surfaced working: note was not queued"
   [ -s "$state/.seen-task_status" ] || fail "surfaced working: note did not advance its .seen-* suppressor"
   pass "a no-verb working: note whose crew is idle with no running pipeline is surfaced"
@@ -1566,7 +1554,7 @@ test_secondmate_status_note_surfaced_despite_busy_agent() {
   wait_for_exit "$pid" 100 || fail "watcher absorbed a busy secondmate's routed status note"
   grep -F "signal: $state/mate.status" "$out" >/dev/null \
     || fail "watcher did not print the surfaced secondmate note"
-  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" 2>/dev/null || fail "drain after the surfaced note failed"
+  drain_bounded "$state" > "$drain_out" 2>/dev/null || fail "drain after the surfaced note failed"
   grep "$(printf '\tsignal\t')" "$drain_out" | grep -F "$state/mate.status" >/dev/null \
     || fail "surfaced secondmate note was not queued"
   pass "a secondmate's status note surfaces even while its own agent is busy"
@@ -1615,7 +1603,7 @@ test_actionable_signal_surfaced() {
   pid=$!
   wait_for_exit "$pid" 100 || fail "watcher did not exit for an actionable needs-decision signal"
   grep -F "signal: $status_file" "$out" >/dev/null || fail "watcher did not print the actionable signal reason"
-  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" 2>/dev/null || fail "drain after the actionable signal failed"
+  drain_bounded "$state" > "$drain_out" 2>/dev/null || fail "drain after the actionable signal failed"
   grep "$(printf '\tsignal\t')" "$drain_out" | grep -F "$status_file" >/dev/null || fail "actionable signal was not queued"
   [ -s "$state/.hb-surfaced-task" ] || fail "actionable signal did not record the surfaced marker"
   pass "captain-relevant signal is surfaced (queue + exit) and marked surfaced"
@@ -1757,7 +1745,7 @@ test_actionable_signal_survives_a_later_routine_append() {
   wait_for_exit "$pid" 100 \
     || { reap "$pid"; fail "watcher absorbed a needs-decision hidden behind a later working: line"; }
   grep -F "signal: $status_file" "$out" >/dev/null || fail "watcher did not print the actionable signal reason"
-  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" 2>/dev/null || fail "drain after the masked signal failed"
+  drain_bounded "$state" > "$drain_out" 2>/dev/null || fail "drain after the masked signal failed"
   grep "$(printf '\tsignal\t')" "$drain_out" | grep -F "$status_file" >/dev/null \
     || fail "the masked actionable signal was not queued"
   unset FM_FAKE_CREW_STATE
@@ -1778,7 +1766,7 @@ test_release_completion_survives_a_later_routine_append() {
   pid=$!
   wait_for_exit "$pid" 100 \
     || { reap "$pid"; fail "watcher absorbed a release/install completion hidden behind later cleanup chatter"; }
-  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" 2>/dev/null || fail "drain after the masked completion failed"
+  drain_bounded "$state" > "$drain_out" 2>/dev/null || fail "drain after the masked completion failed"
   grep "$(printf '\tsignal\t')" "$drain_out" | grep -F "$status_file" >/dev/null \
     || fail "the masked completion was not queued"
   unset FM_FAKE_CREW_STATE
@@ -1909,7 +1897,7 @@ test_terminal_stale_surfaced() {
   pid=$!
   wait_for_exit "$pid" 100 || fail "watcher did not exit for a stale pane on a terminal status"
   grep -Fx "stale: $window" "$out" >/dev/null || fail "watcher did not print the terminal stale wake"
-  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" 2>/dev/null || fail "drain after the terminal stale failed"
+  drain_bounded "$state" > "$drain_out" 2>/dev/null || fail "drain after the terminal stale failed"
   grep "$(printf '\tstale\t')" "$drain_out" | grep -F "$window" >/dev/null || fail "terminal stale was not queued"
   pass "a stale pane sitting on a terminal status is surfaced (queue + exit)"
 }
@@ -1947,7 +1935,26 @@ test_hung_waits_are_bounded() {
   [ "$rc" -eq 124 ] || fail "bounded wait returned $rc instead of its cap code for a SIGTERM-ignoring process"
   [ "$elapsed" -le 5 ] || fail "bounded wait took ${elapsed}s despite a 0.5s cap"
   is_live_non_zombie "$victim" && fail "bounded wait did not terminate the SIGTERM-ignoring process"
-  wait "$victim" 2>/dev/null || true
+  wait_pid_bounded "$victim" 1 2>/dev/null || true
+
+  # wait_for_exit, the shared helper behind every watcher wait in this suite,
+  # must keep returning a natural exit's status and must bound its own SIGTERM
+  # escalation; its old kill-then-`wait` tail was the same unbounded path.
+  ( exit 7 ) &
+  victim=$!
+  wait_for_exit "$victim" 50
+  rc=$?
+  [ "$rc" -eq 7 ] || fail "wait_for_exit returned $rc instead of the process's exit status"
+  ( trap '' TERM; exec sleep 300 ) &
+  victim=$!
+  start=$(date +%s)
+  wait_for_exit "$victim" 5
+  rc=$?
+  elapsed=$(( $(date +%s) - start ))
+  [ "$rc" -eq 124 ] || fail "wait_for_exit returned $rc instead of 124 for a SIGTERM-ignoring process"
+  [ "$elapsed" -le 20 ] || fail "wait_for_exit took ${elapsed}s despite a 0.5s budget and a bounded escalation"
+  is_live_non_zombie "$victim" && fail "wait_for_exit did not terminate the SIGTERM-ignoring process"
+  wait_pid_bounded "$victim" 1 2>/dev/null || true
 
   # reap must turn its cap hit into a named failure. The probe runs in a
   # subshell so its fail() ends the probe, not this suite.
@@ -1958,7 +1965,7 @@ test_hung_waits_are_bounded() {
   [ "$rc" -ne 0 ] || fail "reap accepted a process that ignored SIGTERM"
   grep -F "reap: pid $victim" "$err" >/dev/null || fail "reap's bounded failure did not name the hung pid: $(cat "$err")"
   is_live_non_zombie "$victim" && fail "reap left the SIGTERM-ignoring process running"
-  wait "$victim" 2>/dev/null || true
+  wait_pid_bounded "$victim" 1 2>/dev/null || true
 
   # ack_stopped_cycle must bound each drain run: a hanging drain ends as a
   # named failure instead of blocking the shard.
@@ -1968,6 +1975,15 @@ test_hung_waits_are_bounded() {
   rc=$?
   [ "$rc" -ne 0 ] || fail "ack_stopped_cycle accepted a hanging drain"
   grep -F "exceeded its 1s bound" "$err" >/dev/null || fail "ack_stopped_cycle's bounded failure did not name the bound: $(cat "$err")"
+
+  # Every direct drain run in the suite goes through drain_bounded, so a
+  # hanging drain hits the same hard bound.
+  start=$(date +%s)
+  ( DRAIN="$dir/hanging-drain.sh"; FM_TEST_DRAIN_LIMIT_SECS=1; drain_bounded "$state" ) 2> "$err"
+  rc=$?
+  elapsed=$(( $(date +%s) - start ))
+  [ "$rc" -eq 124 ] || fail "drain_bounded returned $rc instead of its cap code for a hanging drain"
+  [ "$elapsed" -le 6 ] || fail "drain_bounded took ${elapsed}s despite a 1s bound"
 
   pass "a hung wait is bounded and named instead of blocking the shard into a cancellation"
 }
@@ -2082,7 +2098,7 @@ test_nonterminal_stale_provably_working_absorbed_then_escalated() {
   grep -F "stale: $window" "$out" >/dev/null || fail "escalation did not print a stale wake"
   grep -F "possible wedge" "$out" >/dev/null || fail "escalation did not flag a possible wedge"
   [ ! -e "$state/.stale-since-$key" ] || fail "stale-since timer was not cleared after escalation"
-  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" 2>/dev/null || fail "drain after the wedge escalation failed"
+  drain_bounded "$state" > "$drain_out" 2>/dev/null || fail "drain after the wedge escalation failed"
   grep "$(printf '\tstale\t')" "$drain_out" | grep -F "$window" >/dev/null || fail "wedge escalation was not queued"
   pass "provably-working non-terminal stale is absorbed on first sight, then wedge-escalated past the threshold"
 }
@@ -2121,7 +2137,7 @@ test_nonterminal_stale_not_working_surfaced() {
   grep -F "possible wedge" "$out" >/dev/null && fail "an immediate stopped-crew stale was mislabeled a wedge"
   [ "$(cat "$state/.stale-$key" 2>/dev/null || true)" = "$pane_hash" ] || fail "stale suppressor was not advanced on surface"
   [ ! -e "$state/.stale-since-$key" ] || fail "stale-since timer should not be set when surfacing immediately"
-  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" 2>/dev/null || fail "drain after the immediate stale failed"
+  drain_bounded "$state" > "$drain_out" 2>/dev/null || fail "drain after the immediate stale failed"
   grep "$(printf '\tstale\t')" "$drain_out" | grep -F "$window" >/dev/null || fail "immediate stale wake was not queued"
   pass "a not-provably-working non-terminal stale is surfaced immediately (never left to wait out the timer)"
 }
@@ -2191,7 +2207,7 @@ test_nonterminal_stale_paused_absorbed_then_resurfaced() {
   grep -F "possible wedge" "$out" >/dev/null && fail "a declared pause was mislabeled a possible wedge"
   [ -e "$state/.paused-resurfaced-$key" ] || fail "the paused re-surface throttle marker was not recorded"
   [ ! -e "$state/.stale-since-$key" ] || fail "a paused re-surface must not use the wedge timer"
-  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" 2>/dev/null || fail "drain after the paused re-surface failed"
+  drain_bounded "$state" > "$drain_out" 2>/dev/null || fail "drain after the paused re-surface failed"
   grep "$(printf '\tstale\t')" "$drain_out" | grep -F "$window" >/dev/null || fail "paused re-surface was not queued"
   pass "a declared pause is absorbed on first sight, then re-surfaced as a recheck past the threshold, never wedge-escalated"
 }
@@ -2264,7 +2280,7 @@ test_done_pending_verify_stale_absorbed_then_resurfaced() {
   grep -F "possible wedge" "$out" >/dev/null && fail "a done-pending-verify wait was mislabeled a possible wedge"
   [ -e "$state/.paused-resurfaced-$key" ] || fail "the done-pending-verify re-surface throttle marker was not recorded"
   [ ! -e "$state/.stale-since-$key" ] || fail "a done-pending-verify re-surface must not use the wedge timer"
-  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" 2>/dev/null || fail "drain after the done-pending-verify re-surface failed"
+  drain_bounded "$state" > "$drain_out" 2>/dev/null || fail "drain after the done-pending-verify re-surface failed"
   grep "$(printf '\tstale\t')" "$drain_out" | grep -F "$window" >/dev/null || fail "done-pending-verify re-surface was not queued"
   pass "a done-pending-verify wait is absorbed on first sight, then re-surfaced as a verification recheck past the threshold, never wedge-escalated"
 }
@@ -2372,7 +2388,7 @@ test_exited_declared_pause_is_bounded_but_live_gate_surfaces() {
       reap "$pid"
       fail "dead-agent watcher round $round timed out before completing a poll cycle"
     else
-      wait "$pid" || fail "dead-agent watcher round $round failed"
+      wait_for_exit "$pid" 10 || fail "dead-agent watcher round $round failed"
     fi
     round=$((round + 1))
   done
@@ -3501,7 +3517,7 @@ SH
     ack_stopped_cycle "$state" || fail "could not acknowledge the intentional re-arm $round stop"
     round=$((round + 1))
   done
-  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" 2>/dev/null || true
+  drain_bounded "$state" > "$drain_out" 2>/dev/null || true
   grep "$(printf '\tstale\t')" "$drain_out" >/dev/null \
     && fail "the silent re-arms still queued a stale row for the standing declaration: $(cat "$drain_out")"
   pass "away mode wakes the daemon once per declaration for a busy pane whose footer ticks on every capture"
@@ -3574,7 +3590,7 @@ test_nonterminal_stale_repairs_missing_or_corrupt_timer() {
   pid=$!
   wait_numeric_file "$state/.stale-since-$key" 30 || { reap "$pid"; fail "matching stale suppressor with missing timer did not initialize stale-since"; }
   if ! kill -0 "$pid" 2>/dev/null; then
-    wait "$pid" 2>/dev/null || true
+    wait_for_exit "$pid" 10 2>/dev/null || true
     fail "watcher exited while repairing a missing stale-since timer: $(cat "$out")"
   fi
   [ ! -s "$state/.wake-queue" ] || { reap "$pid"; fail "missing stale-since repair enqueued a wake"; }
@@ -3667,7 +3683,7 @@ test_wedge_escalation_deferred_while_worktree_is_written() {
   [ "$(cat "$state/.wedge-escalations-$key" 2>/dev/null || true)" = 1 ] || fail "the stalled-crew escalation was not counted"
   [ ! -e "$state/.stale-since-$key" ] || fail "the idle timer was not cleared after a real escalation"
   [ ! -e "$state/.writing-since-$key" ] || fail "the write-deferral chain outlived a real escalation"
-  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" 2>/dev/null || fail "drain after the stalled-crew escalation failed"
+  drain_bounded "$state" > "$drain_out" 2>/dev/null || fail "drain after the stalled-crew escalation failed"
   grep "$(printf '\tstale\t')" "$drain_out" | grep -F "$window" >/dev/null || fail "the stalled-crew escalation was not queued"
   pass "a quiet pane writing its own worktree is deferred, while one writing nothing still wedge-escalates on the unchanged schedule"
 }
@@ -3710,7 +3726,7 @@ test_write_deferral_resurfaces_on_the_bounded_cadence() {
   grep -F "possible wedge" "$out" >/dev/null && fail "a write-deferral recheck was mislabeled a possible wedge"
   [ -e "$state/.writing-resurfaced-$key" ] || fail "the write-deferral re-surface throttle marker was not recorded"
   [ ! -e "$state/.wedge-escalations-$key" ] || fail "a write-deferral recheck advanced the wedge escalation counter"
-  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" 2>/dev/null || fail "drain after the write-deferral recheck failed"
+  drain_bounded "$state" > "$drain_out" 2>/dev/null || fail "drain after the write-deferral recheck failed"
   grep "$(printf '\tstale\t')" "$drain_out" | grep -F "$window" >/dev/null || fail "the write-deferral recheck was not queued"
   pass "a write deferral re-surfaces once on the bounded pause cadence, so a churning worktree cannot stay invisible"
 }
@@ -3759,7 +3775,7 @@ test_secondmate_home_supervision_churn_is_not_write_evidence() {
   grep -F "possible wedge" "$out" >/dev/null || fail "the mate-home escalation did not flag a possible wedge"
   [ ! -e "$state/.writing-since-$key" ] || fail "a mate's provisioned home was probed as if it were a code tree"
   [ "$(cat "$state/.wedge-escalations-$key" 2>/dev/null || true)" = 1 ] || fail "the mate escalation was not counted"
-  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" 2>/dev/null || fail "drain after the mate escalation failed"
+  drain_bounded "$state" > "$drain_out" 2>/dev/null || fail "drain after the mate escalation failed"
   grep "$(printf '\tstale\t')" "$drain_out" | grep -F "$window" >/dev/null || fail "the mate escalation was not queued"
   pass "a secondmate's own home supervision churn is not crew write evidence, so a pane recording that home keeps the unchanged escalation schedule"
 }
@@ -4007,7 +4023,7 @@ test_procevent_captured_result_surfaces_proactively() {
     '. "$1/bin/fm-wake-lib.sh"; fm_path_age "$2"' _ "$ROOT" "$state/.last-watcher-beat")
   [ "$beacon_age" -lt 60 ] || fail "the surfacing watcher was not a healthy one (beacon age ${beacon_age}s)"
 
-  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" 2>/dev/null || fail "drain after the process-event wake failed"
+  drain_bounded "$state" > "$drain_out" 2>/dev/null || fail "drain after the process-event wake failed"
   grep "$(printf '\tcheck\t')" "$drain_out" | grep -F "procevent lavish delivery-src 1" >/dev/null \
     || fail "the process-event result was not queued for the drain that follows the wake"
   pass "a captured process-event result wakes a healthy watcher proactively, with no manual drain"
@@ -4022,7 +4038,7 @@ test_procevent_unacknowledged_result_redrains_until_handled() {
   procevent_watch_bg "$dir" "$out"
   pid=$!
   wait_for_exit "$pid" 100 || fail "the first proactive wake never happened: $(cat "$out")"
-  FM_STATE_OVERRIDE="$state" "$DRAIN" >/dev/null 2>&1 || fail "drain after the first process-event wake failed"
+  drain_bounded "$state" >/dev/null 2>&1 || fail "drain after the first process-event wake failed"
 
   # An interrupted handler leaves the captured result durable. The successor
   # must re-surface it through recovery, then its drain must print the same row.
@@ -4033,7 +4049,7 @@ test_procevent_unacknowledged_result_redrains_until_handled() {
     || fail "an unacknowledged process-event result was not re-surfaced on re-arm: $(cat "$out")"
   grep -F 'check: rearm-resurface' "$out" >/dev/null \
     || fail "the successor did not report recovery for the unacknowledged result: $(cat "$out")"
-  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$replay_out" 2> "$replay_err" \
+  drain_bounded "$state" > "$replay_out" 2> "$replay_err" \
     || fail "the successor could not re-drain the unacknowledged process-event result"
   grep "$(printf '\tcheck\t')" "$replay_out" | grep -F 'procevent lavish delivery-src 1' >/dev/null \
     || fail "the successor drain did not re-print the durable process-event row"
@@ -4043,7 +4059,7 @@ test_procevent_unacknowledged_result_redrains_until_handled() {
   generation=$(sed -n 's/^WAKE_ACK_REQUIRED:.*--ack-through [0-9][0-9]* --recovery-generation \([A-Za-z0-9._-][A-Za-z0-9._-]*\)$/\1/p' "$replay_err")
   [ -n "$sequence" ] && [ -n "$generation" ] \
     || fail "the replay drain omitted its post-handling acknowledgement boundary"
-  FM_STATE_OVERRIDE="$state" "$DRAIN" --ack-through "$sequence" --recovery-generation "$generation" \
+  drain_bounded "$state" --ack-through "$sequence" --recovery-generation "$generation" \
     || fail "completed process-event handling could not acknowledge the replay"
   [ ! -s "$state/.wake-queue" ] || fail "acknowledged process-event replay remained durable"
 
@@ -4072,7 +4088,7 @@ test_procevent_marker_keys_are_injective() {
   grep -F "procevent:a_b:1" "$out" >/dev/null || fail "the underscored queue key was suppressed"
   marker_count=$(find "$state" -maxdepth 1 -name '.seen-procevent-*' -type f | awk 'END { print NR + 0 }')
   [ "$marker_count" = 2 ] || fail "distinct queue keys produced $marker_count seen markers"
-  FM_STATE_OVERRIDE="$state" "$DRAIN" >/dev/null 2>&1 || fail "marker identity fixture drain failed"
+  drain_bounded "$state" >/dev/null 2>&1 || fail "marker identity fixture drain failed"
   pass "complete process-event queue keys map to distinct seen markers"
 }
 
@@ -4111,13 +4127,13 @@ test_procevent_surface_serializes_with_drain() {
     procevent_watch_bg "$dir" "$out"
   pid=$!
   wait_numeric_file "$ready" 100 || fail "the watcher never reached its marker commit boundary"
-  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" &
+  drain_bounded "$state" > "$drain_out" &
   drain_pid=$!
   wait_live "$drain_pid" 10 || fail "a concurrent drain split the surfacing transition"
   [ -s "$state/.wake-queue" ] || fail "the concurrent drain consumed the record before marker commit"
   touch "$release"
-  wait "$pid" || fail "the paused watcher did not finish surfacing"
-  wait "$drain_pid" || fail "the concurrent drain failed after surfacing committed"
+  wait_for_exit "$pid" 100 || fail "the paused watcher did not finish surfacing"
+  wait_for_exit "$drain_pid" "$FM_TEST_DRAIN_WAIT_LIMIT_TICKS" || fail "the concurrent drain failed after surfacing committed"
   grep -F "procevent:drain-race:1" "$drain_out" >/dev/null \
     || fail "the serialized drain lost the process-event record"
   pass "queue revalidation, proactive output, and marker commit serialize with drain"
@@ -4133,7 +4149,7 @@ test_procevent_surface_crash_boundaries() {
     FM_CREW_STATE_BIN="$dir/fakebin/fm-crew-state.sh" FM_POLL=0.2 FM_SIGNAL_GRACE=1 \
     FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$fifo" &
   pid=$!
-  wait "$reader" || true
+  wait_for_exit "$reader" 100 || true
   wait_for_exit "$pid" 100
   exit_status=$?
   [ "$exit_status" -ne 124 ] || fail "the watcher survived a failed actionable output write"
@@ -4174,7 +4190,7 @@ test_procevent_surface_crash_boundaries() {
   grep -F 'check: rearm-resurface' "$out.replay" >/dev/null \
     || fail "the successor did not recover the delivered-but-unacknowledged record: $(cat "$out.replay")"
   replay_err="$out.replay.err"
-  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out.replay.drain" 2> "$replay_err" \
+  drain_bounded "$state" > "$out.replay.drain" 2> "$replay_err" \
     || fail "post-marker successor drain failed"
   grep "$(printf '\tcheck\t')" "$out.replay.drain" | grep -F 'procevent fixture after-marker 1' >/dev/null \
     || fail "post-marker successor did not re-drain the durable record"
@@ -4182,7 +4198,7 @@ test_procevent_surface_crash_boundaries() {
   generation=$(sed -n 's/^WAKE_ACK_REQUIRED:.*--ack-through [0-9][0-9]* --recovery-generation \([A-Za-z0-9._-][A-Za-z0-9._-]*\)$/\1/p' "$replay_err")
   [ -n "$sequence" ] && [ -n "$generation" ] \
     || fail "post-marker replay omitted its post-handling acknowledgement boundary"
-  FM_STATE_OVERRIDE="$state" "$DRAIN" --ack-through "$sequence" --recovery-generation "$generation" \
+  drain_bounded "$state" --ack-through "$sequence" --recovery-generation "$generation" \
     || fail "post-marker replay acknowledgement failed"
   [ ! -s "$state/.wake-queue" ] || fail "post-marker acknowledgement left the durable record queued"
   pass "surfacing failures replay until post-handling acknowledgement"
@@ -4207,7 +4223,7 @@ test_procevent_marker_failure_exits_and_replays() {
   wait_for_exit "$pid" 100 || fail "marker failure did not leave the durable record replayable"
   grep -F "procevent:marker-failure:1" "$out.replay" >/dev/null \
     || fail "marker failure lost the later proactive replay"
-  FM_STATE_OVERRIDE="$state" "$DRAIN" >/dev/null 2>&1 || fail "marker-failure fixture drain failed"
+  drain_bounded "$state" >/dev/null 2>&1 || fail "marker-failure fixture drain failed"
   pass "marker failure exits through the shared wake owner, releases its lock, and replays later"
 }
 
@@ -4284,7 +4300,7 @@ test_heartbeat_backstop_surfaces_unsurfaced_status() {
   [ "$(status_presentation_marker_offset "$state/.hb-surfaced-miss" "$state/miss.status")" = \
     "$(size_of "$state/miss.status")" ] \
     || fail "backstop did not record the status as surfaced through its end (would re-fire next heartbeat)"
-  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" 2>/dev/null || fail "drain after the backstop heartbeat failed"
+  drain_bounded "$state" > "$drain_out" 2>/dev/null || fail "drain after the backstop heartbeat failed"
   grep "$(printf '\theartbeat\t')" "$drain_out" >/dev/null || fail "backstop heartbeat was not queued"
   pass "heartbeat backstop fail-safe surfaces a captain-relevant status the per-wake path missed"
 }
@@ -4356,7 +4372,7 @@ test_afk_present_reverts_watcher_to_one_shot() {
   pid=$!
   wait_for_exit "$pid" 100 || fail "with .afk present the watcher did not exit one-shot for a benign signal"
   grep -F "signal: $status_file" "$out" >/dev/null || fail "afk-mode watcher did not surface the signal for the daemon"
-  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" 2>/dev/null || fail "drain after the afk-mode signal failed"
+  drain_bounded "$state" > "$drain_out" 2>/dev/null || fail "drain after the afk-mode signal failed"
   grep "$(printf '\tsignal\t')" "$drain_out" | grep -F "$status_file" >/dev/null \
     || fail "afk-mode benign signal was not queued for the daemon to classify"
   pass "with .afk present the watcher reverts to one-shot so the daemon owns triage (no double-triage)"
@@ -4392,7 +4408,7 @@ test_afk_paused_changed_pane_hands_off_plain_stale() {
   grep -Fx "stale: $window" "$out" >/dev/null || fail "AFK paused stale did not preserve its plain window identity: $(cat "$out")"
   grep -F "awaiting external" "$out" >/dev/null && fail "AFK watcher decorated a stale identity instead of handing it to the daemon"
   [ ! -e "$state/.paused-$key" ] || fail "AFK watcher recorded normal-mode pause tracking instead of handing off"
-  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" 2>/dev/null || fail "drain after AFK paused stale failed"
+  drain_bounded "$state" > "$drain_out" 2>/dev/null || fail "drain after AFK paused stale failed"
   grep "$(printf '\tstale\t')" "$drain_out" | grep -F "stale: $window" >/dev/null \
     || fail "AFK paused stale was not queued with the plain window identity"
   pass "AFK changed paused panes hand off plain stale identities for daemon-owned pause triage"

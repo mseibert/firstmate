@@ -296,7 +296,40 @@ SH
   printf '%s\n' "$dir"
 }
 
-wait_for_exit() {
+# Wait up to <limit> 0.1s ticks for <pid> to stop being a live process, then
+# SIGKILL it and give it a short bounded grace. Returns 0 once it is gone (a
+# zombie counts as gone and is reaped here), 124 when the cap was hit. Every
+# path is polled, so even the post-SIGKILL cleanup cannot reintroduce an
+# unbounded `wait`.
+wait_pid_bounded() {  # <pid> <limit-ticks>
+  local pid=$1 limit=$2 i=0
+  while [ "$i" -lt "$limit" ]; do
+    if ! is_live_non_zombie "$pid"; then
+      wait "$pid" 2>/dev/null || true
+      return 0
+    fi
+    sleep 0.1
+    i=$((i + 1))
+  done
+  kill -KILL "$pid" 2>/dev/null || true
+  i=0
+  while [ "$i" -lt 50 ]; do
+    if ! is_live_non_zombie "$pid"; then
+      wait "$pid" 2>/dev/null || true
+      return 124
+    fi
+    sleep 0.1
+    i=$((i + 1))
+  done
+  return 124
+}
+
+# Wait up to <limit> ticks for <pid> to exit on its own, preserving its exit
+# status. A process still alive at the cap is SIGTERMed, given the same bounded
+# grace wait_pid_bounded gives, then SIGKILLed; a cap hit always returns 124, so
+# a watcher that defers SIGTERM fails the caller's assertion by name instead of
+# blocking the suite in an unbounded `wait`.
+wait_for_exit() {  # <pid> [limit-ticks]
   local pid=$1 limit=${2:-50} i=0
   while [ "$i" -lt "$limit" ]; do
     if ! is_live_non_zombie "$pid"; then
@@ -307,7 +340,7 @@ wait_for_exit() {
     i=$((i + 1))
   done
   kill "$pid" 2>/dev/null || true
-  wait "$pid" 2>/dev/null || true
+  wait_pid_bounded "$pid" 50
   return 124
 }
 
