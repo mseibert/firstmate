@@ -27,16 +27,38 @@ DRAIN="$ROOT/bin/fm-wake-drain.sh"
 
 TMP_ROOT=$(fm_test_tmproot fm-watch-triage-tests)
 
-ack_stopped_cycle() {  # <state>
-  local state=$1 err sequence generation
+# The suite's two historically unbounded waits, now bounded. reap's `kill`+`wait`
+# and ack_stopped_cycle's fm-wake-drain.sh runs stalled the 2026-09 serial shard
+# through a single 1000.9s gap inside test_stale_terminal_status_overridden_by_active_run,
+# which consumed the job cap and surfaced as a cancellation instead of a located
+# failure. The tick budget matches the suite's other bounded waits (wait_poll_cycle
+# 300, wait_for_exit 100); both are overridable so the regression case can
+# exercise a cap quickly.
+FM_TEST_REAP_LIMIT_TICKS=${FM_TEST_REAP_LIMIT_TICKS:-100}
+FM_TEST_DRAIN_LIMIT_SECS=${FM_TEST_DRAIN_LIMIT_SECS:-30}
+
+ack_stopped_cycle() {  # <state> [drain-command]
+  local state=$1 drain=${2:-$DRAIN} err sequence generation rc
   err="$state/.test-cycle-drain.err"
-  FM_STATE_OVERRIDE="$state" "$DRAIN" >/dev/null 2> "$err" || return 1
+  fm_run_timed "$FM_TEST_DRAIN_LIMIT_SECS" env FM_STATE_OVERRIDE="$state" "$drain" \
+    >/dev/null 2> "$err"
+  rc=$?
+  if [ "$rc" -eq 124 ]; then
+    rm -f "$err"
+    fail "ack_stopped_cycle: fm-wake-drain.sh exceeded its ${FM_TEST_DRAIN_LIMIT_SECS}s bound and was terminated; a hung drain fails by name instead of blocking the shard"
+  fi
+  [ "$rc" -eq 0 ] || { rm -f "$err"; return 1; }
   sequence=$(sed -n 's/^WAKE_ACK_REQUIRED:.*--ack-through \([0-9][0-9]*\) --recovery-generation [A-Za-z0-9._-][A-Za-z0-9._-]*$/\1/p' "$err")
   generation=$(sed -n 's/^WAKE_ACK_REQUIRED:.*--ack-through [0-9][0-9]* --recovery-generation \([A-Za-z0-9._-][A-Za-z0-9._-]*\)$/\1/p' "$err")
   rm -f "$err"
   [ -n "$sequence" ] && [ -n "$generation" ] || return 1
-  FM_STATE_OVERRIDE="$state" "$DRAIN" --ack-through "$sequence" \
-    --recovery-generation "$generation"
+  fm_run_timed "$FM_TEST_DRAIN_LIMIT_SECS" env FM_STATE_OVERRIDE="$state" "$drain" \
+    --ack-through "$sequence" --recovery-generation "$generation"
+  rc=$?
+  if [ "$rc" -eq 124 ]; then
+    fail "ack_stopped_cycle: the acknowledge run of fm-wake-drain.sh exceeded its ${FM_TEST_DRAIN_LIMIT_SECS}s bound and was terminated; a hung drain fails by name instead of blocking the shard"
+  fi
+  return "$rc"
 }
 
 # Common watcher knobs: tight poll/grace, no check or heartbeat cadence unless a
@@ -174,7 +196,43 @@ record_pi_busy() {  # <state-dir> <id>
     --source pi-ext --event agent-start
 }
 
-reap() { kill "$1" 2>/dev/null || true; wait "$1" 2>/dev/null || true; }
+# Wait up to <limit> 0.1s ticks for <pid> to stop being a live process, then
+# SIGKILL it and give it a short bounded grace. Returns 0 once it is gone (a
+# zombie counts as gone and is reaped here), 124 when the cap was hit. Every
+# path is polled, so even the post-SIGKILL cleanup cannot reintroduce the
+# unbounded `wait` this replaces.
+wait_pid_bounded() {  # <pid> <limit-ticks>
+  local pid=$1 limit=$2 i=0
+  while [ "$i" -lt "$limit" ]; do
+    if ! is_live_non_zombie "$pid"; then
+      wait "$pid" 2>/dev/null || true
+      return 0
+    fi
+    sleep 0.1
+    i=$((i + 1))
+  done
+  kill -KILL "$pid" 2>/dev/null || true
+  i=0
+  while [ "$i" -lt 50 ]; do
+    if ! is_live_non_zombie "$pid"; then
+      wait "$pid" 2>/dev/null || true
+      return 124
+    fi
+    sleep 0.1
+    i=$((i + 1))
+  done
+  return 124
+}
+
+# reap: stop a background watcher, bounded. SIGTERM first; a process still alive
+# after the named budget is SIGKILLed and the suite fails by name rather than
+# blocking forever in `wait` (the 2026-09 serial shard lost 1000.9s to exactly
+# that unbounded wait).
+reap() {  # <pid>
+  kill "$1" 2>/dev/null || true
+  wait_pid_bounded "$1" "$FM_TEST_REAP_LIMIT_TICKS" && return 0
+  fail "reap: pid $1 ignored SIGTERM for $(( (FM_TEST_REAP_LIMIT_TICKS + 9) / 10 ))s; SIGKILLed and failed as a bounded wait instead of blocking the shard"
+}
 
 # --- pure classifier predicates (fm-classify-lib.sh) ------------------------
 
@@ -1854,6 +1912,64 @@ test_terminal_stale_surfaced() {
   FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" 2>/dev/null || fail "drain after the terminal stale failed"
   grep "$(printf '\tstale\t')" "$drain_out" | grep -F "$window" >/dev/null || fail "terminal stale was not queued"
   pass "a stale pane sitting on a terminal status is surfaced (queue + exit)"
+}
+
+# --- bounded waits: a hung wait fails by name in bounded time ---------------
+# Regression for the 2026-09 serial-shard cancellation: a single 1000.9s gap
+# inside test_stale_terminal_status_overridden_by_active_run was spent in reap's
+# unbounded `wait` and ack_stopped_cycle's unbounded fm-wake-drain.sh runs, and
+# pushed the shard into its job cap where it surfaced as a cancellation instead
+# of a located failure. Both sides are pinned here: a well-behaved process is
+# still stopped promptly, and a SIGTERM-ignoring process or a hanging drain hits
+# its named cap instead of blocking the suite.
+test_hung_waits_are_bounded() {
+  local dir state err rc victim start elapsed
+  dir=$(make_case hung-waits-bounded); state="$dir/state"
+  err="$dir/hung-wait.err"
+
+  # Normal side: reap stops a well-behaved process promptly and reaps it.
+  sleep 300 &
+  victim=$!
+  start=$(date +%s)
+  reap "$victim"
+  elapsed=$(( $(date +%s) - start ))
+  [ "$elapsed" -le 2 ] || fail "reap took ${elapsed}s to stop a SIGTERM-responsive process"
+  is_live_non_zombie "$victim" && fail "reap reported success while the process was still alive"
+
+  # Hung side: a SIGTERM-ignoring process must hit the cap in bounded time,
+  # come out dead, and fail by name rather than block the suite.
+  ( trap '' TERM; exec sleep 300 ) &
+  victim=$!
+  start=$(date +%s)
+  wait_pid_bounded "$victim" 5
+  rc=$?
+  elapsed=$(( $(date +%s) - start ))
+  [ "$rc" -eq 124 ] || fail "bounded wait returned $rc instead of its cap code for a SIGTERM-ignoring process"
+  [ "$elapsed" -le 5 ] || fail "bounded wait took ${elapsed}s despite a 0.5s cap"
+  is_live_non_zombie "$victim" && fail "bounded wait did not terminate the SIGTERM-ignoring process"
+  wait "$victim" 2>/dev/null || true
+
+  # reap must turn its cap hit into a named failure. The probe runs in a
+  # subshell so its fail() ends the probe, not this suite.
+  ( trap '' TERM; exec sleep 300 ) &
+  victim=$!
+  ( FM_TEST_REAP_LIMIT_TICKS=5; reap "$victim" ) 2> "$err"
+  rc=$?
+  [ "$rc" -ne 0 ] || fail "reap accepted a process that ignored SIGTERM"
+  grep -F "reap: pid $victim" "$err" >/dev/null || fail "reap's bounded failure did not name the hung pid: $(cat "$err")"
+  is_live_non_zombie "$victim" && fail "reap left the SIGTERM-ignoring process running"
+  wait "$victim" 2>/dev/null || true
+
+  # ack_stopped_cycle must bound each drain run: a hanging drain ends as a
+  # named failure instead of blocking the shard.
+  printf '#!/usr/bin/env bash\ntrap "" TERM\nexec sleep 300\n' > "$dir/hanging-drain.sh"
+  chmod +x "$dir/hanging-drain.sh"
+  ( FM_TEST_DRAIN_LIMIT_SECS=1; ack_stopped_cycle "$state" "$dir/hanging-drain.sh" ) 2> "$err"
+  rc=$?
+  [ "$rc" -ne 0 ] || fail "ack_stopped_cycle accepted a hanging drain"
+  grep -F "exceeded its 1s bound" "$err" >/dev/null || fail "ack_stopped_cycle's bounded failure did not name the bound: $(cat "$err")"
+
+  pass "a hung wait is bounded and named instead of blocking the shard into a cancellation"
 }
 
 # --- stale pane, STALE terminal status overridden by an active run: absorbed ---
@@ -4336,6 +4452,7 @@ test_routine_appends_after_a_classified_event_stay_absorbed
 test_unreadable_status_reports_once_per_file_state
 test_permission_recovery_surfaces_preserved_status
 test_terminal_stale_surfaced
+test_hung_waits_are_bounded
 test_stale_terminal_status_overridden_by_active_run
 test_nonterminal_stale_provably_working_absorbed_then_escalated
 test_wedge_escalation_marks_demand_deep_inspection_after_threshold
