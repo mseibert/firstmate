@@ -1,0 +1,12 @@
+Consumer check: bin/fm-crew-state.sh reads a status-log done line over an active
+ci-monitoring run-step. Harness: helper definitions extracted from
+tests/fm-crew-state.test.sh (lines 1-2255) plus the three invocations below.
+The new red-CI done line must not be read as CI-ready/green; the two green notes
+are controls showing the existing CI-ready behavior is unchanged.
+
+--- red-CI done note over a ci-monitoring run ---
+state: working · source: run-step · validating (running)
+--- green-CI done note over a ci-monitoring run (control) ---
+state: done · source: status-log · PR https://github.com/o/r/pull/2 checks green · run still monitoring PR
+--- green-with-unclean-comment note over a ci-monitoring run (control) ---
+state: done · source: status-log · PR https://github.com/o/r/pull/2 checks green - five-lens comment: 1 finding open - see maintainability-review · run still monitoring PR

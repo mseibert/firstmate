@@ -1,0 +1,25 @@
+Validation transcript for the no-mistakes five-lens DOD contract (target 1bdf70a)
+Generated: 2026-09-15T06:23:07Z
+
+== 1. Targeted behavior test: tests/fm-brief.test.sh ==
+command: bash tests/fm-brief.test.sh   (exit=0)
+full output: fm-brief-test-output.txt
+ok - fm-brief.sh: no-mistakes DOD keeps its apostrophe prose and bans --yes outright
+ok - fm-brief.sh: direct-PR DOD makes the Five-lens gate block mandatory in the PR body
+ok - fm-brief.sh: no-mistakes DOD posts the Five-lens gate as a designated PR comment
+
+== 2. direct-PR and local-only DOD byte-identity vs pre-fix c527187 ==
+fm_five_lens_gate_block: byte-identical
+fm_dod_block direct-PR: byte-identical
+fm_dod_block local-only: byte-identical
+
+== 3. Shared helper: single trailing newline, set -e safe, heading placement ==
+0000000   p   o   r   t       -       s   e   e       <   l   e   n   s
+0000020   >   `   .  \n
+0000024
+set -e, with heading: exit 0
+set -e, without between: exit 0
+
+== 4. Real generated brief: bin/fm-brief.sh <id> some-proj --mode no-mistakes ==
+artifact: no-mistakes-dod-section.md (Definition of done section of the generated brief)
+comment title / final head / order / Result / no-merge / policy-honesty / red-CI clauses present in the generated artifact.
