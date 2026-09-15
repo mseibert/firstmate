@@ -136,7 +136,19 @@ case "${1:-} ${2:-}" in
       */pulls/*) cat "$fixed/tea-pull.json" ;;
       */git/commits/*) cat "$fixed/tea-commit.json" ;;
       */commits/*/status) cat "$fixed/tea-status.json" ;;
-      */issues/*/comments) cat "$fixed/tea-comments.json" ;;
+      */issues/*/comments*)
+        page=1
+        case "$2" in
+          *page=*) page=${2##*page=}; page=${page%%&*} ;;
+        esac
+        if [ -f "$fixed/tea-comments-page$page.json" ]; then
+          cat "$fixed/tea-comments-page$page.json"
+        elif [ -f "$fixed/tea-comments.json" ]; then
+          cat "$fixed/tea-comments.json"
+        else
+          printf '[]\n'
+        fi
+        ;;
       */raw/*)
         ref=${2##*ref=}
         path=${2#*/raw/}
@@ -1587,8 +1599,11 @@ Ergebnis: 1 Finding behoben, 0 offen
   out=$(report_case "$dir" "$NOW_LATE")
   assert_contains "$out" $'t1\tdue\tready' "a behoben-summary count was held as an open finding"
 
-  # Open and left counts still hold; the remain count is pinned above.
-  for phrase in 'Result: 2 findings open' 'Result: 2 findings left'; do
+  # Open, left, and remainder-adjective counts still hold; the remain count is
+  # pinned above and the fixed count is exempt.
+  for phrase in 'Result: 2 findings open' 'Result: 2 findings left' \
+    'Result: 2 findings fixed, 1 remaining' 'Result: 2 findings fixed, 1 unresolved' \
+    'Result: 2 findings fixed, 1 outstanding'; do
     dir=$(make_case "gate-table-count-$(printf '%s' "$phrase" | tr -c 'a-z0-9' '-')")
     write_policy "$dir" programmieren-community
     write_meta "$dir" t1 "https://forgejo.example/seibert.group/programmieren-community/pulls/365" programmieren-community
@@ -1764,6 +1779,23 @@ Result: 1 finding open - see code-review'
   gh_set_five_lens_comment "$dir" "$clean_comment" "Findings and fixes from 5-lenses-review" "intruder"
   out=$(report_case "$dir" "$NOW_LATE")
   assert_contains "$out" "hard-stop-1" "a foreign-authored comment cleared hard stop 1 on GitHub"
+
+  # The designated comment beyond the first API page is still found: 50 first-page
+  # comments push the operator's clean comment onto page 2.
+  dir=$(make_case nm-comment-paged)
+  write_policy "$dir" programmieren-community
+  write_meta "$dir" t1 "https://forgejo.example/seibert.group/programmieren-community/pulls/365" programmieren-community no-mistakes
+  tea_green "$dir"
+  tea_set_body "$dir" "Pipeline-opened body without a gate block."
+  jq -n --arg time "$VERDICT_TIME" \
+    '[range(0; 49) | {user: {login: "someone"}, updated_at: $time, body: "chatter"}]
+     + [{user: {login: "seibert-pr-agent"}, updated_at: $time, body: "Reviewed this pull request - **Good to merge (LGTM).**\n<!-- crabd:tracking -->"}]' \
+    > "$dir/fix/tea-comments-page1.json"
+  jq -n --arg time "$VERDICT_TIME" --arg body "$clean_comment" \
+    '[{user: {login: "op"}, updated_at: $time, body: ("Findings and fixes from 5-lenses-review\n\n" + $body)}]' \
+    > "$dir/fix/tea-comments-page2.json"
+  out=$(report_case "$dir" "$NOW_LATE")
+  assert_contains "$out" $'t1\tdue\tready' "the designated comment beyond the first page was not read"
 
   # The direct-PR body path is unchanged: its own clean block still passes, its
   # own open block is never rescued by a clean comment, and a body without a

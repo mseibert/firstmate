@@ -63,9 +63,10 @@
 # (`clean`, `passed`/`pass`, or a `kein`/`no blocker` entry); any other wording,
 # or a line naming an open finding, trips the stop; an `open`/`offen` word (or
 # its German inflections) is a finding unless negated within its own clause or
-# result cell, and a positive count before `finding(s)`/`remain(s)` is a
-# finding unless the count is immediately qualified as fixed, closed, resolved,
-# or behoben. The evidence is read from the PR body and, when the task's mode
+# result cell, and a positive count before a remainder word (`finding(s)`,
+# `remain(s)`, `remaining`, `left`, `unresolved`, `outstanding`) is a finding
+# unless the count is immediately qualified as fixed, closed, resolved, or
+# behoben. The evidence is read from the PR body and, when the task's mode
 # no-mistakes or the body carries no gate block, from the newest exact-titled
 # comment of the authenticated operator; a clean read from either source
 # passes, and an unreadable, untitled, or foreign-authored comment is never
@@ -443,11 +444,12 @@ FIVE_LENS_COMMENT_TITLE='Findings and fixes from 5-lenses-review'
 # `open`/`offen` word, including the German inflections `offene`/`offenen`/
 # `offener`/`offenes`, counts only when no negation in the same clause or
 # result cell reaches it across punctuation or a positive count, and a positive
-# count before `finding(s)`/`remain(s)` counts as well unless the count is
-# immediately qualified as fixed, closed, resolved, or behoben. So `no finding
-# remains open`, `0 open findings`, and `2 findings fixed` are clean verdicts,
-# while `1 open finding`, `2 offen`, `2 findings remain`, and
-# `2 offene Findings` name one.
+# count before `finding(s)`/`remain(s)`/`remaining`/`left`/`unresolved`/
+# `outstanding` counts as well unless the count is immediately qualified as
+# fixed, closed, resolved, or behoben. So `no finding remains open`, `0 open
+# findings`, and `2 findings fixed` are clean verdicts, while `1 open finding`,
+# `2 offen`, `2 findings remain`, `2 offene Findings`, and `2 findings fixed,
+# 1 remaining` name one.
 names_open_finding() {
   printf '%s\n' "$1" \
     | grep -Eiq 'nicht[ -]?clean|not[[:space:]]+clean|findings?[[:space:]]*:[[:space:]]*[1-9][0-9]*' \
@@ -460,6 +462,8 @@ names_open_finding() {
         for (i = 1; i <= count; i++) {
           if (words[i] ~ /^[1-9][0-9]*$/ \
             && (words[i + 1] == "remain" || words[i + 1] == "remains" \
+              || words[i + 1] == "remaining" || words[i + 1] == "left" \
+              || words[i + 1] == "unresolved" || words[i + 1] == "outstanding" \
               || ((words[i + 1] == "finding" || words[i + 1] == "findings") \
                 && words[i + 2] != "fixed" && words[i + 2] != "closed" \
                 && words[i + 2] != "resolved" && words[i + 2] != "behoben"))) {
@@ -976,12 +980,27 @@ forgejo_verdict_read() {
 }
 
 forgejo_five_lens_comment_read() {
-  local comments
-  comments=$(tea_read "/repos/$PR_PATH/issues/$PR_NUMBER/comments") || {
-    PR_FIVE_LENS_COMMENT=
-    return 0
-  }
-  PR_FIVE_LENS_COMMENT=$(five_lens_comment_pick "$comments" "$OP_LOGIN")
+  local page=1 page_json page_count comments='[]'
+  while [ "$page" -le "$FILE_PAGE_MAX" ]; do
+    page_json=$(tea_read "/repos/$PR_PATH/issues/$PR_NUMBER/comments?limit=$FILE_PAGE_LIMIT&page=$page") || {
+      PR_FIVE_LENS_COMMENT=
+      return 0
+    }
+    page_count=$(printf '%s' "$page_json" | jq -r 'if type == "array" then length else error("not a comment array") end' 2>/dev/null) || {
+      PR_FIVE_LENS_COMMENT=
+      return 0
+    }
+    comments=$(printf '%s\n%s\n' "$comments" "$page_json" | jq -cs '.[0] + .[1]' 2>/dev/null) || {
+      PR_FIVE_LENS_COMMENT=
+      return 0
+    }
+    if [ "$page_count" -lt "$FILE_PAGE_LIMIT" ]; then
+      PR_FIVE_LENS_COMMENT=$(five_lens_comment_pick "$comments" "$OP_LOGIN")
+      return 0
+    fi
+    page=$((page + 1))
+  done
+  PR_FIVE_LENS_COMMENT=
 }
 
 forgejo_operator_login() {
