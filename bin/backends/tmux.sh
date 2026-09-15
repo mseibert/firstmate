@@ -60,6 +60,16 @@ fm_backend_tmux_send_text_submit() {  # <target> <text> <retries> <enter-sleep> 
   fm_tmux_submit_core "$@"
 }
 
+# fm_backend_tmux_session_ensure: ensure a detached session named <session>
+# exists, creating it when it is exactly absent. The exact-match target keeps
+# a longer-named sibling from standing in for the recorded session; returns
+# nonzero when the session cannot be established.
+fm_backend_tmux_session_ensure() {  # <session>
+  local session=$1
+  tmux has-session -t "=$session" 2>/dev/null && return 0
+  tmux new-session -d -s "$session"
+}
+
 # fm_backend_tmux_container_ensure: reuse the current tmux session when
 # firstmate itself runs inside tmux, else ensure a dedicated detached
 # "firstmate" session exists. Mirrors fm-spawn.sh's container-ensure block;
@@ -68,7 +78,7 @@ fm_backend_tmux_container_ensure() {
   if [ -n "${TMUX:-}" ]; then
     tmux display-message -p '#S'
   else
-    tmux has-session -t firstmate 2>/dev/null || tmux new-session -d -s firstmate
+    fm_backend_tmux_session_ensure firstmate
     printf 'firstmate'
   fi
 }
@@ -123,6 +133,25 @@ fm_backend_tmux_send_literal() {  # <target> <text>
   tmux send-keys -t "$1" -l "$2"
 }
 
+# fm_backend_tmux_exact_target: rewrite a tmux target into tmux's exact-match
+# form so prefix resolution can never answer for a gone session or window from
+# a longer-named neighbor. A session-qualified target gets `=` on both names;
+# window indices and the opaque @window/%pane ids are exact already, and a
+# target with no session qualifier is returned unchanged.
+fm_backend_tmux_exact_target() {  # <target>
+  local target=$1 session window
+  case "$target" in
+    *:*)
+      session=${target%%:*}
+      window=${target#*:}
+      printf '=%s:=%s' "${session#=}" "${window#=}"
+      ;;
+    *)
+      printf '%s' "$target"
+      ;;
+  esac
+}
+
 # fm_backend_tmux_kill: remove one explicitly named task window, best-effort.
 # Empty, omitted, and malformed targets return nonzero before invoking tmux so
 # tmux can never interpret an empty target as the caller's current window.
@@ -138,7 +167,7 @@ fm_backend_tmux_kill() {  # <target>
   case "$session:$window" in
     :*|*:|*:*:*) return 1 ;;
   esac
-  tmux kill-window -t "=$session:=$window" 2>/dev/null || true
+  tmux kill-window -t "$(fm_backend_tmux_exact_target "$session:$window")" 2>/dev/null || true
 }
 
 # fm_backend_tmux_current_command: <target>'s live foreground process name -
@@ -279,15 +308,12 @@ fm_backend_tmux_foreground_argv0s() {  # <target>
       done
 }
 
-# fm_backend_tmux_agent_state: recovery-grade harness-agent state for one
-# recorded target. See bin/fm-backend.sh's fm_backend_agent_state for the
-# shared state vocabulary and docs/tmux-backend.md "Agent liveness probe" for
-# the empirical basis. Tmux silently falls back to the active window when a
-# named target is absent, so the exact recorded window must appear in a
-# successful session inventory before its foreground command can be trusted.
-# An omitted window or a definitive missing-session/server response is
-# `missing`; any other inventory or pane read failure is `unreadable`, so a
-# transient tmux problem never licenses a duplicate.
+# fm_backend_tmux_pane_state: recovery-grade harness-agent state for a pane
+# the caller has already resolved exactly - a pane id from the session
+# inventory, or a session:window whose exact name fm_backend_tmux_agent_state
+# confirmed present. Split from the classifier so an inventory scan (the
+# relaunch reconcile) can classify a pane without re-deriving a window name
+# that a rename may have taken away.
 #
 # The verdict combines two independent name sources rather than trusting either
 # alone. Either source naming a verified harness is enough for `alive`, because
@@ -295,37 +321,9 @@ fm_backend_tmux_foreground_argv0s() {  # <target>
 # live worktree, while the foreground process group - when it is readable - is
 # authoritative for the negative verdicts, since it is the only source that can
 # distinguish a truly idle pane from a rewritten process title.
-fm_backend_tmux_agent_state() {  # <target>
-  local target=$1 comm session window windows inventory_status
+fm_backend_tmux_pane_state() {  # <target>
+  local target=$1 comm
   local foreground argv0s name pid fg_seen=0 fg_shell=0 fg_other=0
-  case "$target" in
-    *:*:*|'':*|*:'') printf 'unreadable'; return 0 ;;
-    *:*) ;;
-    *) printf 'unreadable'; return 0 ;;
-  esac
-  session=${target%%:*}
-  window=${target#*:}
-  if windows=$(LC_ALL=C tmux list-windows -t "$session" -F '#{window_name}' 2>&1); then
-    inventory_status=0
-  else
-    inventory_status=$?
-  fi
-  if [ "$inventory_status" -ne 0 ]; then
-    case "$windows" in
-      *"can't find session:"*|*"no server running on "*|*"error connecting to "*" (No such file or directory)"|*"error connecting to "*" (Connection refused)")
-        printf 'missing'
-        ;;
-      *)
-        printf 'unreadable'
-        ;;
-    esac
-    return 0
-  fi
-  if ! printf '%s\n' "$windows" | grep -Fqx "$window"; then
-    printf 'missing'
-    return 0
-  fi
-
   foreground=$(fm_backend_tmux_foreground_comms "$target")
   while IFS= read -r name; do
     [ -n "$name" ] || continue
@@ -402,6 +400,83 @@ EOF
     shell) printf 'dead' ;;
     *) printf 'ambiguous' ;;
   esac
+}
+
+# fm_backend_tmux_session_live_agent_in: does <session> already host an agent
+# that is anything but confidently agent-free in a pane whose working directory
+# is <worktree> or below it? A name-based `missing` verdict only proves the
+# recorded window NAME is absent, not that no agent owns the task: a renamed
+# window keeps its live agent and its worktree. The relaunch recreate arm asks
+# this before creating a replacement window and refuses on any answer except a
+# plain shell, because a duplicate agent is worse than a safe refusal.
+# A gone session (no server, or the recorded session itself missing) hosts no
+# agent and reports no live agent; a session whose panes cannot be read reports
+# a live agent, so an unreadable inventory refuses rather than duplicates.
+# Both paths compare physical directories, so a symlinked worktree cannot
+# present a pane path that merely looks foreign.
+fm_backend_tmux_session_live_agent_in() {  # <session> <worktree>
+  local session=$1 worktree=$2 panes pane path state resolved
+  worktree=$(cd "$worktree" 2>/dev/null && pwd -P) || worktree=$2
+  tmux has-session -t "=$session" 2>/dev/null || return 1
+  panes=$(tmux list-panes -s -t "=$session" -F '#{pane_id} #{pane_current_path}' 2>/dev/null) || return 0
+  while IFS=' ' read -r pane path; do
+    [ -n "$pane" ] || continue
+    resolved=$(cd "$path" 2>/dev/null && pwd -P) || resolved=$path
+    path=$resolved
+    case "$path" in
+      "$worktree"|"$worktree"/*) ;;
+      *) continue ;;
+    esac
+    state=$(fm_backend_tmux_pane_state "$pane")
+    case "$state" in
+      dead) ;;
+      *) return 0 ;;
+    esac
+  done <<EOF
+$panes
+EOF
+  return 1
+}
+
+# fm_backend_tmux_agent_state: recovery-grade harness-agent state for one
+# recorded target. See bin/fm-backend.sh's fm_backend_agent_state for the
+# shared state vocabulary and docs/tmux-backend.md "Agent liveness probe" for
+# the empirical basis. Tmux silently falls back to the active window when a
+# named target is absent, so the exact recorded window must appear in a
+# successful session inventory before its foreground command can be trusted.
+# An omitted window or a definitive missing-session/server response is
+# `missing`; any other inventory or pane read failure is `unreadable`, so a
+# transient tmux problem never licenses a duplicate.
+fm_backend_tmux_agent_state() {  # <target>
+  local target=$1 session window windows inventory_status
+  case "$target" in
+    *:*:*|'':*|*:'') printf 'unreadable'; return 0 ;;
+    *:*) ;;
+    *) printf 'unreadable'; return 0 ;;
+  esac
+  session=${target%%:*}
+  window=${target#*:}
+  if windows=$(LC_ALL=C tmux list-windows -t "$session" -F '#{window_name}' 2>&1); then
+    inventory_status=0
+  else
+    inventory_status=$?
+  fi
+  if [ "$inventory_status" -ne 0 ]; then
+    case "$windows" in
+      *"can't find session:"*|*"no server running on "*|*"error connecting to "*" (No such file or directory)"|*"error connecting to "*" (Connection refused)")
+        printf 'missing'
+        ;;
+      *)
+        printf 'unreadable'
+        ;;
+    esac
+    return 0
+  fi
+  if ! printf '%s\n' "$windows" | grep -Fqx "$window"; then
+    printf 'missing'
+    return 0
+  fi
+  fm_backend_tmux_pane_state "$target"
 }
 
 # Backward-compatible three-state view for callers that only need a yes/no

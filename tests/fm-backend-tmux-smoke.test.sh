@@ -35,6 +35,7 @@ trap cleanup_all EXIT
 cleanup_all() {
   "$REAL_TMUX" -L "$SOCKET" kill-server >/dev/null 2>&1 || true
   [ -n "${SHIM_DIR:-}" ] && rm -rf "$SHIM_DIR"
+  [ -n "${SCAN_ROOT:-}" ] && rm -rf "$SCAN_ROOT"
 }
 
 # A `tmux` shim on PATH that transparently redirects every call to the private
@@ -155,6 +156,95 @@ if fm_backend_tmux_resolve_bare_selector "no-such-window-xyz" 2>/dev/null; then
   fail "fm_backend_tmux_resolve_bare_selector should fail for a nonexistent window"
 fi
 pass "real tmux: fm_backend_tmux_resolve_bare_selector fails for a window that does not exist"
+
+# --- exact target existence (no prefix resolution) ---------------------------
+# tmux resolves session and window names by prefix, so a probe for a gone
+# `fm-abc` answers while a longer-named sibling `fm-abc-def` still exists.
+# fm_backend_target_exists must answer exactly for every target form.
+
+PREFIX_WINDOW="fm-prefix-abc-def"
+PREFIX_GONE="fm-prefix-abc"
+prefix_wid=$(fm_backend_tmux_create_task "$SESSION" "$PREFIX_WINDOW" "$HOME") \
+  || fail "could not create the prefix-sibling window"
+prefix_pane=$(tmux list-panes -t "$SESSION:$PREFIX_WINDOW" -F '#{pane_id}' | head -1)
+prefix_idx=$(tmux display-message -p -t "$SESSION:$PREFIX_WINDOW" '#{window_index}')
+[ -n "$prefix_pane" ] && [ -n "$prefix_idx" ] \
+  || fail "could not resolve the prefix-sibling window's index and pane id"
+
+if fm_backend_target_exists tmux "$SESSION:$PREFIX_GONE" "$PREFIX_GONE"; then
+  fail "fm_backend_target_exists resolved a gone window name through a longer-named sibling"
+fi
+fm_backend_target_exists tmux "$SESSION:$PREFIX_WINDOW" "$PREFIX_WINDOW" \
+  || fail "fm_backend_target_exists did not resolve an exact window name"
+fm_backend_target_exists tmux "$SESSION:$prefix_idx" "$PREFIX_WINDOW" \
+  || fail "fm_backend_target_exists did not resolve a window index"
+fm_backend_target_exists tmux "$SESSION:$prefix_wid" "$PREFIX_WINDOW" \
+  || fail "fm_backend_target_exists did not resolve a window id"
+fm_backend_target_exists tmux "$prefix_pane" "$PREFIX_WINDOW" \
+  || fail "fm_backend_target_exists did not resolve a bare pane id"
+fm_backend_target_exists tmux "$SESSION:$PREFIX_WINDOW.$prefix_pane" "$PREFIX_WINDOW" \
+  || fail "fm_backend_target_exists did not resolve a session:window.pane target"
+if fm_backend_target_exists tmux "smok:$PREFIX_WINDOW" "$PREFIX_WINDOW"; then
+  fail "fm_backend_target_exists resolved a session name through a longer-named session"
+fi
+pass "real tmux: fm_backend_target_exists resolves names, indices, ids, and panes exactly, never by prefix"
+
+# --- session ensure ----------------------------------------------------------
+# The missing-endpoint relaunch re-establishes a recorded session whose server
+# died. fm_backend_tmux_session_ensure must create that exact session, and must
+# not confuse a longer-named sibling for the requested name.
+
+RESTORED_SESSION="$SESSION-restored"
+if tmux has-session -t "=$RESTORED_SESSION" 2>/dev/null; then
+  fail "the session-ensure fixture session already exists"
+fi
+fm_backend_tmux_session_ensure "$RESTORED_SESSION" \
+  || fail "fm_backend_tmux_session_ensure did not create the missing session"
+tmux has-session -t "=$RESTORED_SESSION" \
+  || fail "fm_backend_tmux_session_ensure did not leave the created session resolvable"
+fm_backend_tmux_session_ensure "$SESSION-restor" \
+  || fail "fm_backend_tmux_session_ensure refused a session whose name is a prefix of an existing one"
+tmux has-session -t "=$SESSION-restor" \
+  || fail "fm_backend_tmux_session_ensure treated a longer-named session as the requested exact name"
+tmux has-session -t "=$RESTORED_SESSION" \
+  || fail "fm_backend_tmux_session_ensure disturbed the longer-named sibling session"
+pass "real tmux: fm_backend_tmux_session_ensure creates a missing session exactly"
+
+# --- session live-agent scan (the relaunch reconcile) ------------------------
+# A name-based `missing` verdict must not license a second agent while the
+# recorded session still runs one in the recorded worktree, so the scan must
+# find that agent, and must not mistake a plain shell or an agent in another
+# worktree for it.
+
+SCAN_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/fm-backend-scan.XXXXXX")
+AGENT_WT="$SCAN_ROOT/agent-wt"
+SHELL_WT="$SCAN_ROOT/shell-wt"
+OTHER_WT="$SCAN_ROOT/other-wt"
+mkdir -p "$AGENT_WT" "$SHELL_WT" "$OTHER_WT"
+AGENT_WINDOW="fm-scan-agent"
+SHELL_WINDOW="fm-scan-shell"
+fm_backend_tmux_create_task "$SESSION" "$AGENT_WINDOW" "$AGENT_WT" \
+  || fail "could not create the scan fixture's agent window"
+fm_backend_tmux_create_task "$SESSION" "$SHELL_WINDOW" "$SHELL_WT" \
+  || fail "could not create the scan fixture's shell window"
+fm_backend_tmux_send_text_line "$SESSION:$AGENT_WINDOW" "bash -c 'exec -a claude sleep 60'"
+AGENT_SEEN=false
+for _ in $(seq 1 100); do
+  if fm_backend_tmux_session_live_agent_in "$SESSION" "$AGENT_WT"; then
+    AGENT_SEEN=true
+    break
+  fi
+  sleep 0.1
+done
+[ "$AGENT_SEEN" = true ] \
+  || fail "fm_backend_tmux_session_live_agent_in did not report the live agent in the recorded worktree"
+if fm_backend_tmux_session_live_agent_in "$SESSION" "$SHELL_WT"; then
+  fail "fm_backend_tmux_session_live_agent_in reported an agent for a worktree holding only a shell"
+fi
+if fm_backend_tmux_session_live_agent_in "$SESSION" "$OTHER_WT"; then
+  fail "fm_backend_tmux_session_live_agent_in reported an agent for a worktree with no pane"
+fi
+pass "real tmux: fm_backend_tmux_session_live_agent_in finds an agent in its worktree and ignores shells and other worktrees"
 
 # --- kill and recovery-grade missing-window classification ------------------
 
