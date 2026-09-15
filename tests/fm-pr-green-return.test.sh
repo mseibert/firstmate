@@ -334,7 +334,7 @@ tea_green() { # <dir>
   jq -n --arg head "$HEAD" '{sha: $head, state: "success", total_count: 2}' > "$dir/fix/tea-status.json"
   jq -n --arg time "$HEAD_TIME" '{created: $time}' > "$dir/fix/tea-commit.json"
   jq -n --arg time "$VERDICT_TIME" \
-    '[{user: {login: "seibert-pr-agent"}, updated_at: $time, body: "Reviewed this pull request — **Good to merge (LGTM).**\n<!-- crabd:tracking -->"}]' \
+    '[{id: 1, user: {login: "seibert-pr-agent"}, updated_at: $time, body: "Reviewed this pull request — **Good to merge (LGTM).**\n<!-- crabd:tracking -->"}]' \
     > "$dir/fix/tea-comments.json"
   jq -n '[{filename: "src/app.ts"}]' > "$dir/fix/tea-files.json"
   printf '%s\n' '{"login":"op"}' > "$dir/fix/tea-user.json"
@@ -343,7 +343,7 @@ tea_green() { # <dir>
 tea_set_verdict() { # <dir> <body-json>
   local dir=$1
   jq -n --arg time "$VERDICT_TIME" --arg body "$2" \
-    '[{user: {login: "seibert-pr-agent"}, updated_at: $time, body: $body}]' \
+    '[{id: 1, user: {login: "seibert-pr-agent"}, updated_at: $time, body: $body}]' \
     > "$dir/fix/tea-comments.json"
 }
 
@@ -356,11 +356,11 @@ tea_set_five_lens_comment() { # <dir> <body|none> [title] [author]
   tmp=$(mktemp)
   if [ "$body" = none ]; then
     jq -n --arg time "$VERDICT_TIME" \
-      '[{user: {login: "seibert-pr-agent"}, updated_at: $time, body: "Reviewed this pull request - **Good to merge (LGTM).**\n<!-- crabd:tracking -->"}]' > "$tmp"
+      '[{id: 1, user: {login: "seibert-pr-agent"}, updated_at: $time, body: "Reviewed this pull request - **Good to merge (LGTM).**\n<!-- crabd:tracking -->"}]' > "$tmp"
   else
     jq -n --arg time "$VERDICT_TIME" --arg title "$title" --arg body "$body" --arg author "$author" \
-      '[{user: {login: "seibert-pr-agent"}, updated_at: $time, body: "Reviewed this pull request - **Good to merge (LGTM).**\n<!-- crabd:tracking -->"},
-        {user: {login: $author}, updated_at: $time, body: ($title + "\n\n" + $body)}]' > "$tmp"
+      '[{id: 1, user: {login: "seibert-pr-agent"}, updated_at: $time, body: "Reviewed this pull request - **Good to merge (LGTM).**\n<!-- crabd:tracking -->"},
+        {id: 2, user: {login: $author}, updated_at: $time, body: ($title + "\n\n" + $body)}]' > "$tmp"
   fi
   mv "$tmp" "$dir/fix/tea-comments.json"
 }
@@ -389,7 +389,7 @@ tea_move_head() { # <dir> <head> <time>
   jq -n --arg head "$head" '{sha: $head, state: "success", total_count: 2}' > "$dir/fix/tea-status.json"
   jq -n --arg time "$time" '{created: $time}' > "$dir/fix/tea-commit.json"
   jq -n --arg time "$time" \
-    '[{user: {login: "seibert-pr-agent"}, updated_at: $time, body: "Reviewed this pull request — **Good to merge (LGTM).**\n<!-- crabd:tracking -->"}]' \
+    '[{id: 1, user: {login: "seibert-pr-agent"}, updated_at: $time, body: "Reviewed this pull request — **Good to merge (LGTM).**\n<!-- crabd:tracking -->"}]' \
     > "$dir/fix/tea-comments.json"
 }
 
@@ -1788,14 +1788,31 @@ Result: 1 finding open - see code-review'
   tea_green "$dir"
   tea_set_body "$dir" "Pipeline-opened body without a gate block."
   jq -n --arg time "$VERDICT_TIME" \
-    '[range(0; 49) | {user: {login: "someone"}, updated_at: $time, body: "chatter"}]
-     + [{user: {login: "seibert-pr-agent"}, updated_at: $time, body: "Reviewed this pull request - **Good to merge (LGTM).**\n<!-- crabd:tracking -->"}]' \
+    '[range(1; 50) | {id: ., user: {login: "someone"}, updated_at: $time, body: ("chatter " + (. | tostring))}]
+     + [{id: 50, user: {login: "seibert-pr-agent"}, updated_at: $time, body: "Reviewed this pull request - **Good to merge (LGTM).**\n<!-- crabd:tracking -->"}]' \
     > "$dir/fix/tea-comments-page1.json"
   jq -n --arg time "$VERDICT_TIME" --arg body "$clean_comment" \
-    '[{user: {login: "op"}, updated_at: $time, body: ("Findings and fixes from 5-lenses-review\n\n" + $body)}]' \
+    '[{id: 51, user: {login: "op"}, updated_at: $time, body: ("Findings and fixes from 5-lenses-review\n\n" + $body)}]' \
     > "$dir/fix/tea-comments-page2.json"
   out=$(report_case "$dir" "$NOW_LATE")
   assert_contains "$out" $'t1\tdue\tready' "the designated comment beyond the first page was not read"
+
+  # A non-paginating forge returns the identical full list for every page: the
+  # reader stops at the repeated page and still finds the designated comment.
+  dir=$(make_case nm-comment-static)
+  write_policy "$dir" programmieren-community
+  write_meta "$dir" t1 "https://forgejo.example/seibert.group/programmieren-community/pulls/365" programmieren-community no-mistakes
+  tea_green "$dir"
+  tea_set_body "$dir" "Pipeline-opened body without a gate block."
+  jq -n --arg time "$VERDICT_TIME" --arg body "$clean_comment" \
+    '[range(1; 50) | {id: ., user: {login: "someone"}, updated_at: $time, body: ("chatter " + (. | tostring))}]
+     + [{id: 50, user: {login: "seibert-pr-agent"}, updated_at: $time, body: "Reviewed this pull request - **Good to merge (LGTM).**\n<!-- crabd:tracking -->"},
+        {id: 51, user: {login: "op"}, updated_at: $time, body: ("Findings and fixes from 5-lenses-review\n\n" + $body)}]' \
+    > "$dir/fix/tea-comments-page1.json"
+  cp "$dir/fix/tea-comments-page1.json" "$dir/fix/tea-comments-page2.json"
+  out=$(report_case "$dir" "$NOW_LATE")
+  assert_contains "$out" $'t1\tdue\tready' "a non-paginating comment endpoint held the designated comment"
+  [ "$(grep -Fc 'comments?limit=50&page=' "$dir/fix/calls.log")" -eq 2 ] || fail "the repeated page was fetched past the first repeat"
 
   # The direct-PR body path is unchanged: its own clean block still passes, its
   # own open block is never rescued by a clean comment, and a body without a

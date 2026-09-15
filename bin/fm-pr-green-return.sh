@@ -980,7 +980,7 @@ forgejo_verdict_read() {
 }
 
 forgejo_five_lens_comment_read() {
-  local page=1 page_json page_count comments='[]'
+  local page=1 page_json page_count comments='[]' merged merged_count comment_count=0
   while [ "$page" -le "$FILE_PAGE_MAX" ]; do
     page_json=$(tea_read "/repos/$PR_PATH/issues/$PR_NUMBER/comments?limit=$FILE_PAGE_LIMIT&page=$page") || {
       PR_FIVE_LENS_COMMENT=
@@ -990,14 +990,20 @@ forgejo_five_lens_comment_read() {
       PR_FIVE_LENS_COMMENT=
       return 0
     }
-    comments=$(printf '%s\n%s\n' "$comments" "$page_json" | jq -cs '.[0] + .[1]' 2>/dev/null) || {
+    merged=$(printf '%s\n%s\n' "$comments" "$page_json" | jq -cs '.[0] + .[1] | unique_by(.id)' 2>/dev/null) || {
       PR_FIVE_LENS_COMMENT=
       return 0
     }
-    if [ "$page_count" -lt "$FILE_PAGE_LIMIT" ]; then
-      PR_FIVE_LENS_COMMENT=$(five_lens_comment_pick "$comments" "$OP_LOGIN")
+    merged_count=$(printf '%s' "$merged" | jq -r 'length' 2>/dev/null) || {
+      PR_FIVE_LENS_COMMENT=
+      return 0
+    }
+    if [ "$page_count" -lt "$FILE_PAGE_LIMIT" ] || [ "$merged_count" -eq "$comment_count" ]; then
+      PR_FIVE_LENS_COMMENT=$(five_lens_comment_pick "$merged" "$OP_LOGIN")
       return 0
     fi
+    comments=$merged
+    comment_count=$merged_count
     page=$((page + 1))
   done
   PR_FIVE_LENS_COMMENT=
