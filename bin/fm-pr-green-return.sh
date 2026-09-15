@@ -38,9 +38,12 @@
 # anyone. state/pr-green-return/<id> records the observed identity, class,
 # reason, wait start, and notification, so a restart never resets the wait and
 # one (head, class, reason) is reported once. Both classes share one task wake
-# key, so a fresh verdict always supersedes the queued row it replaces under the
-# drain's newest-row-per-key view. A notification is suppressed only by the
-# record's own (head, class, reason) value, never by a key merely being present.
+# key, so a newly queued row for the task supersedes its previous one under the
+# drain's newest-row-per-key view. A queued mandate is not revoked when the
+# verdict changes: bin/fm-pr-merge.sh re-verifies the live verdict at merge time
+# and refuses a mandate this scan no longer finds due. A notification is
+# suppressed only by the record's own (head, class, reason) value, never by a
+# key merely being present.
 #
 # EDGE SEMANTICS. A repo with no checks at all trips hard stop 4 (an empty
 # combined status is never green), and a check set that is pending or unreadable

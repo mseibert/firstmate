@@ -62,7 +62,9 @@
 # head the caller's own scan verified. On GitLab and Forgejo a live head that
 # differs refuses before any merge call, so a mandate issued for an older head
 # can never land on a moved one; the forge binding still uses the verified live
-# head. GitHub cannot compare a head at all, so it refuses the flag rather than
+# head. A given value that is not a commit id - including an explicitly empty
+# one - is refused as a usage error rather than read as no expectation at all.
+# GitHub cannot compare a head at all, so it refuses the flag rather than
 # silently dropping the expectation.
 #
 # A mandate that names an expected head is also re-verified against the live
