@@ -19,11 +19,35 @@ assert_claude_pointer() {
 EOF
 }
 
-write_fixture_claude_pointer() {
-  cat > "$1/CLAUDE.md" <<'EOF'
+write_claude_pointer_at() {
+  cat > "$1" <<'EOF'
 <!-- Points Claude at AGENTS.md via import; edit AGENTS.md, not this file. -->
 @AGENTS.md
 EOF
+}
+
+write_fixture_claude_pointer() {
+  write_claude_pointer_at "$1/CLAUDE.md"
+}
+
+# The helper must reuse an existing case variant as the pointer target rather
+# than add a second CLAUDE.md spelling. Glob expansion over the real directory
+# entries is the only check that holds on both case-sensitive and
+# case-insensitive filesystems, where [ -e CLAUDE.md ] is true for an existing
+# Claude.md.
+assert_single_memory_file_entry() {
+  local repo=$1 family=$2 entry count=0
+  for entry in "$repo"/*; do
+    case "${entry##*/}" in
+      [Aa][Gg][Ee][Nn][Tt][Ss].[Mm][Dd])
+        [ "$family" = agents ] && count=$((count + 1))
+        ;;
+      [Cc][Ll][Aa][Uu][Dd][Ee].[Mm][Dd])
+        [ "$family" = claude ] && count=$((count + 1))
+        ;;
+    esac
+  done
+  [ "$count" -eq 1 ] || fail "expected exactly one $family memory file in $repo, found $count"
 }
 
 test_created_agents_md_includes_self_governance() {
@@ -415,8 +439,129 @@ test_lowercase_agents_md_refuses_case_fragile_pointer() {
   pass "fm-ensure-agents-md.sh: refuses a case-variant lowercase agents.md (issue #389)"
 }
 
+test_claude_case_variant_is_reused_as_pointer_target() {
+  local repo agents out variant
+  for variant in Claude.md claude.md; do
+    case "$variant" in
+      Claude.md) repo="$TMP_ROOT/claude-variant-upper" ;;
+      claude.md) repo="$TMP_ROOT/claude-variant-lower" ;;
+    esac
+    rm -rf "$repo"
+    mkdir -p "$repo"
+    cat > "$repo/$variant" <<'EOF'
+# Existing agent memory
+
+Build with cargo.
+EOF
+    out=$("$ROOT/bin/fm-ensure-agents-md.sh" "$repo" 2>&1) \
+      || fail "fm-ensure-agents-md.sh failed for an existing $variant"
+    assert_contains "$out" "promoted:" "$variant was not promoted to AGENTS.md"
+    agents="$repo/AGENTS.md"
+    assert_present "$agents" "AGENTS.md was not created from $variant"
+    assert_grep "Build with cargo." "$agents" "promotion lost $variant content"
+    assert_grep "## Maintaining this file" "$agents" "promoted $variant did not gain self-governance"
+    assert_claude_pointer "$repo/$variant"
+    assert_single_memory_file_entry "$repo" claude
+    cp "$agents" "$repo/.after-first"
+    cp "$repo/$variant" "$repo/.variant-after-first"
+    out=$("$ROOT/bin/fm-ensure-agents-md.sh" "$repo" 2>&1) \
+      || fail "fm-ensure-agents-md.sh failed on $variant re-run"
+    assert_contains "$out" "unchanged:" "$variant re-run did not report unchanged"
+    cmp -s "$repo/.after-first" "$agents" || fail "$variant re-run modified AGENTS.md"
+    cmp -s "$repo/.variant-after-first" "$repo/$variant" || fail "$variant re-run modified $variant"
+    assert_single_memory_file_entry "$repo" claude
+  done
+  pass "fm-ensure-agents-md.sh: an existing Claude case variant is reused as the pointer target"
+}
+
+test_agents_md_with_claude_case_variant_pointer_stays_unchanged() {
+  local repo out agents
+  repo="$TMP_ROOT/agents-with-claude-variant-pointer"
+  mkdir -p "$repo"
+  printf '%s\n' \
+    '# Existing agent memory' \
+    '' \
+    '## Maintaining this file' \
+    '' \
+    'Keep this file for knowledge useful to almost every future agent session in this project.' \
+    'Do not repeat what the codebase already shows; point to the authoritative file or command instead.' \
+    'Prefer rewriting or pruning existing entries over appending new ones.' \
+    'When updating this file, preserve this bar for all agents and keep entries concise.' > "$repo/AGENTS.md"
+  write_claude_pointer_at "$repo/Claude.md"
+  agents="$repo/AGENTS.md"
+  cp "$agents" "$repo/.agents-before"
+  cp "$repo/Claude.md" "$repo/.claude-before"
+  out=$("$ROOT/bin/fm-ensure-agents-md.sh" "$repo" 2>&1) \
+    || fail "fm-ensure-agents-md.sh failed with AGENTS.md and a Claude.md pointer"
+  assert_contains "$out" "unchanged:" "AGENTS.md with a Claude.md pointer was not reported unchanged"
+  assert_claude_pointer "$repo/Claude.md"
+  cmp -s "$repo/.agents-before" "$agents" || fail "AGENTS.md with a Claude.md pointer was modified"
+  cmp -s "$repo/.claude-before" "$repo/Claude.md" || fail "the existing Claude.md pointer was modified"
+  assert_single_memory_file_entry "$repo" claude
+  pass "fm-ensure-agents-md.sh: AGENTS.md with an existing Claude.md pointer stays unchanged"
+}
+
+test_distinct_claude_case_variant_is_refused() {
+  local repo out rc
+  repo="$TMP_ROOT/distinct-claude-variant-project"
+  mkdir -p "$repo"
+  printf '# Agents memory\n' > "$repo/AGENTS.md"
+  printf '# Claude memory\n' > "$repo/Claude.md"
+  cp "$repo/AGENTS.md" "$repo/.agents-before"
+  cp "$repo/Claude.md" "$repo/.claude-before"
+  out=$("$ROOT/bin/fm-ensure-agents-md.sh" "$repo" 2>&1)
+  rc=$?
+  [ "$rc" -ne 0 ] || fail "expected a non-zero exit for distinct AGENTS.md and Claude.md"
+  assert_contains "$out" "conflict:" "distinct AGENTS.md and Claude.md did not report a conflict"
+  cmp -s "$repo/.agents-before" "$repo/AGENTS.md" || fail "refusal modified AGENTS.md"
+  cmp -s "$repo/.claude-before" "$repo/Claude.md" || fail "refusal modified Claude.md"
+  assert_single_memory_file_entry "$repo" claude
+  pass "fm-ensure-agents-md.sh: refuses distinct AGENTS.md and a Claude case variant"
+}
+
+test_multiple_claude_case_variants_are_refused() {
+  local repo out rc
+  repo="$TMP_ROOT/multiple-claude-variants-project"
+  mkdir -p "$repo"
+  printf '# Upper memory\n' > "$repo/Claude.md"
+  printf '# Lower memory\n' > "$repo/claude.md"
+  if [ "$(cat "$repo/Claude.md")" = "# Lower memory" ]; then
+    echo "skip: case-insensitive filesystem collapses Claude.md and claude.md"
+    return 0
+  fi
+  cp "$repo/Claude.md" "$repo/.upper-before"
+  cp "$repo/claude.md" "$repo/.lower-before"
+  out=$("$ROOT/bin/fm-ensure-agents-md.sh" "$repo" 2>&1)
+  rc=$?
+  [ "$rc" -ne 0 ] || fail "expected a non-zero exit for two CLAUDE.md case variants"
+  assert_contains "$out" "conflict:" "two CLAUDE.md case variants did not report a conflict"
+  cmp -s "$repo/.upper-before" "$repo/Claude.md" || fail "refusal modified Claude.md"
+  cmp -s "$repo/.lower-before" "$repo/claude.md" || fail "refusal modified claude.md"
+  assert_absent "$repo/AGENTS.md" "multi-variant refusal created AGENTS.md"
+  pass "fm-ensure-agents-md.sh: refuses multiple CLAUDE.md case variants"
+}
+
+test_empty_project_creates_only_standard_names() {
+  local repo out
+  repo="$TMP_ROOT/empty-standard-names-project"
+  mkdir -p "$repo"
+  out=$("$ROOT/bin/fm-ensure-agents-md.sh" "$repo" 2>&1) \
+    || fail "fm-ensure-agents-md.sh failed for an empty project"
+  assert_contains "$out" "created:" "empty project did not report created"
+  assert_claude_pointer "$repo/CLAUDE.md"
+  assert_present "$repo/AGENTS.md" "AGENTS.md was not created"
+  assert_single_memory_file_entry "$repo" claude
+  assert_single_memory_file_entry "$repo" agents
+  pass "fm-ensure-agents-md.sh: an empty project creates only the standard file names"
+}
+
 test_created_agents_md_includes_self_governance
 test_fresh_setup_writes_real_claude_pointer
+test_claude_case_variant_is_reused_as_pointer_target
+test_agents_md_with_claude_case_variant_pointer_stays_unchanged
+test_distinct_claude_case_variant_is_refused
+test_multiple_claude_case_variants_are_refused
+test_empty_project_creates_only_standard_names
 test_promoted_claude_md_includes_self_governance
 test_promoted_claude_md_without_trailing_newline_keeps_blank_separator
 test_existing_agents_md_with_symlink_gains_self_governance
