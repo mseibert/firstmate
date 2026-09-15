@@ -1,0 +1,120 @@
+================ S1: mirror-less fork line, 7 commits behind origin/seibert/main ================
+warning: You appear to have cloned an empty repository.
+home HEAD before: b9282a7ffbb816798e80fccbb4147ec4239bb2e7 (b9282a7 c1)
+origin/seibert/main tip: 31663b9d383f3d15de39a524e0673781d66d90c6
+refs/heads/main before: ABSENT
+exit=0
+--- product output ---
+firstmate: updated b9282a7..31663b9 (fast-forwarded origin/seibert/main; instructions changed: AGENTS.md, bin)
+reread-firstmate: yes
+restart-secondmates: none
+nudge-secondmates: none
+----------------------
+CHECK ok   - S1 reports the fork line updated
+CHECK ok   - S1 reports the direct origin/seibert/main fast-forward
+CHECK ok   - S1 no longer refuses with 'cannot read main'
+CHECK ok   - S1 HEAD is now origin/seibert/main tip
+CHECK ok   - S1 previous tip is still an ancestor (no work lost)
+CHECK ok   - S1 advance is a single-parent fast-forward (never a merge commit, never forced)
+CHECK ok   - S1 stays on the seibert/main fork line
+CHECK ok   - S1 created main mirror ref-only at origin/main
+CHECK ok   - S1 created mirror is not a merge commit (ref-only)
+home HEAD after: 31663b9d383f3d15de39a524e0673781d66d90c6 (31663b9 line-7)
+refs/heads/main after: b9282a7ffbb816798e80fccbb4147ec4239bb2e7
+
+--- S1b: second run is an idempotent no-op ---
+firstmate: already current
+reread-firstmate: no
+restart-secondmates: none
+nudge-secondmates: none
+CHECK ok   - S1b second run reports already current
+CHECK ok   - S1b HEAD unchanged by the second run
+
+================ S2: counterfactual on the BASE commit (pre-fix product) ================
+pre-fix product commit: eccdfbd5013e406d0479f6165c7bee6e12b18260
+warning: You appear to have cloned an empty repository.
+exit=0
+--- base product output ---
+firstmate: skipped: cannot read main
+reread-firstmate: no
+restart-secondmates: none
+nudge-secondmates: none
+--------------------------
+CHECK ok   - S2 base product reproduces the reported failure
+CHECK ok   - S2 base product leaves the home behind (manual ff was required)
+
+================ S3: mirror-less line with own unpushed commits (no force, no rebase) ================
+warning: You appear to have cloned an empty repository.
+firstmate: already current
+reread-firstmate: no
+restart-secondmates: none
+nudge-secondmates: none
+CHECK ok   - S3 no longer refuses with 'cannot read main'
+CHECK ok   - S3 own commit was never rebased or force-moved (HEAD unchanged)
+CHECK ok   - S3 own commit is still the tip
+CHECK ok   - S3 own working file survived
+CHECK ok   - S3 missing mirror was created ref-only at origin/main
+
+================ S4: diverged main mirror is still skipped, line untouched ================
+warning: You appear to have cloned an empty repository.
+branch 'main' set up to track 'origin/main'.
+firstmate: skipped: main diverged from origin/main
+reread-firstmate: no
+restart-secondmates: none
+nudge-secondmates: none
+CHECK ok   - S4 diverged mirror still skips
+CHECK ok   - S4 line was not moved past the diverged mirror
+CHECK ok   - S4 diverged mirror ref was not moved
+
+================ S5: dirty fork-line home is still skipped, edit preserved ================
+warning: You appear to have cloned an empty repository.
+firstmate: skipped: dirty working tree
+reread-firstmate: no
+restart-secondmates: none
+nudge-secondmates: none
+CHECK ok   - S5 dirty working tree still skips
+CHECK ok   - S5 HEAD did not move
+CHECK ok   - S5 unlanded edit preserved
+CHECK ok   - S5 no stash was created
+
+================ S6: offline origin is still skipped ================
+warning: You appear to have cloned an empty repository.
+firstmate: skipped: fetch failed
+reread-firstmate: no
+restart-secondmates: none
+nudge-secondmates: none
+CHECK ok   - S6 unreachable origin still skips with fetch failed
+CHECK ok   - S6 HEAD did not move
+
+================ S7: line fast-forward survives an unmergeable upstream merge ================
+warning: You appear to have cloned an empty repository.
+firstmate: updated a72a996..c76b125 (fast-forwarded origin/seibert/main; merge of main failed: Auto-merging README.md)
+reread-firstmate: no
+restart-secondmates: none
+nudge-secondmates: none
+CHECK ok   - S7 safe line advance is reported as updated
+CHECK ok   - S7 reports the direct fast-forward
+CHECK ok   - S7 names the unmergeable upstream merge
+CHECK ok   - S7 line stayed on origin/seibert/main after the failed merge
+CHECK ok   - S7 failed merge was aborted (no MERGE_HEAD)
+
+================ S8: new path adds no new clobber hazard (equivalence with the default-branch path) ================
+warning: You appear to have cloned an empty repository.
+fork-line pre-run status --porcelain (ignored file invisible): []
+firstmate: updated a72a996..d20f0ad (fast-forwarded origin/seibert/main)
+reread-firstmate: no
+restart-secondmates: none
+nudge-secondmates: none
+fork-line HEAD after: d20f0ad38f0bf75ff830ee3e30c3623e9cfb7fe9, state/foo: remote-state
+warning: You appear to have cloned an empty repository.
+default-branch pre-run status --porcelain (ignored file invisible): []
+firstmate: updated a72a996..3b30a40
+reread-firstmate: no
+restart-secondmates: none
+nudge-secondmates: none
+default-branch HEAD after: 3b30a403c67ffe36d9afad197d4f3abe81aeb802, state/foo: remote-state
+CHECK ok   - S8 both paths report the same updated/skip outcome
+CHECK ok   - S8 both paths leave state/foo in the same state
+CHECK ok   - S8 both paths advance the checkout
+
+================ RESULT: 0 failed check(s) ================
