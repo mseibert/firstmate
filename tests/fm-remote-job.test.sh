@@ -20,6 +20,16 @@ OTHER_PID=
 RECOVERY_WORKER_PID=
 REPEAT_WORKER_PID=
 RESTART_SUPERVISOR_PID=
+INDETERMINATE_STATE=
+INDETERMINATE_OWNER_PID=
+INDETERMINATE_CHALLENGER_PID=
+LOSS_STATE=
+LOSS_OWNER_PID=
+LOSS_REPLACEMENT_PID=
+LOSS_CHALLENGER_PID=
+FOREIGN_STATE=
+FOREIGN_OWNER_SERVE_PID=
+FOREIGN_SLEEP_PID=
 mkdir -p "$REMOTE_ROOT/bin" "$REMOTE_HOME" "$ACCOUNT_HOME" "$RUNTIME_BIN"
 # worker.pid records the serving child, not its restart supervisor, so stopping
 # that pid alone leaves the supervisor to respawn - the leak
@@ -29,6 +39,20 @@ cleanup_remote_job_fixture() {
   [ -z "$RECOVERY_WORKER_PID" ] || kill "$RECOVERY_WORKER_PID" 2>/dev/null || true
   [ -z "$REPEAT_WORKER_PID" ] || kill "$REPEAT_WORKER_PID" 2>/dev/null || true
   [ -z "$RESTART_SUPERVISOR_PID" ] || kill -KILL "$RESTART_SUPERVISOR_PID" 2>/dev/null || true
+  [ -z "$INDETERMINATE_OWNER_PID" ] || kill "$INDETERMINATE_OWNER_PID" 2>/dev/null || true
+  [ -z "$INDETERMINATE_CHALLENGER_PID" ] || kill -KILL "$INDETERMINATE_CHALLENGER_PID" 2>/dev/null || true
+  [ -z "$LOSS_OWNER_PID" ] || kill -KILL "$LOSS_OWNER_PID" 2>/dev/null || true
+  [ -z "$LOSS_REPLACEMENT_PID" ] || kill "$LOSS_REPLACEMENT_PID" 2>/dev/null || true
+  [ -z "$LOSS_CHALLENGER_PID" ] || kill -KILL "$LOSS_CHALLENGER_PID" 2>/dev/null || true
+  [ -z "$FOREIGN_OWNER_SERVE_PID" ] || kill "$FOREIGN_OWNER_SERVE_PID" 2>/dev/null || true
+  [ -z "$FOREIGN_SLEEP_PID" ] || kill "$FOREIGN_SLEEP_PID" 2>/dev/null || true
+  local state
+  for state in "$INDETERMINATE_STATE" "$LOSS_STATE" "$FOREIGN_STATE"; do
+    [ -n "$state" ] || continue
+    if [ -f "$state/worker.pid" ]; then
+      fm_remote_job_stop_worker_tree "$(cat "$state/worker.pid")" || true
+    fi
+  done
   if [ -f "$STATE_ROOT/worker.pid" ]; then
     fm_remote_job_stop_worker_tree "$(cat "$STATE_ROOT/worker.pid")" || true
   fi
@@ -764,5 +788,195 @@ RESTART_SUPERVISOR_PID=
 assert_grep "remote job worker exited 3 times; stopping the supervisor" "$TMP_ROOT/restart-supervisor.err" \
   "the restart guard did not explain why it stopped"
 pass "barely healthy worker failures remain bounded by the restart guard"
+
+# An ownership record whose live pid cannot be verified - a partial publish, or
+# ps failing under load - must be waited out, never stolen. The heartbeat is a
+# readiness signal, so a challenger that treated it as a lease would displace a
+# live owner and start the duplicate-generation race this pins shut.
+INDETERMINATE_STATE="$TMP_ROOT/indeterminate-jobs"
+INDETERMINATE_HOME="$TMP_ROOT/indeterminate-account"
+mkdir -p "$INDETERMINATE_HOME" "$INDETERMINATE_STATE/jobs" "$INDETERMINATE_STATE/logs" \
+  "$INDETERMINATE_STATE/worker.lock"
+chmod 700 "$INDETERMINATE_HOME" "$INDETERMINATE_STATE" "$INDETERMINATE_STATE/jobs" \
+  "$INDETERMINATE_STATE/logs" "$INDETERMINATE_STATE/worker.lock"
+sleep 30 &
+INDETERMINATE_OWNER_PID=$!
+printf '%s\n' "$INDETERMINATE_OWNER_PID" > "$INDETERMINATE_STATE/worker.lock/pid"
+chmod 600 "$INDETERMINATE_STATE/worker.lock/pid"
+touch -t 200001010000 "$INDETERMINATE_STATE/worker.lock"
+HOME="$INDETERMINATE_HOME" FM_ROOT_OVERRIDE="$REMOTE_ROOT" \
+  FM_REMOTE_JOB_STATE_ROOT="$INDETERMINATE_STATE" FM_REMOTE_JOB_PLATFORM_OVERRIDE=Linux \
+  "$REMOTE_ROOT/bin/fm-remote-job-worker.sh" --serve \
+  > "$TMP_ROOT/indeterminate.out" 2> "$TMP_ROOT/indeterminate.err" &
+INDETERMINATE_CHALLENGER_PID=$!
+sleep 1
+kill -0 "$INDETERMINATE_CHALLENGER_PID" 2>/dev/null \
+  || fail "a challenger abandoned an indeterminate live ownership record instead of waiting it out"
+[ "$(cat "$INDETERMINATE_STATE/worker.lock/pid")" = "$INDETERMINATE_OWNER_PID" ] \
+  || fail "a challenger displaced a live owner whose record it could not verify"
+kill -KILL "$INDETERMINATE_CHALLENGER_PID" 2>/dev/null || true
+wait "$INDETERMINATE_CHALLENGER_PID" 2>/dev/null || true
+INDETERMINATE_CHALLENGER_PID=
+kill "$INDETERMINATE_OWNER_PID" 2>/dev/null || true
+wait "$INDETERMINATE_OWNER_PID" 2>/dev/null || true
+INDETERMINATE_OWNER_PID=
+pass "an indeterminate live ownership record is waited out, never stolen"
+
+# Lock loss stops a serving generation: it must stop its own lane and exit
+# without touching the replacement's claim, so a displaced generation can never
+# keep claiming jobs beside the new owner.
+LOSS_STATE="$TMP_ROOT/loss-jobs"
+LOSS_HOME="$TMP_ROOT/loss-account"
+mkdir -p "$LOSS_HOME"
+chmod 700 "$LOSS_HOME"
+HOME="$LOSS_HOME" FM_ROOT_OVERRIDE="$REMOTE_ROOT" FM_REMOTE_JOB_STATE_ROOT="$LOSS_STATE" \
+  FM_REMOTE_JOB_PLATFORM_OVERRIDE=Linux "$REMOTE_ROOT/bin/fm-remote-job-worker.sh" --serve \
+  > "$TMP_ROOT/loss-owner.out" 2> "$TMP_ROOT/loss-owner.err" &
+LOSS_OWNER_PID=$!
+for _ in $(seq 1 300); do
+  [ -f "$LOSS_STATE/worker.ready" ] && break
+  sleep 0.05
+done
+assert_present "$LOSS_STATE/worker.ready" "the loss fixture worker did not become ready"
+LOSS_OWNER_SERVE_PID=$(cat "$LOSS_STATE/worker.pid")
+LOSS_STARTED="$TMP_ROOT/loss-started"
+LOSS_SIDE_EFFECT="$TMP_ROOT/loss-side-effect"
+FM_REMOTE_JOB_TIMEOUT=5
+FM_REMOTE_JOB_STATE_ROOT="$LOSS_STATE" fm_remote_job_stage "$LOSS_HOME" "$REMOTE_ROOT" "$REMOTE_HOME" \
+  fm-shutdown-job.sh "$LOSS_STARTED" "$LOSS_SIDE_EFFECT" < /dev/null > /dev/null
+LOSS_JOB_ID=$FM_REMOTE_JOB_ID
+LOSS_JOB_DIR="$LOSS_STATE/jobs/$LOSS_JOB_ID"
+for _ in $(seq 1 100); do
+  [ -f "$LOSS_STARTED" ] && break
+  sleep 0.05
+done
+assert_present "$LOSS_STARTED" "the loss fixture job did not begin executing"
+LOSS_LANE_PID=$(cat "$LOSS_JOB_DIR/.claim/supervisor")
+# The replacement takes the freed claim exactly as a successful steal leaves it.
+rm -rf -- "$LOSS_STATE/worker.lock"
+HOME="$LOSS_HOME" FM_ROOT_OVERRIDE="$REMOTE_ROOT" FM_REMOTE_JOB_STATE_ROOT="$LOSS_STATE" \
+  FM_REMOTE_JOB_PLATFORM_OVERRIDE=Linux "$REMOTE_ROOT/bin/fm-remote-job-worker.sh" --serve \
+  > "$TMP_ROOT/loss-replacement.out" 2> "$TMP_ROOT/loss-replacement.err" &
+LOSS_REPLACEMENT_PID=$!
+for _ in $(seq 1 300); do
+  [ "$(cat "$LOSS_STATE/worker.lock/pid" 2>/dev/null || true)" = "$LOSS_REPLACEMENT_PID" ] && break
+  sleep 0.05
+done
+[ "$(cat "$LOSS_STATE/worker.lock/pid" 2>/dev/null || true)" = "$LOSS_REPLACEMENT_PID" ] \
+  || fail "the replacement worker did not take the freed claim"
+for _ in $(seq 1 200); do
+  kill -0 "$LOSS_OWNER_SERVE_PID" 2>/dev/null || break
+  sleep 0.05
+done
+kill -0 "$LOSS_OWNER_SERVE_PID" 2>/dev/null \
+  && fail "a displaced serving loop kept running without its claim"
+wait "$LOSS_OWNER_PID" 2>/dev/null || true
+LOSS_OWNER_PID=
+kill -0 "$LOSS_LANE_PID" 2>/dev/null \
+  && fail "a displaced serving loop left its lane running"
+[ "$(cat "$LOSS_STATE/worker.lock/pid")" = "$LOSS_REPLACEMENT_PID" ] \
+  || fail "a displaced serving loop released the replacement's claim"
+FM_REMOTE_JOB_STATE_ROOT="$LOSS_STATE" fm_remote_job_wait "$LOSS_HOME" "$LOSS_JOB_ID" || fail "$FM_REMOTE_JOB_ERROR"
+[ "$FM_REMOTE_JOB_EXIT" -eq 125 ] || fail "the replacement did not reclaim the interrupted job"
+assert_absent "$LOSS_SIDE_EFFECT" "the interrupted job mutated after the takeover"
+FM_REMOTE_JOB_STATE_ROOT="$LOSS_STATE" fm_remote_job_reap "$LOSS_HOME" "$LOSS_JOB_ID" || fail "the interrupted job could not be reaped"
+# A second challenger leaves the owner alone, and the queue still serves a probe
+# through the surviving owner - the shape the required-tool probe depends on.
+HOME="$LOSS_HOME" FM_ROOT_OVERRIDE="$REMOTE_ROOT" FM_REMOTE_JOB_STATE_ROOT="$LOSS_STATE" \
+  FM_REMOTE_JOB_PLATFORM_OVERRIDE=Linux "$REMOTE_ROOT/bin/fm-remote-job-worker.sh" --serve \
+  > "$TMP_ROOT/loss-challenger.out" 2> "$TMP_ROOT/loss-challenger.err" &
+LOSS_CHALLENGER_PID=$!
+for _ in $(seq 1 300); do
+  kill -0 "$LOSS_CHALLENGER_PID" 2>/dev/null || break
+  sleep 0.05
+done
+kill -0 "$LOSS_CHALLENGER_PID" 2>/dev/null && fail "a challenger kept running beside the owner"
+wait "$LOSS_CHALLENGER_PID" 2>/dev/null || true
+LOSS_CHALLENGER_PID=
+FM_REMOTE_JOB_STATE_ROOT="$LOSS_STATE" fm_remote_job_stage "$LOSS_HOME" "$REMOTE_ROOT" "$REMOTE_HOME" fm-probe-job.sh < /dev/null > /dev/null
+LOSS_PROBE_ID=$FM_REMOTE_JOB_ID
+FM_REMOTE_JOB_STATE_ROOT="$LOSS_STATE" fm_remote_job_wait "$LOSS_HOME" "$LOSS_PROBE_ID" || fail "$FM_REMOTE_JOB_ERROR"
+[ "$FM_REMOTE_JOB_EXIT" -eq 0 ] || fail "the surviving owner did not complete a probe job"
+LOSS_PROBE_OUT=$(<"$FM_REMOTE_JOB_STDOUT")
+assert_contains "$LOSS_PROBE_OUT" "root=$REMOTE_ROOT" "the surviving owner's probe lost its configured root"
+FM_REMOTE_JOB_STATE_ROOT="$LOSS_STATE" fm_remote_job_reap "$LOSS_HOME" "$LOSS_PROBE_ID" || fail "the probe job could not be reaped"
+kill -TERM "$LOSS_REPLACEMENT_PID" 2>/dev/null || true
+wait "$LOSS_REPLACEMENT_PID" 2>/dev/null || true
+LOSS_REPLACEMENT_PID=
+pass "a worker that loses its claim stops its lane and exits"
+
+# The Linux restart supervisor must not start or restart a generation beside a
+# live owner: the owner's claim is the whole queue's authority.
+FOREIGN_ROOT="$TMP_ROOT/foreign-root"
+FOREIGN_STATE="$TMP_ROOT/foreign-jobs"
+FOREIGN_HOME="$TMP_ROOT/foreign-account"
+FOREIGN_CHILD_LOG="$TMP_ROOT/foreign-children"
+mkdir -p "$FOREIGN_ROOT/bin" "$FOREIGN_HOME"
+cp "$ROOT/bin/fm-remote-job-lib.sh" "$FOREIGN_ROOT/bin/"
+cp "$ROOT/bin/fm-remote-job-worker.sh" "$FOREIGN_ROOT/bin/fm-remote-job-supervisor-under-test.sh"
+printf 'fixture\n' > "$FOREIGN_ROOT/AGENTS.md"
+cat > "$FOREIGN_ROOT/bin/fm-remote-job-worker.sh" <<'SH'
+#!/bin/bash
+set -u
+[ "${1:-}" = --serve ] || exit 2
+printf 'started\n' >> "$FM_TEST_FOREIGN_CHILD_LOG"
+if [ "${FM_TEST_FOREIGN_ARM_LOCK:-0}" = 1 ]; then
+  # shellcheck source=bin/fm-remote-job-lib.sh
+  . "$(dirname "${BASH_SOURCE[0]}")/fm-remote-job-lib.sh"
+  lock="$FM_REMOTE_JOB_STATE_ROOT/worker.lock"
+  mkdir -p "$lock"
+  fm_remote_job_process_start "$FM_TEST_FOREIGN_OWNER_PID" > "$lock/start"
+  fm_remote_job_process_command "$FM_TEST_FOREIGN_OWNER_PID" > "$lock/command"
+  printf '%s\n' "$FM_TEST_FOREIGN_OWNER_PID" > "$lock/pid"
+  chmod 600 "$lock/pid" "$lock/start" "$lock/command"
+fi
+exit 1
+SH
+chmod +x "$FOREIGN_ROOT/bin"/*.sh
+HOME="$FOREIGN_HOME" FM_ROOT_OVERRIDE="$REMOTE_ROOT" FM_REMOTE_JOB_STATE_ROOT="$FOREIGN_STATE" \
+  FM_REMOTE_JOB_PLATFORM_OVERRIDE=Linux "$REMOTE_ROOT/bin/fm-remote-job-worker.sh" --serve \
+  > "$TMP_ROOT/foreign-owner.out" 2> "$TMP_ROOT/foreign-owner.err" &
+FOREIGN_OWNER_SERVE_PID=$!
+for _ in $(seq 1 300); do
+  [ -f "$FOREIGN_STATE/worker.ready" ] && break
+  sleep 0.05
+done
+assert_present "$FOREIGN_STATE/worker.ready" "the foreign-owner fixture did not become ready"
+FOREIGN_OWNER_LOCK_PID=$(cat "$FOREIGN_STATE/worker.lock/pid")
+set +e
+HOME="$FOREIGN_HOME" FM_ROOT_OVERRIDE="$FOREIGN_ROOT" FM_REMOTE_JOB_STATE_ROOT="$FOREIGN_STATE" \
+  FM_REMOTE_JOB_PLATFORM_OVERRIDE=Linux FM_TEST_FOREIGN_CHILD_LOG="$FOREIGN_CHILD_LOG" \
+  "$FOREIGN_ROOT/bin/fm-remote-job-supervisor-under-test.sh" \
+  > "$TMP_ROOT/foreign-start.out" 2> "$TMP_ROOT/foreign-start.err"
+FOREIGN_START_RC=$?
+set -e
+[ "$FOREIGN_START_RC" -eq 0 ] || fail "the supervisor failed while another worker owned the queue"
+assert_absent "$FOREIGN_CHILD_LOG" "the supervisor started a child beside a live owner"
+[ "$(cat "$FOREIGN_STATE/worker.lock/pid")" = "$FOREIGN_OWNER_LOCK_PID" ] \
+  || fail "the supervisor displaced the live owner's claim"
+kill -TERM "$FOREIGN_OWNER_SERVE_PID"
+wait "$FOREIGN_OWNER_SERVE_PID" 2>/dev/null || true
+FOREIGN_OWNER_SERVE_PID=
+# The restart path: a child that dies while a live owner holds the queue must
+# not be restarted beside that owner.
+sleep 30 &
+FOREIGN_SLEEP_PID=$!
+set +e
+HOME="$FOREIGN_HOME" FM_ROOT_OVERRIDE="$FOREIGN_ROOT" FM_REMOTE_JOB_STATE_ROOT="$FOREIGN_STATE" \
+  FM_REMOTE_JOB_PLATFORM_OVERRIDE=Linux FM_TEST_FOREIGN_CHILD_LOG="$FOREIGN_CHILD_LOG" \
+  FM_TEST_FOREIGN_ARM_LOCK=1 FM_TEST_FOREIGN_OWNER_PID="$FOREIGN_SLEEP_PID" \
+  "$FOREIGN_ROOT/bin/fm-remote-job-supervisor-under-test.sh" \
+  > "$TMP_ROOT/foreign-restart.out" 2> "$TMP_ROOT/foreign-restart.err"
+FOREIGN_RESTART_RC=$?
+set -e
+[ "$FOREIGN_RESTART_RC" -eq 0 ] || fail "the supervisor reported failure while another worker owned the queue"
+[ "$(wc -l < "$FOREIGN_CHILD_LOG" | tr -d ' ')" -eq 1 ] \
+  || fail "the supervisor restarted a child beside a live owner"
+[ "$(cat "$FOREIGN_STATE/worker.lock/pid")" = "$FOREIGN_SLEEP_PID" ] \
+  || fail "the supervisor did not observe the child-armed foreign claim"
+kill "$FOREIGN_SLEEP_PID" 2>/dev/null || true
+wait "$FOREIGN_SLEEP_PID" 2>/dev/null || true
+FOREIGN_SLEEP_PID=
+pass "the Linux supervisor never starts or restarts beside a live owner"
 
 echo "ALL TESTS PASSED"

@@ -39,6 +39,14 @@
 # consecutive-failure backoff, but not that total restart guard, so a child
 # that dies just past the healthy threshold cannot restart without bound
 # either. fm-on's ensure path restarts a worker that gave up.
+#
+# Ownership is the worker.lock record naming the serving child's pid, start,
+# and command. The readiness heartbeat is a readiness signal, never an
+# ownership lease: a live recorded owner keeps its claim even when its
+# heartbeat is stale, an acquirer reclaims only an owner it can prove gone, and
+# a serving loop that no longer finds its own record stops its lanes and exits
+# instead of racing the replacement. The Linux supervisor checks the same
+# record and stops instead of starting a generation beside a live owner.
 set -u
 
 # A non-numeric override falls back to the default rather than crashing the
@@ -59,6 +67,8 @@ FM_ROOT=${FM_ROOT_OVERRIDE:-$(CDPATH='' cd "$SCRIPT_DIR/.." && pwd -P)}
 
 WORKER_LOCK=
 WORKER_LOCK_HELD=0
+WORKER_LOCK_START=
+WORKER_LOCK_COMMAND=
 WORKER_RELEASE_OWNERSHIP=1
 WORKER_SUPERVISED_PID=
 WORKER_PREEMPTIBLE=0
@@ -123,6 +133,28 @@ worker_publish_lock_owner() {
   mv -f -- "$command_tmp" "$WORKER_LOCK/command" || { rm -f -- "$pid_tmp" "$start_tmp" "$command_tmp"; return 1; }
   mv -f -- "$start_tmp" "$WORKER_LOCK/start" || { rm -f -- "$pid_tmp" "$start_tmp" "$WORKER_LOCK/command"; return 1; }
   mv -f -- "$pid_tmp" "$WORKER_LOCK/pid" || { rm -f -- "$pid_tmp" "$WORKER_LOCK/start" "$WORKER_LOCK/command"; return 1; }
+  # The recorded values are cached for the serving loop's cheap self-check.
+  WORKER_LOCK_START=$start
+  WORKER_LOCK_COMMAND=$command
+}
+
+# The lock still records this exact process. The record is exclusively ours
+# until the directory is removed or rewritten by a replacement, so comparing
+# the recorded values against the ones published here is the whole test and
+# needs no process inspection in the serving loop.
+worker_lock_records_self() {
+  local pid start command
+  [ "$WORKER_LOCK_HELD" -eq 1 ] || return 1
+  [ -n "$WORKER_LOCK_START" ] && [ -n "$WORKER_LOCK_COMMAND" ] || return 1
+  [ -d "$WORKER_LOCK" ] && [ ! -L "$WORKER_LOCK" ] || return 1
+  [ ! -e "$WORKER_LOCK/quarantine" ] && [ ! -L "$WORKER_LOCK/quarantine" ] || return 1
+  [ ! -L "$WORKER_LOCK/pid" ] && [ ! -L "$WORKER_LOCK/start" ] && [ ! -L "$WORKER_LOCK/command" ] || return 1
+  IFS= read -r pid < "$WORKER_LOCK/pid" 2>/dev/null || return 1
+  [ "$pid" = "${BASHPID:-$$}" ] || return 1
+  IFS= read -r start < "$WORKER_LOCK/start" 2>/dev/null || return 1
+  [ "$start" = "$WORKER_LOCK_START" ] || return 1
+  IFS= read -r command < "$WORKER_LOCK/command" 2>/dev/null || return 1
+  [ "$command" = "$WORKER_LOCK_COMMAND" ] || return 1
 }
 
 worker_lock_recent() {
@@ -158,7 +190,7 @@ worker_recover_quarantine() { # <account-home>
 }
 
 worker_acquire_lock() {
-  local account_home=$1 attempt=0
+  local account_home=$1 attempt=0 status
   while [ "$attempt" -lt 150 ]; do
     if (umask 077; mkdir "$WORKER_LOCK") 2>/dev/null; then
       WORKER_LOCK_HELD=1
@@ -170,15 +202,22 @@ worker_acquire_lock() {
       worker_recover_quarantine "$account_home" || return 3
       continue
     fi
-    if fm_remote_job_lock_owner_matches_process "$account_home"; then return 2; fi
-    if fm_remote_job_probe "$account_home" || worker_lock_recent; then
+    fm_remote_job_lock_owner_status "$account_home"
+    status=$?
+    if [ "$status" -eq 0 ]; then return 2; fi
+    # An indeterminate record may still name a live owner that this process
+    # cannot verify yet, so it is waited out rather than stolen. The heartbeat
+    # is a readiness signal, never an ownership lease.
+    if [ "$status" -eq 2 ] || fm_remote_job_probe "$account_home" || worker_lock_recent; then
       attempt=$((attempt + 1))
       sleep 0.1
       continue
     fi
     [ ! -L "$WORKER_LOCK/pid" ] && [ ! -L "$WORKER_LOCK/start" ] && [ ! -L "$WORKER_LOCK/command" ] || return 1
     rm -f -- "$WORKER_LOCK/pid" "$WORKER_LOCK/start" "$WORKER_LOCK/command" || return 1
-    rmdir "$WORKER_LOCK" || return 1
+    # A concurrent release may win the rmdir; the next iteration either claims
+    # the freed lock or observes the new owner.
+    rmdir "$WORKER_LOCK" 2>/dev/null || true
   done
   return 1
 }
@@ -368,7 +407,7 @@ worker_lane_identity_matches() { # <pid> <start>
 }
 
 worker_stop_active_execution() {
-  local i=0 count=${#WORKER_LANE_PIDS[@]} job pid start failed=0
+  local i=0 count=${#WORKER_LANE_PIDS[@]} job pid start failed=0 recorded
   while [ "$i" -lt "$count" ]; do
     pid=${WORKER_LANE_PIDS[$i]}
     start=${WORKER_LANE_STARTS[$i]}
@@ -377,7 +416,13 @@ worker_stop_active_execution() {
     if worker_lane_identity_matches "$pid" "$start"; then kill -KILL "$pid" 2>/dev/null || true; fi
     wait "$pid" 2>/dev/null || true
     if [ -d "$job" ] && [ ! -L "$job" ]; then
-      worker_stop_recorded_execution "$job" || failed=1
+      # Only a record this lane still owns may be signalled: a replacement
+      # worker may have reclaimed it and published its own claim, and stopping
+      # that claim would destroy the new owner's job.
+      recorded=$(worker_read_process_id "$job/.claim/supervisor" 2>/dev/null || true)
+      if [ -n "$recorded" ] && [ "$recorded" = "$pid" ]; then
+        worker_stop_recorded_execution "$job" || failed=1
+      fi
     fi
     i=$((i + 1))
   done
@@ -424,6 +469,22 @@ worker_exit_cleanup() {
     WORKER_RELEASE_OWNERSHIP=0
   fi
   worker_cleanup
+}
+
+# The lock record no longer names this process, so another generation owns the
+# queue. Stop this generation's lanes and leave the lock alone: the record now
+# belongs to the new owner and must never be released or removed from here.
+worker_exit_lock_lost() {
+  WORKER_RELEASE_OWNERSHIP=0
+  worker_stop_active_execution || worker_error "could not stop the active command tree after losing worker ownership"
+}
+
+# Exit 0 so the Linux supervisor stops instead of restarting this generation
+# beside the owner that just took the queue.
+worker_stop_after_lock_loss() {
+  worker_error "worker ownership moved to another generation; stopping instead of serving without it"
+  worker_exit_lock_lost
+  exit 0
 }
 
 worker_claim() { # <job-dir>
@@ -1017,6 +1078,7 @@ main() {
   worker_publish_identity "$account_home" || { worker_error "cannot publish worker code identity"; exit 1; }
   worker_publish_pid || { worker_error "cannot publish worker pid"; exit 1; }
   while :; do
+    worker_lock_records_self || worker_stop_after_lock_loss
     worker_write_heartbeat || { worker_error "cannot update worker heartbeat"; exit 1; }
     # Checked right after a fresh heartbeat, so the grace window cannot make a
     # still-healthy worker read as unready to a concurrent probe.
@@ -1029,6 +1091,9 @@ main() {
       fm_remote_job_reap_stale "$account_home" || true
       worker_reap=1
     fi
+    # Re-checked immediately before dispatch so a takeover during the
+    # heartbeat or sweep cannot let this generation claim a new job.
+    worker_lock_records_self || worker_stop_after_lock_loss
     worker_process_once "$account_home"
     sleep "$FM_REMOTE_JOB_POLL_SECONDS"
   done
@@ -1063,6 +1128,13 @@ worker_supervisor_shutdown() {
   exit 0
 }
 
+worker_supervisor_foreign_owner() { # <account-home>
+  local account_home=$1 status
+  fm_remote_job_lock_owner_status "$account_home"
+  status=$?
+  [ "$status" -eq 0 ]
+}
+
 worker_supervise_linux() {
   local account_home child_status started failures=0 restarts=0 backoff
   account_home=$(worker_account_home) || { worker_error "cannot resolve account home"; return 1; }
@@ -1073,6 +1145,13 @@ worker_supervise_linux() {
   while :; do
     if worker_code_root_abandoned; then
       worker_error "configured FM_ROOT $FM_ROOT no longer exists; stopping the abandoned worker supervisor"
+      return 0
+    fi
+    # A live owner elsewhere means this supervisor has nothing to serve; never
+    # start (or restart) a generation beside the owner that already holds the
+    # queue.
+    if worker_supervisor_foreign_owner "$account_home"; then
+      worker_error "another remote job worker owns the queue; stopping the supervisor"
       return 0
     fi
     started=$SECONDS
@@ -1090,6 +1169,10 @@ worker_supervise_linux() {
     fi
     worker_supervisor_cleanup_dead_child "$account_home" "$WORKER_SUPERVISED_PID" || true
     WORKER_SUPERVISED_PID=
+    if worker_supervisor_foreign_owner "$account_home"; then
+      worker_error "another remote job worker owns the queue; stopping the supervisor"
+      return 0
+    fi
     restarts=$((restarts + 1))
     if [ "$restarts" -ge "$FM_REMOTE_JOB_SUPERVISOR_MAX_RESTARTS" ]; then
       worker_error "remote job worker exited $restarts times; stopping the supervisor"

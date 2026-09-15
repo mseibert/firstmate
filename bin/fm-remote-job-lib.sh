@@ -71,6 +71,13 @@
 # an Aqua requirement. The launch-agent renderer and repair helpers here are
 # shared by the entrypoint and remote doctor so their ownership cannot drift.
 #
+# Worker ownership is the account-wide worker.lock directory whose pid, start,
+# and command record names the serving child. The readiness heartbeat is never
+# an ownership lease: fm_remote_job_lock_owner_status keeps a live recorded
+# owner's claim across heartbeat staleness, an acquirer reclaims only an owner
+# it can prove gone, and a serving loop that no longer finds its own record
+# stops instead of racing the replacement (bin/fm-remote-job-worker.sh).
+#
 # The Linux start path puts the worker tree in its own process group, so
 # stopping a worker signals its restart supervisor, its serving child, and any
 # job descendant together instead of leaving a supervisor to restart what was
@@ -1002,25 +1009,40 @@ fm_remote_job_read_single_line() {
   printf '%s\n' "$value"
 }
 
-fm_remote_job_lock_owner_matches_process() {
-  local account_home=$1 lock pid recorded_start actual_start recorded_command actual_command
-  fm_remote_job_prepare_state "$account_home" || return 1
+# Classify the worker ownership lock's recorded owner. Returns 0 when a live
+# process's recorded start and command match the lock (FM_REMOTE_JOB_OWNER_PID
+# names it), 1 when the record provably has no live owner - the process is gone
+# or its identity proves the recorded pid was reused - and 2 when the record is
+# incomplete or ps cannot report the process. Only 1 may be reclaimed: an
+# indeterminate record can still name a live owner, and the heartbeat is a
+# readiness signal, never an ownership lease.
+# shellcheck disable=SC2034 # FM_REMOTE_JOB_OWNER_PID is a sourceable output consumed by callers.
+fm_remote_job_lock_owner_status() {
+  local account_home=$1 lock pid recorded actual
+  fm_remote_job_prepare_state "$account_home" || return 2
   lock=$(fm_remote_job_worker_lock_path)
   [ -d "$lock" ] && [ ! -L "$lock" ] || return 1
-  pid=$(fm_remote_job_read_single_line "$lock/pid" 64) || return 1
-  case "$pid" in ''|*[!0-9]*) return 1 ;; esac
+  pid=$(fm_remote_job_read_single_line "$lock/pid" 64 2>/dev/null) || return 2
+  case "$pid" in ''|*[!0-9]*) return 2 ;; esac
   [ "$pid" -gt 1 ] || return 1
-  recorded_start=$(fm_remote_job_read_single_line "$lock/start" 256) || return 1
-  actual_start=$(fm_remote_job_process_start "$pid") || return 1
-  [ "$recorded_start" = "$actual_start" ] || return 1
-  recorded_command=$(fm_remote_job_read_single_line "$lock/command" 8192) || return 1
-  actual_command=$(fm_remote_job_process_command "$pid") || return 1
-  [ "$recorded_command" = "$actual_command" ] || return 1
+  kill -0 "$pid" 2>/dev/null || return 1
+  recorded=$(fm_remote_job_read_single_line "$lock/start" 256 2>/dev/null) || return 2
+  actual=$(fm_remote_job_process_start "$pid" 2>/dev/null) || return 2
+  [ "$recorded" = "$actual" ] || return 1
+  recorded=$(fm_remote_job_read_single_line "$lock/command" 8192 2>/dev/null) || return 2
+  actual=$(fm_remote_job_process_command "$pid" 2>/dev/null) || return 2
+  [ "$recorded" = "$actual" ] || return 1
   FM_REMOTE_JOB_OWNER_PID=$pid
+  return 0
+}
+
+fm_remote_job_lock_owner_matches_process() {
+  local account_home=$1
+  fm_remote_job_lock_owner_status "$account_home" || return 1
 }
 
 fm_remote_job_worker_owned_alive() {
-  local root=$1 account_home=$2 lock pid pid_file identity_file command ps_bin
+  local root=$1 account_home=$2 lock pid pid_file identity_file command ps_bin status
   [ "${FM_REMOTE_JOB_ACTIVE:-}" != 1 ] || return 0
   fm_remote_job_prepare_state "$account_home" || return 1
   lock=$(fm_remote_job_worker_lock_path)
@@ -1031,8 +1053,12 @@ fm_remote_job_worker_owned_alive() {
   case "$pid" in ''|*[!0-9]*) return 1 ;; esac
   identity_file=$(fm_remote_job_worker_identity_path)
   fm_remote_job_regular_bounded "$identity_file" 256 || return 1
-  fm_remote_job_probe "$account_home" || return 1
-  if fm_remote_job_lock_owner_matches_process "$account_home"; then
+  # A live recorded owner counts even when its heartbeat is stale: the probe is
+  # readiness, and treating staleness as death is what let replacement workers
+  # start beside a healthy generation instead of replacing it.
+  fm_remote_job_lock_owner_status "$account_home"
+  status=$?
+  if [ "$status" -eq 0 ]; then
     [ "$pid" = "$FM_REMOTE_JOB_OWNER_PID" ] || return 1
     return 0
   fi
