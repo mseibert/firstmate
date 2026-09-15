@@ -64,7 +64,8 @@
 # or a line naming an open finding, trips the stop; an `open`/`offen` word (or
 # its German inflections) is a finding unless negated within its own clause or
 # result cell, and a positive count before `finding(s)`/`remain(s)` is a
-# finding too. The evidence is read from the PR body and, when the task's mode
+# finding unless the count is immediately qualified as fixed, closed, resolved,
+# or behoben. The evidence is read from the PR body and, when the task's mode
 # no-mistakes or the body carries no gate block, from the newest exact-titled
 # comment of the authenticated operator; a clean read from either source
 # passes, and an unreadable, untitled, or foreign-authored comment is never
@@ -442,9 +443,11 @@ FIVE_LENS_COMMENT_TITLE='Findings and fixes from 5-lenses-review'
 # `open`/`offen` word, including the German inflections `offene`/`offenen`/
 # `offener`/`offenes`, counts only when no negation in the same clause or
 # result cell reaches it across punctuation or a positive count, and a positive
-# count before `finding(s)`/`remain(s)` counts as well. So `no finding remains
-# open` and `0 open findings` are clean verdicts, while `1 open finding`,
-# `2 offen`, `2 findings remain`, and `2 offene Findings` name one.
+# count before `finding(s)`/`remain(s)` counts as well unless the count is
+# immediately qualified as fixed, closed, resolved, or behoben. So `no finding
+# remains open`, `0 open findings`, and `2 findings fixed` are clean verdicts,
+# while `1 open finding`, `2 offen`, `2 findings remain`, and
+# `2 offene Findings` name one.
 names_open_finding() {
   printf '%s\n' "$1" \
     | grep -Eiq 'nicht[ -]?clean|not[[:space:]]+clean|findings?[[:space:]]*:[[:space:]]*[1-9][0-9]*' \
@@ -456,8 +459,10 @@ names_open_finding() {
         count = split(line, words, /[^a-z0-9_]+/)
         for (i = 1; i <= count; i++) {
           if (words[i] ~ /^[1-9][0-9]*$/ \
-            && (words[i + 1] == "finding" || words[i + 1] == "findings" \
-              || words[i + 1] == "remain" || words[i + 1] == "remains")) {
+            && (words[i + 1] == "remain" || words[i + 1] == "remains" \
+              || ((words[i + 1] == "finding" || words[i + 1] == "findings") \
+                && words[i + 2] != "fixed" && words[i + 2] != "closed" \
+                && words[i + 2] != "resolved" && words[i + 2] != "behoben"))) {
             found = 1
             exit
           }

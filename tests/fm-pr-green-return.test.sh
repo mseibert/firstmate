@@ -1547,6 +1547,68 @@ Result: 0 open findings
   out=$(report_case "$dir" "$NOW_LATE")
   assert_contains "$out" $'t1\tdue\tready' "a zero-count open findings result was rejected"
 
+  # A count immediately qualified as fixed/closed/resolved/behoben is a clean
+  # summary, not an open finding.
+  dir=$(make_case gate-table-fixed-summary)
+  write_policy "$dir" programmieren-community
+  write_meta "$dir" t1 "https://forgejo.example/seibert.group/programmieren-community/pulls/365" programmieren-community
+  tea_green "$dir"
+  tea_set_body "$dir" '## Five-Lens-Block
+
+| Lens | Ran | Findings | Fixed |
+|---|---|---|---|
+| code-review | yes | 0 | 0 |
+| maintainability-review | yes | 0 | 0 |
+| architecture-system-design-reviewer | yes | 0 | 0 |
+| design-decision-questioner | yes | 0 | 0 |
+| self-containment-review | yes | 0 | 0 |
+
+Result: 2 findings fixed, 0 remain
+'
+  out=$(report_case "$dir" "$NOW_LATE")
+  assert_contains "$out" $'t1\tdue\tready' "a fixed-summary count was held as an open finding"
+
+  dir=$(make_case gate-table-behoben-summary)
+  write_policy "$dir" programmieren-community
+  write_meta "$dir" t1 "https://forgejo.example/seibert.group/programmieren-community/pulls/365" programmieren-community
+  tea_green "$dir"
+  tea_set_body "$dir" '## Five-Lens-Block
+
+| Lens | Ran | Findings | Fixed |
+|---|---|---|---|
+| code-review | yes | 0 | 0 |
+| maintainability-review | yes | 0 | 0 |
+| architecture-system-design-reviewer | yes | 0 | 0 |
+| design-decision-questioner | yes | 0 | 0 |
+| self-containment-review | yes | 0 | 0 |
+
+Ergebnis: 1 Finding behoben, 0 offen
+'
+  out=$(report_case "$dir" "$NOW_LATE")
+  assert_contains "$out" $'t1\tdue\tready' "a behoben-summary count was held as an open finding"
+
+  # Open and left counts still hold; the remain count is pinned above.
+  for phrase in 'Result: 2 findings open' 'Result: 2 findings left'; do
+    dir=$(make_case "gate-table-count-$(printf '%s' "$phrase" | tr -c 'a-z0-9' '-')")
+    write_policy "$dir" programmieren-community
+    write_meta "$dir" t1 "https://forgejo.example/seibert.group/programmieren-community/pulls/365" programmieren-community
+    tea_green "$dir"
+    tea_set_body "$dir" "## Five-Lens-Block
+
+| Lens | Ran | Findings | Fixed |
+|---|---|---|---|
+| code-review | yes | 0 | 0 |
+| maintainability-review | yes | 0 | 0 |
+| architecture-system-design-reviewer | yes | 0 | 0 |
+| design-decision-questioner | yes | 0 | 0 |
+| self-containment-review | yes | 0 | 0 |
+
+$phrase
+"
+    out=$(report_case "$dir" "$NOW_LATE")
+    assert_contains "$out" "hard-stop-1" "the count phrase \"$phrase\" was accepted"
+  done
+
   # A non-numeric cell whose leading counts cover the findings stays clean.
   dir=$(make_case gate-table-refuted)
   write_policy "$dir" programmieren-community
