@@ -177,7 +177,7 @@ worker_lock_publish_abandoned() {
 worker_quarantined_execution_stopped() { # <account-home>
   local account_home=$1 job state kind file pid
   fm_remote_job_regular_bounded "$WORKER_LOCK/quarantine" 256 || return 1
-  fm_remote_job_lock_owner_matches_process "$account_home" && return 1
+  fm_remote_job_lock_owner_status "$account_home" && return 1
   for job in "$FM_REMOTE_JOB_JOBS"/job-*; do
     [ -d "$job" ] && [ ! -L "$job" ] || continue
     state=$(fm_remote_job_read_state "$job" 2>/dev/null || true)
@@ -458,6 +458,9 @@ worker_stop_active_execution() {
 worker_shutdown() {
   trap '' HUP INT TERM
   worker_publish_quarantine || {
+    # The lock no longer names this process, so this generation cannot guard
+    # it; the serving loop's ownership check stops its lanes on the next poll,
+    # and a caller that needs immediacy escalates to KILL.
     worker_error "cannot guard worker ownership for shutdown"
     trap worker_shutdown HUP INT TERM
     return 0
@@ -493,7 +496,10 @@ worker_exit_lock_lost() {
 }
 
 # Exit 0 so the Linux supervisor stops instead of restarting this generation
-# beside the owner that just took the queue.
+# beside the owner that just took the queue. macOS launchd's KeepAlive restarts
+# the process regardless of status; the restarted worker runs the same check and
+# exits again, which launchd throttles, so the re-check cycle is the pre-existing
+# shape for a foreign owner there.
 worker_stop_after_lock_loss() {
   worker_error "worker ownership moved to another generation; stopping instead of serving without it"
   worker_exit_lock_lost
@@ -1085,7 +1091,7 @@ main() {
     0) ;;
     2) exit 0 ;;
     3) worker_error "worker ownership is quarantined after an unconfirmed shutdown"; exit 75 ;;
-    *) worker_error "cannot acquire or safely reclaim worker ownership"; exit 1 ;;
+    *) worker_error "cannot acquire or safely reclaim worker ownership at $WORKER_LOCK"; exit 1 ;;
   esac
   trap worker_shutdown HUP INT TERM
   worker_publish_identity "$account_home" || { worker_error "cannot publish worker code identity"; exit 1; }

@@ -913,7 +913,10 @@ fm_remote_job_worker_lock_path() { printf '%s\n' "$FM_REMOTE_JOB_STATE/worker.lo
 fm_remote_job_process_start() {
   local pid=$1 ps_bin value
   if [ -x /bin/ps ]; then ps_bin=/bin/ps; elif [ -x /usr/bin/ps ]; then ps_bin=/usr/bin/ps; else return 1; fi
-  value=$("$ps_bin" -p "$pid" -o lstart= 2>/dev/null) || return 1
+  # Identity strings are recorded and later compared from other processes, and
+  # lstart is locale-formatted, so pin the C locale on both sides of that
+  # comparison; a locale difference would read a live owner as a reused pid.
+  value=$(LC_ALL=C "$ps_bin" -p "$pid" -o lstart= 2>/dev/null) || return 1
   [ -n "$value" ] || return 1
   case "$value" in *$'\n'*|*$'\r'*) return 1 ;; esac
   printf '%s\n' "$value"
@@ -922,7 +925,7 @@ fm_remote_job_process_start() {
 fm_remote_job_process_command() {
   local pid=$1 ps_bin value
   if [ -x /bin/ps ]; then ps_bin=/bin/ps; elif [ -x /usr/bin/ps ]; then ps_bin=/usr/bin/ps; else return 1; fi
-  value=$("$ps_bin" -p "$pid" -o command= 2>/dev/null) || return 1
+  value=$(LC_ALL=C "$ps_bin" -p "$pid" -o command= 2>/dev/null) || return 1
   [ -n "$value" ] || return 1
   case "$value" in *$'\n'*|*$'\r'*) return 1 ;; esac
   printf '%s\n' "$value"
@@ -931,7 +934,7 @@ fm_remote_job_process_command() {
 fm_remote_job_process_pgid() { # <pid>
   local pid=$1 ps_bin value
   if [ -x /bin/ps ]; then ps_bin=/bin/ps; elif [ -x /usr/bin/ps ]; then ps_bin=/usr/bin/ps; else return 1; fi
-  value=$("$ps_bin" -p "$pid" -o pgid= 2>/dev/null) || return 1
+  value=$(LC_ALL=C "$ps_bin" -p "$pid" -o pgid= 2>/dev/null) || return 1
   value=$(printf '%s' "$value" | tr -d '[:space:]')
   case "$value" in ''|*[!0-9]*) return 1 ;; esac
   printf '%s\n' "$value"
@@ -1017,8 +1020,10 @@ fm_remote_job_read_single_line() {
 # incomplete or ps cannot report the process. An acquirer reclaims only a record
 # it can prove has no live owner: a status-1 record, or a status-2 directory
 # whose pid was never published once its publish window has passed. A status-2
-# record that does carry a pid may still name a live owner, and the heartbeat is
-# a readiness signal, never an ownership lease.
+# record that does carry a pid may still name a live owner, so it is never
+# reclaimed on a timer: acquisition waits out its bounded budget and reports
+# failure, leaving a genuinely corrupted record to deliberate operator removal.
+# The heartbeat is a readiness signal, never an ownership lease.
 # shellcheck disable=SC2034 # FM_REMOTE_JOB_OWNER_PID is a sourceable output consumed by callers.
 fm_remote_job_lock_owner_status() {
   local account_home=$1 lock pid recorded actual
@@ -1037,11 +1042,6 @@ fm_remote_job_lock_owner_status() {
   [ "$recorded" = "$actual" ] || return 1
   FM_REMOTE_JOB_OWNER_PID=$pid
   return 0
-}
-
-fm_remote_job_lock_owner_matches_process() {
-  local account_home=$1
-  fm_remote_job_lock_owner_status "$account_home" || return 1
 }
 
 fm_remote_job_worker_owned_alive() {
