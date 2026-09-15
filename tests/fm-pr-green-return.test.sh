@@ -1492,6 +1492,18 @@ Result: 0 open findings
   out=$(report_case "$dir" "$NOW_LATE")
   assert_contains "$out" $'t1\tdue\tready' "a zero-count open findings result was rejected"
 
+  # Negations outside the original word list keep their clean reads too.
+  for phrase in 'Result: nothing open' 'Result: none open'; do
+    dir=$(gate_body_case "gate-table-negation-$(printf '%s' "$phrase" | tr -c 'a-z0-9' '-')" "## Five-Lens-Block
+
+$(write_gate_table)
+
+$phrase
+")
+    out=$(report_case "$dir" "$NOW_LATE")
+    assert_contains "$out" $'t1\tdue\tready' "the clean negation \"$phrase\" was rejected"
+  done
+
   # A count immediately qualified as fixed/closed/resolved/behoben is a clean
   # summary, not an open finding.
   dir=$(gate_body_case gate-table-fixed-summary "## Five-Lens-Block

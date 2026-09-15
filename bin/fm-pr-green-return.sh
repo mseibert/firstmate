@@ -62,8 +62,9 @@
 # at least five per-lens result entries, each positively naming a clean result
 # (`clean`, `passed`/`pass`, or a `kein`/`no blocker` entry); any other wording,
 # or a line naming an open finding, trips the stop. An `open`/`offen` word (or
-# its German inflections) is a finding unless a negation reaches it inside its
-# own clause or result cell; a `finding(s):` count with a positive value is
+# its German inflections) is a finding unless a `no`, `not`, `none`, `nothing`,
+# `without`, `zero`, `0`, or `kein*` negation reaches it inside its own clause
+# or result cell; a `finding(s):` count with a positive value is
 # always a finding, a positive count before `finding(s)` is a finding unless
 # the count is immediately qualified as fixed, closed, resolved, or behoben,
 # and a positive count before `remain(s)`, `remaining`, `left`, `unresolved`,
@@ -473,7 +474,8 @@ names_open_finding() {
           for (j = i - 1; j >= 1 && j >= i - 4; j--) {
             word = words[j]
             if (word == "__clause__") break
-            if (word == "no" || word == "not" || word == "without" || word == "zero" \
+            if (word == "no" || word == "not" || word == "none" || word == "nothing" \
+              || word == "without" || word == "zero" \
               || word == "0" || word ~ /^kein/) { negated = 1; break }
             if (word ~ /^[0-9]+$/) break
             if (word != "finding" && word != "findings" && word != "remain" \
