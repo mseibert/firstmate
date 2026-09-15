@@ -22,8 +22,9 @@
 #       prose results outside the clean forms hold, a table row naming an open
 #       finding or lacking covering counts holds while a covered refuted cell
 #       passes, and clean per-lens prose or a clean table passes; a no-mistakes
-#       task reads the exact-titled PR comment as its gate source, an open or
-#       missing comment still holds, and the direct-PR body path is unchanged
+#       task reads the exact-titled PR comment of the authenticated operator as
+#       its gate source, an open, missing, foreign-authored, or untitled
+#       comment still holds, and the direct-PR body path is unchanged
 #   (g) a missing, negative, or stale review verdict holds and names hard stop 2
 #   (g) the advisory review verdict holds only a blocking verdict or an
 #       unreadable channel, and names hard stop 2, while a missing or stale
@@ -278,19 +279,20 @@ gh_set_verdict() { # <dir> <verdict-value|none> [timestamp]
   mv "$tmp" "$dir/fix/gh-comments.json"
 }
 
-# gh_set_five_lens_comment <dir> <body|none> [title]: rewrite the GitHub comment
-# fixture with the verdict comment and, unless `none`, one designated five-lens
-# comment. The title can be overridden to pin the exact-title rule.
-gh_set_five_lens_comment() { # <dir> <body|none> [title]
-  local dir=$1 body=$2 title=${3:-Findings and fixes from 5-lenses-review} tmp
+# gh_set_five_lens_comment <dir> <body|none> [title] [author]: rewrite the
+# GitHub comment fixture with the verdict comment and, unless `none`, one
+# designated five-lens comment. The title and the comment author can be
+# overridden to pin the exact-title and operator-author rules.
+gh_set_five_lens_comment() { # <dir> <body|none> [title] [author]
+  local dir=$1 body=$2 title=${3:-Findings and fixes from 5-lenses-review} author=${4:-op} tmp
   tmp=$(mktemp)
   if [ "$body" = none ]; then
     jq -n --arg time "$VERDICT_TIME" \
       '[[{user: {login: "seibert-pr-agent"}, created_at: $time, updated_at: $time, body: "**Verdict:** Good to merge\n"}]]' > "$tmp"
   else
-    jq -n --arg time "$VERDICT_TIME" --arg title "$title" --arg body "$body" \
+    jq -n --arg time "$VERDICT_TIME" --arg title "$title" --arg body "$body" --arg author "$author" \
       '[[{user: {login: "seibert-pr-agent"}, created_at: $time, updated_at: $time, body: "**Verdict:** Good to merge\n"},
-        {user: {login: "op"}, created_at: $time, updated_at: $time, body: ($title + "\n\n" + $body)}]]' > "$tmp"
+        {user: {login: $author}, created_at: $time, updated_at: $time, body: ($title + "\n\n" + $body)}]]' > "$tmp"
   fi
   mv "$tmp" "$dir/fix/gh-comments.json"
 }
@@ -333,19 +335,20 @@ tea_set_verdict() { # <dir> <body-json>
     > "$dir/fix/tea-comments.json"
 }
 
-# tea_set_five_lens_comment <dir> <body|none> [title]: rewrite the Forgejo
-# comment fixture with the crabd verdict comment and, unless `none`, one
-# designated five-lens comment.
-tea_set_five_lens_comment() { # <dir> <body|none> [title]
-  local dir=$1 body=$2 title=${3:-Findings and fixes from 5-lenses-review} tmp
+# tea_set_five_lens_comment <dir> <body|none> [title] [author]: rewrite the
+# Forgejo comment fixture with the crabd verdict comment and, unless `none`,
+# one designated five-lens comment. The title and the comment author can be
+# overridden to pin the exact-title and operator-author rules.
+tea_set_five_lens_comment() { # <dir> <body|none> [title] [author]
+  local dir=$1 body=$2 title=${3:-Findings and fixes from 5-lenses-review} author=${4:-op} tmp
   tmp=$(mktemp)
   if [ "$body" = none ]; then
     jq -n --arg time "$VERDICT_TIME" \
       '[{user: {login: "seibert-pr-agent"}, updated_at: $time, body: "Reviewed this pull request - **Good to merge (LGTM).**\n<!-- crabd:tracking -->"}]' > "$tmp"
   else
-    jq -n --arg time "$VERDICT_TIME" --arg title "$title" --arg body "$body" \
+    jq -n --arg time "$VERDICT_TIME" --arg title "$title" --arg body "$body" --arg author "$author" \
       '[{user: {login: "seibert-pr-agent"}, updated_at: $time, body: "Reviewed this pull request - **Good to merge (LGTM).**\n<!-- crabd:tracking -->"},
-        {user: {login: "op"}, updated_at: $time, body: ($title + "\n\n" + $body)}]' > "$tmp"
+        {user: {login: $author}, updated_at: $time, body: ($title + "\n\n" + $body)}]' > "$tmp"
   fi
   mv "$tmp" "$dir/fix/tea-comments.json"
 }
@@ -1444,6 +1447,46 @@ Result: 1 finding open - see security-review
   out=$(report_case "$dir" "$NOW_LATE")
   assert_contains "$out" "hard-stop-1" "a clean table hid an open Result line"
 
+  # A negator in an earlier clause must not reach a later, separate open: a
+  # clean table cannot hide `Result: no blocker, 2 findings open`.
+  dir=$(make_case gate-table-negation-window)
+  write_policy "$dir" programmieren-community
+  write_meta "$dir" t1 "https://forgejo.example/seibert.group/programmieren-community/pulls/365" programmieren-community
+  tea_green "$dir"
+  tea_set_body "$dir" '## Five-Lens-Block
+
+| Lens | Ran | Findings | Fixed |
+|---|---|---|---|
+| code-review | yes | 0 | 0 |
+| maintainability-review | yes | 0 | 0 |
+| architecture-system-design-reviewer | yes | 0 | 0 |
+| design-decision-questioner | yes | 0 | 0 |
+| self-containment-review | yes | 0 | 0 |
+
+Result: no blocker, 2 findings open
+'
+  out=$(report_case "$dir" "$NOW_LATE")
+  assert_contains "$out" "hard-stop-1" "a negator in an earlier clause hid an open Result line"
+
+  # The negation does not cross result cells: the 0 in Findings must not
+  # negate the `1 offen` in Fixed.
+  dir=$(make_case gate-table-cross-cell)
+  write_policy "$dir" programmieren-community
+  write_meta "$dir" t1 "https://forgejo.example/seibert.group/programmieren-community/pulls/365" programmieren-community
+  tea_green "$dir"
+  tea_set_body "$dir" '## Five-Lens-Block
+
+| Lens | Ran | Findings | Fixed |
+|---|---|---|---|
+| code-review | yes | 0 | 0 (1 offen) |
+| maintainability-review | yes | 0 | 0 |
+| architecture-system-design-reviewer | yes | 0 | 0 |
+| design-decision-questioner | yes | 0 | 0 |
+| self-containment-review | yes | 0 | 0 |
+'
+  out=$(report_case "$dir" "$NOW_LATE")
+  assert_contains "$out" "hard-stop-1" "a zero in Findings negated an open in Fixed"
+
   # A non-numeric cell whose leading counts cover the findings stays clean.
   dir=$(make_case gate-table-refuted)
   write_policy "$dir" programmieren-community
@@ -1580,6 +1623,26 @@ Result: 1 finding open - see code-review'
   out=$(report_case "$dir" "$NOW_LATE")
   assert_contains "$out" "hard-stop-1" "a comment with a near title counted as the gate evidence"
 
+  # A clean exact-titled comment from anyone but the authenticated operator is
+  # not the evidence, on either forge.
+  dir=$(make_case nm-comment-foreign-forgejo)
+  write_policy "$dir" programmieren-community
+  write_meta "$dir" t1 "https://forgejo.example/seibert.group/programmieren-community/pulls/365" programmieren-community no-mistakes
+  tea_green "$dir"
+  tea_set_body "$dir" "Pipeline-opened body without a gate block."
+  tea_set_five_lens_comment "$dir" "$clean_comment" "Findings and fixes from 5-lenses-review" "intruder"
+  out=$(report_case "$dir" "$NOW_LATE")
+  assert_contains "$out" "hard-stop-1" "a foreign-authored comment cleared hard stop 1 on Forgejo"
+
+  dir=$(make_case nm-comment-foreign-github)
+  write_policy "$dir" project
+  write_meta "$dir" t1 "https://github.com/op/project/pull/7" project no-mistakes
+  gh_green "$dir"
+  gh_set_body "$dir" "Pipeline-opened body without a gate block."
+  gh_set_five_lens_comment "$dir" "$clean_comment" "Findings and fixes from 5-lenses-review" "intruder"
+  out=$(report_case "$dir" "$NOW_LATE")
+  assert_contains "$out" "hard-stop-1" "a foreign-authored comment cleared hard stop 1 on GitHub"
+
   # The direct-PR body path is unchanged: its own clean block still passes, its
   # own open block is never rescued by a clean comment, and a body without a
   # block may fall back to the designated comment.
@@ -1618,7 +1681,7 @@ Result: 1 finding open - see code-review'
   out=$(report_case "$dir" "$NOW_LATE")
   assert_contains "$out" $'t1\tdue\tready' "a body without a gate block did not fall back to the designated comment"
 
-  pass "the no-mistakes gate reads the exact-titled comment and the body path is unchanged"
+  pass "the no-mistakes gate reads the operator's exact-titled comment and the body path is unchanged"
 }
 
 test_forgejo_file_list_pagination() {

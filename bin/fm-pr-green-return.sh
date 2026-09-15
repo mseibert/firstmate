@@ -61,13 +61,13 @@
 # `Result: clean`, as a table whose every row ran and closed its findings, or as
 # at least five per-lens result entries, each positively naming a clean result
 # (`clean`, `passed`/`pass`, or a `kein`/`no blocker` entry); any other wording,
-# or a line naming an open finding, trips the stop, while a negated `open` such
-# as `no finding remains open` is a clean verdict, not a finding. The evidence
-# is read from the PR body and, when the task's mode is no-mistakes or the body
-# carries no gate block, from the newest PR comment whose first non-empty line
-# is exactly `Findings and fixes from 5-lenses-review`; a clean read from either
-# source passes, and an unreadable or untitled comment is never green. The
-# review verdict (item 2)
+# or a line naming an open finding, trips the stop, while an `open`/`offen`
+# negated within its own clause or result cell is a clean verdict, not a
+# finding. The evidence is read from the PR body and, when the task's mode is
+# no-mistakes or the body carries no gate block, from the newest exact-titled
+# comment of the authenticated operator; a clean read from either source
+# passes, and an unreadable, untitled, or foreign-authored comment is never
+# green. The review verdict (item 2)
 # follows the policy's forge-specific channels - GitHub's newest seibert-pr-agent
 # `**Verdict:**` comment, Forgejo's crabd tracking comment - and the policy's
 # current wording makes that item advisory, not a gate: a verdict that never
@@ -438,27 +438,33 @@ FIVE_LENS_COMMENT_TITLE='Findings and fixes from 5-lenses-review'
 
 # names_open_finding <text>: the open-finding wording the gate check treats as
 # a stop, shared by the table rows and the per-lens result lines. A bare
-# `open`/`offen` word counts only when nothing negates it: `no finding remains
-# open` and `0 open findings` are clean verdicts, while `1 open finding` and
-# `2 offen` name one.
+# `open`/`offen` word counts only when no negation in the same clause or result
+# cell reaches it across punctuation or a positive count: `no finding remains
+# open` and `0 open findings` are clean verdicts, while `1 open finding`,
+# `2 offen`, and `no blocker, 2 findings open` name one.
 names_open_finding() {
   printf '%s\n' "$1" \
     | grep -Eiq 'nicht[ -]?clean|not[[:space:]]+clean|findings?[[:space:]]*:[[:space:]]*[1-9][0-9]*' \
     || printf '%s\n' "$1" | grep -Eiwq 'majors?|must-?fix|should-?fix|hold|rework|leaks?' \
     || printf '%s\n' "$1" | awk '
       {
-        count = split(tolower($0), words, /[^a-z0-9]+/)
+        line = tolower($0)
+        gsub(/[,;.!?:]/, " __clause__ ", line)
+        count = split(line, words, /[^a-z0-9_]+/)
         for (i = 1; i <= count; i++) {
           if (words[i] != "open" && words[i] != "offen") continue
           negated = 0
           for (j = i - 1; j >= 1 && j >= i - 4; j--) {
-            if (words[j] == "no" || words[j] == "not" || words[j] == "kein" \
-              || words[j] == "keine" || words[j] == "keinen" || words[j] == "keinem" \
-              || words[j] == "keiner" || words[j] == "without" || words[j] == "zero" \
-              || words[j] == "0") {
-              negated = 1
-              break
-            }
+            word = words[j]
+            if (word == "__clause__") break
+            if (word == "no" || word == "not" || word == "without" || word == "zero" \
+              || word == "0" || word ~ /^kein/) { negated = 1; break }
+            if (word ~ /^[0-9]+$/) break
+            if (word != "finding" && word != "findings" && word != "remain" \
+              && word != "remains" && word != "bleibt" && word != "bleiben" \
+              && word != "is" && word != "are" && word != "ist" && word != "sind" \
+              && word != "left" && word != "any" && word != "blocker" \
+              && word != "blockers") break
           }
           if (!negated) { found = 1; exit }
         }
@@ -782,14 +788,16 @@ gh_verdict_read() {
   esac
 }
 
-# five_lens_comment_pick <comments-json>: the newest comment whose first
-# non-empty line is exactly the designated five-lens title, printed as its body;
-# empty when no comment matches or the payload cannot be parsed. The GitHub
-# `--paginate --slurp` payload is an array of comment pages, so one array level
-# is flattened first.
-five_lens_comment_pick() { # <comments-json>
-  printf '%s' "$1" | jq -r --arg title "$FIVE_LENS_COMMENT_TITLE" '
+# five_lens_comment_pick <comments-json> <author>: the newest comment whose
+# first non-empty line is exactly the designated five-lens title and whose
+# author is the authenticated operator, printed as its body; empty when no
+# comment matches or the payload cannot be parsed. The GitHub `--paginate
+# --slurp` payload is an array of comment pages, so one array level is
+# flattened first.
+five_lens_comment_pick() { # <comments-json> <author>
+  printf '%s' "$1" | jq -r --arg title "$FIVE_LENS_COMMENT_TITLE" --arg author "$2" '
     [ .[] | if type == "array" then .[] else . end
+      | select((.user.login // "") == $author)
       | select((.body // "") as $body
           | ($body | split("\n")
              | map(gsub("^[ \t\r]+|[ \t\r]+$"; ""))
@@ -807,7 +815,7 @@ gh_five_lens_comment_read() {
     PR_FIVE_LENS_COMMENT=
     return 0
   }
-  PR_FIVE_LENS_COMMENT=$(five_lens_comment_pick "$comments")
+  PR_FIVE_LENS_COMMENT=$(five_lens_comment_pick "$comments" "$OP_LOGIN")
 }
 
 gh_operator_login() {
@@ -957,7 +965,7 @@ forgejo_five_lens_comment_read() {
     PR_FIVE_LENS_COMMENT=
     return 0
   }
-  PR_FIVE_LENS_COMMENT=$(five_lens_comment_pick "$comments")
+  PR_FIVE_LENS_COMMENT=$(five_lens_comment_pick "$comments" "$OP_LOGIN")
 }
 
 forgejo_operator_login() {
@@ -1193,9 +1201,9 @@ evaluate_task() {
 
   # Hard stop 1 reads the gate from the PR body and, when the body carries no
   # gate block or the task is a no-mistakes one, from the designated comment
-  # too: the pipeline opens a no-mistakes PR, so the exact-titled comment is
-  # its normal evidence. A clean read from either source passes; an unreadable
-  # or untitled comment is never green.
+  # too: the pipeline opens a no-mistakes PR, so the operator's exact-titled
+  # comment is its normal evidence. A clean read from either source passes; an
+  # unreadable, untitled, or foreign-authored comment is never green.
   gate_mode=$(field_of "$meta" mode)
   if gate_clean "$PR_BODY"; then
     gate_ok=1
