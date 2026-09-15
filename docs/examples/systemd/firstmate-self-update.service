@@ -14,6 +14,11 @@
 # before its agent is replaced. There is no [Install] section: the timer
 # triggers this service by name, and enabling it would start a pass at login.
 #
+# PATH leads with the invoking user's harness install directories
+# (%h/.local/bin, %h/.npm-global/bin): a gated restart of a local mate resolves
+# that mate's harness executable from PATH, which the pin below would otherwise
+# restrict to system directories.
+#
 # Operator-facing configuration, the six-hour cadence, and the gated-restart
 # policy: docs/configuration.md "Self-update timer".
 [Unit]
@@ -26,5 +31,5 @@ ExecStart=@FM_SELF_UPDATE_RUN@ run
 WorkingDirectory=@FM_HOME@
 Environment=HOME=%h
 Environment=FM_HOME=@FM_HOME@
-Environment=PATH=/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin
+Environment=PATH=%h/.local/bin:%h/.npm-global/bin:/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin
 TimeoutStartSec=30min

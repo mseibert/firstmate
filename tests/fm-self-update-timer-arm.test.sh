@@ -108,10 +108,128 @@ run_verb() {  # <home> <verb> <out>
     "$ARM" "$verb" >"$out" 2>&1
 }
 
+# --- rendered-unit semantics -------------------------------------------------
+# The installed units are machine-consumed configuration, so assert them as
+# parsed directives rather than by grepping the file text: a commented-out or
+# reformatted line must not satisfy an assertion, and the assertions name
+# systemd's semantics (a single-valued key appears once; Environment= lines
+# accumulate variable assignments).
+
+parse_unit() {  # <file> -> "section<TAB>key<TAB>value" per directive
+  local file=$1 line current='' key value
+  while IFS= read -r line || [ -n "$line" ]; do
+    line=${line%$'\r'}
+    line=${line#"${line%%[![:space:]]*}"}
+    line=${line%"${line##*[![:space:]]}"}
+    [ -n "$line" ] || continue
+    case "$line" in
+      '#'*|';'*) continue ;;
+    esac
+    case "$line" in
+      \[*\])
+        current=${line#\[}
+        current=${current%\]}
+        continue
+        ;;
+    esac
+    [ -n "$current" ] || continue
+    case "$line" in
+      *=*)
+        key=${line%%=*}
+        value=${line#*=}
+        printf '%s\t%s\t%s\n' "$current" "$key" "$value"
+        ;;
+    esac
+  done < "$file"
+}
+
+unit_directive() {  # <file> <section> <key> -> the single value
+  local file=$1 section=$2 key=$3 s k v found='' have=no
+  while IFS=$'\t' read -r s k v; do
+    if [ "$s" != "$section" ] || [ "$k" != "$key" ]; then
+      continue
+    fi
+    if [ "$have" = yes ]; then
+      printf 'unit_directive: duplicate [%s] %s in %s\n' "$section" "$key" "$file" >&2
+      return 1
+    fi
+    found=$v
+    have=yes
+  done < <(parse_unit "$file")
+  [ "$have" = yes ] || return 1
+  printf '%s\n' "$found"
+}
+
+unit_has_directive() {  # <file> <section> <key>
+  local file=$1 section=$2 key=$3 s k v
+  while IFS=$'\t' read -r s k v; do
+    if [ "$s" = "$section" ] && [ "$k" = "$key" ]; then
+      return 0
+    fi
+  done < <(parse_unit "$file")
+  return 1
+}
+
+unit_environment() {  # <file> <variable> -> value assigned in [Service]
+  local file=$1 variable=$2 s k v assignment found='' have=no
+  while IFS=$'\t' read -r s k v; do
+    if [ "$s" != Service ] || [ "$k" != Environment ]; then
+      continue
+    fi
+    for assignment in $v; do
+      case "$assignment" in
+        "$variable"=*)
+          found=${assignment#"$variable"=}
+          have=yes
+          ;;
+      esac
+    done
+  done < <(parse_unit "$file")
+  [ "$have" = yes ] || return 1
+  printf '%s\n' "$found"
+}
+
+unit_has_placeholder() {  # <file> -> 0 when a template token remains
+  local file=$1 s k v
+  while IFS=$'\t' read -r s k v; do
+    case "$v" in
+      *'@FM_HOME@'*|*'@FM_SELF_UPDATE_RUN@'*) return 0 ;;
+    esac
+  done < <(parse_unit "$file")
+  return 1
+}
+
+assert_unit_directive() {  # <file> <section> <key> <expected> <msg>
+  local actual
+  actual=$(unit_directive "$1" "$2" "$3") \
+    || fail "$5 (no single [$2] $3 directive in $1)"
+  [ "$actual" = "$4" ] || fail "$5 (expected '$4', got '$actual')"
+}
+
+assert_unit_directive_absent() {  # <file> <section> <key> <msg>
+  if unit_has_directive "$1" "$2" "$3"; then
+    fail "$4"
+  fi
+}
+
+assert_unit_environment() {  # <file> <variable> <expected> <msg>
+  local actual
+  actual=$(unit_environment "$1" "$2") \
+    || fail "$4 (no Environment $2= assignment in $1)"
+  [ "$actual" = "$3" ] || fail "$4 (expected '$3', got '$actual')"
+}
+
+assert_path_has_dir() {  # <path-value> <directory> <msg>
+  case ":$1:" in
+    *":$2:"*) : ;;
+    *) fail "$3 (missing '$2' in '$1')" ;;
+  esac
+}
+
 # --- 1. install and idempotent arming ----------------------------------------
 
 test_arm_installs_both_units_and_starts_the_timer() {
-  local home out service timer
+  local home out service timer service_path
   home=$(make_home install)
   make_systemctl "$home"
   out="$home/arm.out"
@@ -121,18 +239,33 @@ test_arm_installs_both_units_and_starts_the_timer() {
   timer="$home/unit-dir/$TIMER_UNIT"
   assert_present "$service" "arm did not install the service unit"
   assert_present "$timer" "arm did not install the timer unit"
-  grep -q 'Type=oneshot' "$service" || fail "the service must be oneshot (the timer owns the cadence)"
-  grep -q '^Restart=' "$service" && fail "a oneshot pass must not carry a Restart= directive" || true
-  grep -q 'TimeoutStartSec=30min' "$service" || fail "the service must give the persist gate a generous timeout"
-  grep -q "ExecStart=$ROOT/bin/fm-self-update-timer.sh run" "$service" \
-    || fail "the service does not execute this repo's run wrapper"
-  grep -q "Environment=FM_HOME=$home" "$service" || fail "the service does not pin this home"
-  grep -q '@FM_HOME@\|@FM_SELF_UPDATE_RUN@' "$service" \
-    && fail "the installed service still carries an unrendered placeholder" || true
-  grep -q 'OnCalendar=\*-\*-\* 00,06,12,18:00:00' "$timer" || fail "the timer lost the six-hour calendar"
-  grep -q 'Persistent=true' "$timer" || fail "the timer lost Persistent=true"
-  grep -q 'WantedBy=timers.target' "$timer" || fail "the timer is not installable into timers.target"
-  grep -q "Unit=$SERVICE_UNIT" "$timer" || fail "the timer does not name the service unit"
+  assert_unit_directive "$service" Service Type oneshot \
+    "the service must be oneshot (the timer owns the cadence)"
+  assert_unit_directive_absent "$service" Service Restart \
+    "a oneshot pass must not carry a Restart= directive"
+  assert_unit_directive "$service" Service TimeoutStartSec 30min \
+    "the service must give the persist gate a generous timeout"
+  assert_unit_directive "$service" Service ExecStart "$ROOT/bin/fm-self-update-timer.sh run" \
+    "the service does not execute this repo's run wrapper"
+  assert_unit_environment "$service" FM_HOME "$home" \
+    "the service does not pin this home"
+  service_path=$(unit_environment "$service" PATH) \
+    || fail "the service does not set PATH for the gated restart"
+  assert_path_has_dir "$service_path" '%h/.local/bin' \
+    "the service PATH must let a local mate restart resolve a user-installed harness"
+  assert_path_has_dir "$service_path" '%h/.npm-global/bin' \
+    "the service PATH must let a local mate restart resolve a user-installed harness"
+  if unit_has_placeholder "$service"; then
+    fail "the installed service still carries an unrendered placeholder"
+  fi
+  assert_unit_directive "$timer" Timer OnCalendar '*-*-* 00,06,12,18:00:00' \
+    "the timer lost the six-hour calendar"
+  assert_unit_directive "$timer" Timer Persistent true \
+    "the timer lost Persistent=true"
+  assert_unit_directive "$timer" Timer Unit "$SERVICE_UNIT" \
+    "the timer does not name the service unit"
+  assert_unit_directive "$timer" Install WantedBy timers.target \
+    "the timer is not installable into timers.target"
   grep -q "enable --now $TIMER_UNIT" "$home/systemctl.log" || fail "arm never enabled and started the timer"
   grep -q 'daemon-reload' "$home/systemctl.log" || fail "arm never reloaded the daemon"
   assert_grep 'armed' "$out" "arm did not report the armed outcome"
@@ -163,11 +296,11 @@ test_rearm_rewrites_changed_units() {
   out="$home/arm.out"
   copy="$home/service.template"
   cp "$ROOT/docs/examples/systemd/$SERVICE_UNIT" "$copy"
-  printf '\n# rearm marker\n' >> "$copy"
+  printf '\n[Service]\nEnvironment=FM_SELF_UPDATE_REARM_MARKER=marker\n' >> "$copy"
   run_arm "$home" "$out" FM_SELF_UPDATE_SERVICE_TEMPLATE="$copy"
   expect_code 0 "$?" "first arm exit"
-  grep -q 'rearm marker' "$home/unit-dir/$SERVICE_UNIT" \
-    || fail "a changed template was not rendered into the installed unit"
+  assert_unit_environment "$home/unit-dir/$SERVICE_UNIT" FM_SELF_UPDATE_REARM_MARKER marker \
+    "a changed template was not rendered into the installed unit"
   [ "$(grep -c 'daemon-reload' "$home/systemctl.log")" -eq 1 ] || fail "the first install did not reload the daemon"
   run_arm "$home" "$out" FM_SELF_UPDATE_SERVICE_TEMPLATE="$copy"
   expect_code 0 "$?" "second arm exit"
