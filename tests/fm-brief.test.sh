@@ -473,7 +473,7 @@ assert_five_lens_rules() {  # <brief> <label>
       "$label DOD must carry the $lens placeholder row"
   done
   assert_no_grep "| architecture-system-design-reviewer |" "$brief" \
-    "$label DOD must name the installed lens, not the captain's alias, in the result table"
+    "$label DOD must name the installed lens in the result table"
   assert_grep "\`Result: clean\` only when every \`Ran\` cell says \`yes\` and no finding remains open" "$brief" \
     "$label DOD must define clean as every lens ran and nothing is open"
   assert_grep "\`Result: 1 finding open - see <lens>\`" "$brief" \
