@@ -31,6 +31,8 @@ CONFIG="${FM_CONFIG_OVERRIDE:-$FM_HOME/config}"
 . "$SCRIPT_DIR/fm-cursor-lib.sh"
 # shellcheck source=bin/fm-gemini-lib.sh
 . "$SCRIPT_DIR/fm-gemini-lib.sh"
+# shellcheck source=bin/fm-session-lock-lib.sh
+. "$SCRIPT_DIR/fm-session-lock-lib.sh"
 
 detect_own() {
   # Layer 1: environment markers for verified harnesses.
@@ -92,17 +94,18 @@ detect_own() {
   # CLAUDECODE and PI_CODING_AGENT can BOTH be present without either naming
   # this process's own harness, because each survives a launch that does not
   # clear it: a shell profile may export CLAUDECODE=1 into a hand-started Pi
-  # primary (Pi inherits it and its launcher adds PI_CODING_AGENT=true), and
-  # bin/fm-spawn.sh's claude launch line does not clear an inherited
-  # PI_CODING_AGENT, so a claude worker under a Pi primary carries both.
-  # Whichever marker is tested first then mislabels one of the two, so when
-  # both are set the process chain decides: the nearest harness ancestor is
-  # this process's real harness. A pi ancestor resolves pi; anything else - a
-  # claude ancestor, another harness, or a chain the walk cannot read - stays
-  # claude, the verdict the marker order produced before this branch, so a
-  # real claude process is never silently relabelled pi. bin/fm-spawn.sh also
-  # clears an inherited CLAUDECODE at the pi launch boundary; this branch is
-  # what covers a session a human started by hand.
+  # primary (Pi inherits it and its launcher adds PI_CODING_AGENT=true), and a
+  # claude session started by hand inside a Pi primary inherits
+  # PI_CODING_AGENT=true. bin/fm-spawn.sh clears each foreign marker at the
+  # matching launch boundary (CLAUDECODE for pi, PI_CODING_AGENT for claude),
+  # so this branch covers what those boundaries cannot: a session a human
+  # started by hand. Whichever marker is tested first then mislabels one of
+  # the two, so when both are set the process chain decides: the nearest
+  # harness ancestor is this process's real harness. A pi ancestor resolves
+  # pi; anything else - a claude ancestor, another harness, or a chain the
+  # walk cannot read - stays claude, the verdict the marker order produced
+  # before this branch, so a real claude process is never silently relabelled
+  # pi.
   if [ "${CLAUDECODE:-}" = "1" ] && [ "${PI_CODING_AGENT:-}" = "true" ]; then
     case "$(detect_ancestry)" in
       pi)
@@ -147,7 +150,7 @@ detect_own() {
 # both-marker branch in detect_own depends on exactly that nearest-ancestor
 # semantics.
 detect_ancestry() {
-  local pid=$$ comm args argv0
+  local pid=$$ comm args argv0 base
   for _ in 1 2 3 4 5 6 7 8; do
     comm=$(ps -o comm= -p "$pid" 2>/dev/null) || break
     argv0=$(fm_cursor_argv0_for_pid "$pid" "$comm" 2>/dev/null || true)
@@ -155,25 +158,50 @@ detect_ancestry() {
       echo cursor
       return
     fi
+    # Gemini is checked before claude for the same precedence reason as the
+    # marker layer above, so a gemini worker under a claude primary is never
+    # read as claude. This path check covers a natively-named gemini binary
+    # only. It does NOT reach the currently installed CLI, which is a node
+    # bundle (~/.local/bin/gemini -> @google/gemini-cli/bundle/gemini.js):
+    # modern Node on Linux reports `comm` as MainThread rather than node
+    # (measured on Node v24.20.0), so neither this check nor the node
+    # interpreter arm below matches a live gemini process. GEMINI_CLI above is
+    # therefore load-bearing for gemini rather than a fast path, which is why
+    # gemini is not offered as a primary or secondmate harness. Do NOT add
+    # MainThread to the interpreter arm to close this: that would make the args
+    # of EVERY node process searchable and let an unrelated node command
+    # carrying a harness name in its arguments claim an identity.
     if fm_gemini_path_is_gemini "$comm"; then
       echo gemini
       return
     fi
-    case "$(basename -- "$comm")" in
-      # gemini precedes claude here for the same precedence reason as the
-      # marker layer above, so a gemini worker under a claude primary is never
-      # read as claude. This arm covers a natively-named gemini binary only.
-      # It does NOT reach the currently installed CLI, which is a node bundle
-      # (~/.local/bin/gemini -> @google/gemini-cli/bundle/gemini.js): modern
-      # Node on Linux reports `comm` as MainThread rather than node (measured
-      # on Node v24.20.0), so neither this arm nor the node interpreter arm
-      # below matches a live gemini process. GEMINI_CLI above is therefore
-      # load-bearing for gemini rather than a fast path, which is why gemini
-      # is not offered as a primary or secondmate harness. Do NOT add
-      # MainThread to the interpreter arm to close this: that would make the
-      # args of EVERY node process searchable and let an unrelated node
-      # command carrying a harness name in its arguments claim an identity.
-      *claude*) echo claude; return ;;
+    args=$(ps -o args= -p "$pid" 2>/dev/null)
+    base=$(basename -- "$comm")
+    # The interpreter-shaped gemini arm comes before claude, the same
+    # precedence the marker layer applies, so a gemini worker whose own args
+    # also mention claude is never read as claude. It stays gated on the
+    # interpreter command name exactly as the node arm below is, so an
+    # unrelated process that merely mentions a gemini path in its arguments
+    # cannot claim the identity.
+    case "$base" in
+      node*|python*)
+        if fm_gemini_args_are_gemini "$args"; then
+          echo gemini
+          return
+        fi ;;
+    esac
+    # Claude Code's native installer names the per-session executable by its
+    # version (~/.local/share/claude/versions/2.1.220), so the basename
+    # identifies nothing while the install path still says claude. The
+    # session-lock identity owner already matches a whole `claude` path
+    # component on both platforms; reuse it here instead of re-deriving a
+    # basename rule that would climb past the real claude process to a Pi
+    # ancestor further up.
+    if fm_harness_process_matches "$comm" "$args" && [ "$FM_HARNESS_IS_CLAUDE" -eq 1 ]; then
+      echo claude
+      return
+    fi
+    case "$base" in
       *codex*) echo codex; return ;;
       *opencode*) echo opencode; return ;;
       *grok*) echo grok; return ;;
@@ -193,18 +221,12 @@ detect_ancestry() {
       # comp, and similar unrelated commands are not misread as this harness.
       # It sits above the node*|python* interpreter fallback deliberately: the
       # optional claude-bridge extension runs a nested executable literally
-      # named `claude` with its own node child, and that fallback's *claude*
-      # args glob would otherwise claim it if that subtree were ever walked.
+      # named `claude` with its own node child, and the claude identity check
+      # above would otherwise claim it if that subtree were ever walked.
       omp) echo omp; return ;;
       node*|python*)
         # Bare interpreter: match the harness name in its script path.
-        args=$(ps -o args= -p "$pid" 2>/dev/null)
-        if fm_gemini_args_are_gemini "$args"; then
-          echo gemini
-          return
-        fi
         case "$args" in
-          *claude*) echo claude; return ;;
           *codex*) echo codex; return ;;
           *opencode*) echo opencode; return ;;
           *grok*) echo grok; return ;;

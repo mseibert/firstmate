@@ -4,12 +4,17 @@
 #
 # CLAUDECODE=1 and PI_CODING_AGENT=true can appear together without either
 # naming this process's own harness: a shell profile may export CLAUDECODE=1
-# into a hand-started Pi primary, and fm-spawn's claude launch line does not
-# clear an inherited PI_CODING_AGENT. The load-bearing contracts:
+# into a hand-started Pi primary, and a claude session a human starts inside a
+# Pi primary inherits PI_CODING_AGENT=true. fm-spawn clears each foreign marker
+# at its own launch boundary, but a hand-started session never passes through
+# it. The load-bearing contracts:
 #   1. With both markers set, the NEAREST harness ancestor decides: a real
 #      `pi` process resolves pi, a real `claude` process stays claude even
 #      nested inside a pi process, and any other or unreadable chain keeps
-#      the conservative claude verdict instead of flipping to pi.
+#      the conservative claude verdict instead of flipping to pi. Claude's
+#      native installer names the per-session executable by its version, so
+#      the nested claude fixture is the version-named install-path shape, not
+#      a binary named claude.
 #   2. A lone marker keeps its existing meaning: CLAUDECODE alone is claude,
 #      PI_CODING_AGENT alone is pi, and pi-signed still comes only from
 #      FM_PI_HARNESS together with Pi's own marker.
@@ -45,6 +50,18 @@ make_named_shells() {  # <dir> -> echoes <bindir>
   printf '%s' "$dir"
 }
 
+# Claude Code's native installer names the per-session executable by its
+# version (~/.local/share/claude/versions/2.1.220), so the basename identifies
+# nothing: Linux reports comm=2.1.220 with the install path in argv[0], macOS
+# reports the whole version path as comm. The same shape
+# tests/fm-session-lock-ancestry.test.sh pins for the session-lock owner.
+make_versioned_claude() {  # <dir> -> echoes the version-named executable path
+  local dir=$1
+  mkdir -p "$dir/share/claude/versions"
+  ln -sf /bin/bash "$dir/share/claude/versions/2.1.220"
+  printf '%s' "$dir/share/claude/versions/2.1.220"
+}
+
 # A `ps` that reports no harness anywhere in the chain, so the conservative
 # both-marker verdict is deterministic no matter what launched this suite.
 make_fake_ps_no_harness() {  # <fakebin>
@@ -69,8 +86,9 @@ SH
 }
 
 test_both_markers_defer_to_the_nearest_harness_ancestor() {
-  local bin out
+  local bin out versioned_claude
   bin=$(make_named_shells "$TMP_ROOT/named")
+  versioned_claude=$(make_versioned_claude "$TMP_ROOT/claude-install")
 
   # Case 1: a hand-started Pi primary whose shell exported CLAUDECODE=1.
   # shellcheck disable=SC2016 # the quoted body expands inside the named shell
@@ -84,18 +102,21 @@ test_both_markers_defer_to_the_nearest_harness_ancestor() {
     "$bin/claude" -c '"$1"; :' _ "$HARNESS")
   [ "$out" = claude ] || fail "a real claude process with an inherited PI_CODING_AGENT must stay claude, got '$out'"
 
-  # The NEAREST ancestor decides, not any Pi ancestor further up: a claude
-  # process nested inside a pi process must still resolve claude.
+  # The NEAREST ancestor decides, not any Pi ancestor further up: a
+  # version-named claude process nested inside a pi process must still resolve
+  # claude. The trailing no-op keeps the pi ancestor alive instead of letting
+  # bash exec-replace it with the claude process, and the version-named
+  # install path is the real native shape whose basename names nothing.
   # shellcheck disable=SC2016 # both layers expand inside their named shells
   out=$("${CLEAN_MARKERS[@]}" CLAUDECODE=1 PI_CODING_AGENT=true \
-    "$bin/pi" -c '"$1" -c '\''"$1"; :'\'' _ "$2"' _ "$bin/claude" "$HARNESS")
-  [ "$out" = claude ] || fail "a claude process nested inside a pi process must resolve claude, got '$out'"
+    "$bin/pi" -c '"$1" -c '\''"$1"; :'\'' _ "$2"; :' _ "$versioned_claude" "$HARNESS")
+  [ "$out" = claude ] || fail "a version-named claude process nested inside a pi process must resolve claude, got '$out'"
 
   # A markerless harness under the same inherited markers keeps the
   # conservative verdict, so this branch changes no other adapter's identity.
   # shellcheck disable=SC2016 # both layers expand inside their named shells
   out=$("${CLEAN_MARKERS[@]}" CLAUDECODE=1 PI_CODING_AGENT=true \
-    "$bin/pi" -c '"$1" -c '\''"$1"; :'\'' _ "$2"' _ "$bin/codex" "$HARNESS")
+    "$bin/pi" -c '"$1" -c '\''"$1"; :'\'' _ "$2"; :' _ "$bin/codex" "$HARNESS")
   [ "$out" = claude ] || fail "both markers under a codex ancestor must keep the conservative claude verdict, got '$out'"
 
   # The signed identity still comes from the launch marker once ancestry proves pi.
