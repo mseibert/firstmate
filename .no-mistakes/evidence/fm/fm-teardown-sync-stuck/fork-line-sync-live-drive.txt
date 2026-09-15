@@ -1,0 +1,229 @@
+worktree under test: /home/mseibert/.no-mistakes/worktrees/4a711a5cbbc5/01M2J8STHHJK4BF9T1SJVAWJGD
+target commit: fcd65be2d7468be5c7a11aa74328aa11944bc064
+pre-fix bin:   fc0f99e (parent) extracted at /tmp/fm-live-evidence-prefix/bin
+
+########################################################################
+# A. fleet sync of the primary checkout on the seibert/main fork line
+#    (the exact call shape fm-teardown.sh's post-sync makes: script from
+#     the home's own bin/, the home as the project argument, no overrides)
+########################################################################
+
+--- before: branch=seibert/main head=4b58f63 behind_origin_main=0 behind_origin_seibert_main=1 ---
+
+$ env -u FM_HOME -u FM_ROOT_OVERRIDE -u FM_PROJECTS_OVERRIDE /tmp/fm-live-evidence/a/home/bin/fm-fleet-sync.sh /tmp/fm-live-evidence/a/home
+/tmp/fm-live-evidence/a/home: skipped: primary checkout on the seibert/main fork line (self-update owns it)
+
+--- after ---
+branch: seibert/main (before seibert/main)
+HEAD moved: no
+working tree: []
+origin/seibert/main refreshed by the fetch to: ff207f7
+
+########################################################################
+# B. same drive on the PRE-FIX tree: the exact reported false alarm
+########################################################################
+
+--- before: branch=seibert/main head=b21dfd5 behind_origin_main=0 ---
+
+$ env -u FM_HOME -u FM_ROOT_OVERRIDE -u FM_PROJECTS_OVERRIDE /tmp/fm-live-evidence/b/home/bin/fm-fleet-sync.sh /tmp/fm-live-evidence/b/home
+/tmp/fm-live-evidence/b/home: STUCK: on branch seibert/main, 0 commits behind origin/main - needs attention
+HEAD moved: no
+reported Anlass line reproduced:
+MATCH
+
+########################################################################
+# C. scope guard: a project clone under projects/ on a branch named
+#    seibert/main must still STUCK and stay untouched
+########################################################################
+
+$ env -u FM_HOME -u FM_ROOT_OVERRIDE /tmp/fm-live-evidence/c/home/bin/fm-fleet-sync.sh projects/foreign
+foreign: STUCK: on branch seibert/main, 1 commits behind origin/main - needs attention
+
+$ env -u FM_HOME -u FM_ROOT_OVERRIDE /tmp/fm-live-evidence/c/home/bin/fm-fleet-sync.sh
+foreign: STUCK: on branch seibert/main, 1 commits behind origin/main - needs attention
+foreign clone branch: seibert/main
+foreign clone moved: no
+
+########################################################################
+# D. adversarial: a DIRTY primary on seibert/main still STUCKs and keeps
+#    the uncommitted work (the allowance must not swallow the dirty case)
+########################################################################
+
+$ env -u FM_HOME -u FM_ROOT_OVERRIDE /tmp/fm-live-evidence/d/home/bin/fm-fleet-sync.sh /tmp/fm-live-evidence/d/home
+/tmp/fm-live-evidence/d/home: STUCK: on branch seibert/main with uncommitted changes, 0 commits behind origin/main - needs attention
+HEAD moved: no
+edit preserved: 1 occurrence(s)
+
+########################################################################
+# E. the benign path keeps the home's refresh work: fetch + branch pruning
+########################################################################
+
+--- branches before: [feature main seibert/main ] ---
+
+$ env -u FM_HOME -u FM_ROOT_OVERRIDE /tmp/fm-live-evidence/e/home/bin/fm-fleet-sync.sh /tmp/fm-live-evidence/e/home
+/tmp/fm-live-evidence/e/home: pruned feature
+/tmp/fm-live-evidence/e/home: skipped: primary checkout on the seibert/main fork line (self-update owns it)
+
+--- branches after: [main seibert/main ] ---
+HEAD moved: no
+
+########################################################################
+# F. adversarial: a symlinked home path still gets the benign report
+########################################################################
+
+--- 6a: script and project arg both through the symlink ---
+
+$ env -u FM_HOME -u FM_ROOT_OVERRIDE /tmp/fm-live-evidence/link-home/bin/fm-fleet-sync.sh /tmp/fm-live-evidence/link-home
+/tmp/fm-live-evidence/link-home: skipped: primary checkout on the seibert/main fork line (self-update owns it)
+
+--- 6b: script via physical home, project arg via symlink ---
+
+$ env -u FM_HOME -u FM_ROOT_OVERRIDE /tmp/fm-live-evidence/a/home/bin/fm-fleet-sync.sh /tmp/fm-live-evidence/link-home
+/tmp/fm-live-evidence/link-home: skipped: primary checkout on the seibert/main fork line (self-update owns it)
+
+--- 6c: script via symlink, project arg via physical home ---
+
+$ env -u FM_HOME -u FM_ROOT_OVERRIDE /tmp/fm-live-evidence/link-home/bin/fm-fleet-sync.sh /tmp/fm-live-evidence/a/home
+/tmp/fm-live-evidence/a/home: skipped: primary checkout on the seibert/main fork line (self-update owns it)
+
+########################################################################
+# G. no regression: ordinary project clones still fast-forward / report
+#    current, while the foreign seibert/main clone still STUCKs
+########################################################################
+
+--- before: alpha=39a1fc4 origin/main=39a1fc4 ---
+
+$ env -u FM_HOME -u FM_ROOT_OVERRIDE /tmp/fm-live-evidence/g/home/bin/fm-fleet-sync.sh
+alpha: synced 39a1fc4..e89d0a9
+beta: synced 39a1fc4..e89d0a9
+foreign: STUCK: on branch seibert/main, 1 commits behind origin/main - needs attention
+alpha after: head=e89d0a9 origin/main=e89d0a9 branch=main
+
+########################################################################
+# H. self-sync (fm-update.sh) on a mirror-less primary on seibert/main
+########################################################################
+
+--- before: branch=seibert/main head=166eca0 local-main=ABSENT ---
+
+$ env -u FM_HOME -u FM_ROOT_OVERRIDE /tmp/fm-live-evidence/h/home/bin/fm-update.sh
+firstmate: updated 166eca0..06574c0 (fast-forwarded origin/seibert/main)
+reread-firstmate: no
+restart-secondmates: none
+nudge-secondmates: none
+
+--- after ---
+branch: seibert/main
+HEAD moved: YES (to origin/seibert/main: 06574c0)
+local main mirror: 589f539 parents=1
+
+$ env -u FM_HOME -u FM_ROOT_OVERRIDE /tmp/fm-live-evidence/h/home/bin/fm-update.sh
+firstmate: already current
+reread-firstmate: no
+restart-secondmates: none
+nudge-secondmates: none
+
+########################################################################
+# I. self-sync with a stale clean main mirror and moved upstream main:
+#    the mirror advances ref-only and merges into the line
+########################################################################
+
+--- before: branch=seibert/main head=166eca0 local-main=589f539 origin/main=0bb20a5 ---
+
+$ env -u FM_HOME -u FM_ROOT_OVERRIDE /tmp/fm-live-evidence/i/home/bin/fm-update.sh
+firstmate: updated 166eca0..7215545 (merged main)
+reread-firstmate: no
+restart-secondmates: none
+nudge-secondmates: none
+
+--- after ---
+branch: seibert/main (must stay seibert/main)
+HEAD moved: YES
+local main mirror: 0bb20a5 wordcount=2 (2 = single parent, ref-only advance)
+line tip wordcount: 3 (3 = two parents, merge)
+line contains origin/main: yes
+line contains origin/seibert/main: yes
+line-own commit survived: yes
+
+$ env -u FM_HOME -u FM_ROOT_OVERRIDE /tmp/fm-live-evidence/i/home/bin/fm-update.sh
+firstmate: already current
+reread-firstmate: no
+restart-secondmates: none
+nudge-secondmates: none
+
+########################################################################
+# J. adversarial: a self-modified main mirror keeps the fork line
+#    untouched (skip, never force)
+########################################################################
+
+--- before: branch=seibert/main head=166eca0 local-main=166eca0 origin/main=589f539 ---
+
+$ env -u FM_HOME -u FM_ROOT_OVERRIDE /tmp/fm-live-evidence/j/home/bin/fm-update.sh
+firstmate: skipped: main diverged from origin/main
+reread-firstmate: no
+restart-secondmates: none
+nudge-secondmates: none
+branch: seibert/main HEAD moved: no
+
+########################################################################
+# K. end-to-end teardown of a firstmate-repo task (the reported Anlass):
+#    fm-teardown.sh post-sync on the home, post-fix tree
+########################################################################
+
+--- before teardown: branch=seibert/main head=e54a753 behind_origin_main=0 ---
+
+$ FM_ROOT_OVERRIDE=/tmp/fm-live-evidence/teardown-post/home ... /tmp/fm-live-evidence/teardown-post/home/bin/fm-teardown.sh task-x1
+teardown exit=0
+--- teardown stdout ---
+/tmp/fm-live-evidence/teardown-post/home: skipped: primary checkout on the seibert/main fork line (self-update owns it)
+teardown task-x1 complete (window firstmate:fm-task-x1, worktree /tmp/fm-live-evidence/teardown-post/wt)
+Backlog: task-x1 just finished (this home keeps no backlog at /tmp/fm-live-evidence/teardown-post/data/backlog.md). Update /tmp/fm-live-evidence/teardown-post/data/backlog.md - move task-x1 to Done, keep Done to the 10 most recent, then re-scan Queued and dispatch only work whose blockers are gone and date is due.
+--- teardown post state ---
+branch: seibert/main (must stay seibert/main)
+HEAD moved: no
+STUCK lines in teardown output: 0
+
+########################################################################
+# L. same end-to-end teardown on the PRE-FIX tree: the reported alarm
+########################################################################
+
+--- before teardown: branch=seibert/main behind_origin_main=0 ---
+
+$ FM_ROOT_OVERRIDE=/tmp/fm-live-evidence/teardown-prefix/home ... /tmp/fm-live-evidence/teardown-prefix/home/bin/fm-teardown.sh task-x1
+teardown exit=0
+--- teardown stdout ---
+/tmp/fm-live-evidence/teardown-prefix/home: STUCK: on branch seibert/main, 0 commits behind origin/main - needs attention
+teardown task-x1 complete (window firstmate:fm-task-x1, worktree /tmp/fm-live-evidence/teardown-prefix/wt)
+Backlog: task-x1 just finished (this home keeps no backlog at /tmp/fm-live-evidence/teardown-prefix/data/backlog.md). Update /tmp/fm-live-evidence/teardown-prefix/data/backlog.md - move task-x1 to Done, keep Done to the 10 most recent, then re-scan Queued and dispatch only work whose blockers are gone and date is due.
+STUCK lines in teardown output: 1
+HEAD moved: no
+
+done
+
+########################################################################
+# N. adversarial: the allowance is exactly seibert/main - the home on any
+#    OTHER named branch still STUCKs and stays untouched
+########################################################################
+
+--- before: branch=feature head=9dcaa07 ---
+
+$ env -u FM_HOME -u FM_ROOT_OVERRIDE /tmp/fm-live-evidence/n/home/bin/fm-fleet-sync.sh /tmp/fm-live-evidence/n/home
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+●  WORKTREE TANGLE - PRIMARY CHECKOUT IS ON A FEATURE BRANCH
+●  /tmp/fm-live-evidence/n/home is on 'feature', not its default branch 'main'.
+●  A crewmate likely branched/committed in the primary instead of its own worktree.
+●  The work is SAFE on the 'feature' ref.
+●  Restore the primary to 'main':
+●      git -C /tmp/fm-live-evidence/n/home checkout main
+●  then re-validate 'feature' in a proper isolated worktree.
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+/tmp/fm-live-evidence/n/home: STUCK: on branch feature, 1 commits behind origin/main - needs attention
+HEAD moved: no
+
+########################################################################
+# M. the watcher/tangle guard also treats the fork line as allowed:
+#    fm-guard.sh on the primary on seibert/main emits no tangle warning
+########################################################################
+
+$ env -u FM_HOME FM_ROOT_OVERRIDE=/tmp/fm-live-evidence/a/home /tmp/fm-live-evidence/a/home/bin/fm-guard.sh
+exit=0 stdout=[] stderr=[]
+tangle mentions: /tmp/guard.out:0 /tmp/guard.err:0 
