@@ -335,7 +335,8 @@ When no-mistakes is selected, no-mistakes alone owns review, fixes, tests, docum
 Never hold work outside no-mistakes for a manual clean verdict, stack serial manual reviews, or infer authority for one from security, architecture, or risk alone.
 A separate review or audit is allowed only when the captain explicitly requests that deliverable or the authorized task is a knowledge-only review; one named question remains scoped to that question.
 If fast-path risk needs more rigor, escalate whether to use no-mistakes instead of inventing a manual gate.
-The direct-PR definition of done carries a mandatory pre-PR five-lens gate, which is part of that path's contract rather than an independently stacked reviewer.
+The direct-PR and no-mistakes definitions of done both carry a mandatory five-lens gate - the PR body for direct-PR, one designated PR comment for no-mistakes - as part of each path's contract rather than an independently stacked reviewer.
+The captain's merge policy accepts a PR comment titled exactly `Findings and fixes from 5-lenses-review` as that evidence on a no-mistakes PR.
 The path's worker, automated gates, and captain approval remain authoritative:
 
 - **no-mistakes** runs the full pipeline through a PR, then waits for the configured merge authority.
@@ -378,7 +379,7 @@ The worker reports the PR when CI first becomes green rather than waiting for me
 
 ### PR ready, landing, and teardown
 
-For PR-based ship tasks, the ready signal depends on mode: `no-mistakes` reports `done: PR <url> checks green` after CI is green, while `direct-PR` reports `done: PR <url>` after opening the PR.
+For PR-based ship tasks, the ready signal depends on mode: `no-mistakes` reports `done: PR <url> checks green` after CI is green on the final head, or a variant naming an unclean five-lens comment or a red final head, while `direct-PR` reports `done: PR <url>` after opening the PR, or a variant naming an unclean five-lens gate; `bin/fm-dod-lib.sh` owns the exact done lines.
 Run `bin/fm-pr-check.sh <id> <PR url>` with the URL copied from that ready signal - it records `pr=` and the forge's `pr_head=` when available in the task's meta and arms the watcher's merge poll.
 Tell the captain the PR's full `https://...` URL copied from the worker's ready line or the task's `pr=` metadata, a concise outcome summary, and the no-mistakes risk level when applicable.
 A captain instruction to merge is explicit authority; `yolo` is the only standing routine merge authority.

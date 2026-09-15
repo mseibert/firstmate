@@ -28,6 +28,10 @@ set -u
 . "$ROOT/bin/fm-gemini-lib.sh"
 
 HARNESS="$ROOT/bin/fm-harness.sh"
+# Every detection case below states the markers it means to test, so drop the
+# ambient foreign markers first and keep the verdict independent of the harness
+# that launched the suite.
+fm_test_clear_harness_markers
 TMP_ROOT=$(fm_test_tmproot fm-gemini-harness)
 
 test_gemini_marker_outranks_inherited_claudecode() {

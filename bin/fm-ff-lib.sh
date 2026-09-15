@@ -17,12 +17,16 @@
 # ancestry rules.
 #
 # The durable seibert/main fork line is where the PRIMARY checkout may sit instead
-# of the upstream default branch. The origin update path then first advances the
-# clean `main` mirror to origin/<default> as a REF-ONLY fast-forward (the mirror
-# never gets its own commits), then MERGES that mirror into seibert/main, because
-# the line's own commits make a plain fast-forward impossible. Every guard stays
-# in force: offline, dirty, broken-mirror, or unmergeable targets are skipped
-# untouched, never forced.
+# of the upstream default branch. The origin update path keeps the clean `main`
+# mirror at origin/<default> as a REF-ONLY fast-forward, creating it REF-ONLY when
+# it is missing (the mirror never gets its own commits), then fast-forwards the
+# line itself onto origin/seibert/main when the line carries no own commits, and
+# MERGES the mirror into seibert/main for the upstream reconciliation, so a line
+# with own commits updates instead of skipping. Every guard stays in force:
+# offline, dirty, diverged or checked-out mirrors, and failed advances are skipped
+# untouched, never forced; an upstream merge that cannot complete after the line
+# already fast-forwarded leaves that advance in place and is reported as an update
+# with the merge failure, not as a skip.
 #
 # A linked-worktree secondmate home already holds the primary's commit in the
 # shared object store, so its local-HEAD sync is a purely local fast-forward that
@@ -291,54 +295,115 @@ live_secondmate_meta_records() {
 }
 
 # Advance a checkout on the durable seibert/main fork line in origin mode (see
-# the header). The line carries its own commits, so upstream cannot be
-# fast-forwarded onto it: the clean `main` mirror - which never gets its own
-# commits - is first advanced to origin/<default> as a REF-ONLY fast-forward,
-# then that mirror is MERGED into seibert/main. Every ordinary guard stays in
-# force and the line is left untouched when any of them trips: an offline fetch,
-# a dirty working tree (checked before this helper runs), a self-modified
-# (diverged) `main` mirror, a `main` mirror checked out in another worktree, or a
-# merge that cannot complete are all skipped, never forced. Sets FF_STATUS and
-# FF_INSTR like ff_target.
+# the header). The clean `main` mirror - which never gets its own commits - is
+# first kept at origin/<default> as a REF-ONLY fast-forward, created REF-ONLY at
+# origin/<default> when it is missing, and MERGED into seibert/main for the
+# upstream reconciliation. A line with no own commits ahead of origin/seibert/main
+# is fast-forwarded directly onto that remote line, so a home that only fell
+# behind OUR pushed line advances without a local `main` mirror. Every ordinary
+# guard stays in force and the line is left untouched when any of them trips: an
+# offline fetch, a dirty working tree (checked before this helper runs), a
+# self-modified (diverged) `main` mirror, a `main` mirror checked out in another
+# worktree, or a failed fast-forward are all skipped, never forced. A merge that
+# cannot complete after this run already fast-forwarded the line leaves that
+# advance in place and reports it as an update with the merge failure; without
+# such an advance it skips untouched. A line with own (unpushed) commits is never
+# rebased or force-moved: it goes through the mirror merge path like before. Sets
+# FF_STATUS and FF_INSTR like ff_target.
 ff_line_origin() {
   local dir=$1 label=$2 default=$3 base=$4 out before before_short after instr
-  local mirror mirror_rev mirror_base
-  mirror="refs/heads/$default"
-  mirror_rev=$(git -C "$dir" rev-parse --verify --quiet "$mirror^{commit}" 2>/dev/null) || {
-    echo "$label: skipped: cannot read $default"
+  local mirror mirror_rev mirror_base line_base advanced_ff=no
+
+  before=$(git -C "$dir" rev-parse HEAD 2>/dev/null) || {
+    echo "$label: skipped: cannot read HEAD"
     return 0
   }
+  before_short=$(git -C "$dir" rev-parse --short "$before")
+  mirror="refs/heads/$default"
   mirror_base=$(git -C "$dir" rev-parse "$base" 2>/dev/null) || {
     echo "$label: skipped: cannot read $base"
     return 0
   }
-  # Advance the clean mirror when it is behind. A self-modified mirror (no longer
-  # an ancestor of origin/<default>) is the diverged guard and skips; a mirror
-  # checked out in another worktree cannot move without tangling that checkout.
-  if [ "$mirror_rev" != "$mirror_base" ]; then
-    if ! git -C "$dir" merge-base --is-ancestor "$mirror" "$base" 2>/dev/null; then
-      echo "$label: skipped: $default diverged from $base"
+
+  # Guard the mirror before anything moves. A self-modified mirror (no longer an
+  # ancestor of origin/<default>) is the diverged guard and skips; a mirror that
+  # must advance but is checked out in another worktree cannot move without
+  # tangling that checkout. A missing mirror needs neither guard: it is created
+  # REF-ONLY at origin/<default> below, never checked out and never given its own
+  # commits.
+  if mirror_rev=$(git -C "$dir" rev-parse --verify --quiet "$mirror^{commit}" 2>/dev/null); then
+    if [ "$mirror_rev" != "$mirror_base" ]; then
+      if ! git -C "$dir" merge-base --is-ancestor "$mirror" "$base" 2>/dev/null; then
+        echo "$label: skipped: $default diverged from $base"
+        return 0
+      fi
+      if [ -n "$(git -C "$dir" for-each-ref --format='%(worktreepath)' "$mirror" 2>/dev/null)" ]; then
+        echo "$label: skipped: $default is checked out in another worktree"
+        return 0
+      fi
+    fi
+  else
+    mirror_rev=""
+  fi
+
+  # Keep the clean mirror at origin/<default> as a REF-ONLY fast-forward, creating
+  # it REF-ONLY when missing. The mirror never gets its own commits, and creation
+  # refuses rather than clobbering a `main` that appeared concurrently.
+  if [ -z "$mirror_rev" ]; then
+    if ! git -C "$dir" update-ref "$mirror" "$mirror_base" ""; then
+      echo "$label: skipped: could not create $default"
       return 0
     fi
-    if [ -n "$(git -C "$dir" for-each-ref --format='%(worktreepath)' "$mirror" 2>/dev/null)" ]; then
-      echo "$label: skipped: $default is checked out in another worktree"
-      return 0
-    fi
+  elif [ "$mirror_rev" != "$mirror_base" ]; then
     if ! git -C "$dir" update-ref "$mirror" "$mirror_base" "$mirror_rev"; then
       echo "$label: skipped: could not advance $default"
       return 0
     fi
   fi
-  # The line already carrying the fresh mirror is the current case.
+
+  # Fast-forward the line itself onto the remote fork line when it carries no own
+  # commits: HEAD is then an ancestor of origin/seibert/main, so this is a plain
+  # fast-forward and no local work is at risk. A line with own (unpushed) commits
+  # is never rebased or force-moved; it falls through to the mirror merge below.
+  line_base=$(git -C "$dir" rev-parse --verify --quiet 'refs/remotes/origin/seibert/main^{commit}' 2>/dev/null || true)
+  if [ -n "$line_base" ] && [ "$before" != "$line_base" ] \
+    && git -C "$dir" merge-base --is-ancestor HEAD "$line_base" 2>/dev/null; then
+    if ! out=$(git -C "$dir" merge --ff-only origin/seibert/main 2>&1); then
+      echo "$label: skipped: fast-forward to origin/seibert/main failed: $(first_line "$out")"
+      return 0
+    fi
+    advanced_ff=yes
+  fi
+
+  # The line already carrying the fresh mirror is the current case - unless this
+  # run also fast-forwarded the line itself, which is then an update.
   if git -C "$dir" merge-base --is-ancestor "$mirror" HEAD 2>/dev/null; then
-    FF_STATUS="current"
-    echo "$label: already current"
+    if [ "$advanced_ff" = no ]; then
+      FF_STATUS="current"
+      echo "$label: already current"
+      return 0
+    fi
+    after=$(git -C "$dir" rev-parse --short HEAD)
+    instr=$(changed_instr "$dir" "$before")
+    FF_STATUS="updated"
+    FF_INSTR="$instr"
+    if [ -n "$instr" ]; then
+      echo "$label: updated $before_short..$after (fast-forwarded origin/seibert/main; instructions changed: $instr)"
+    else
+      echo "$label: updated $before_short..$after (fast-forwarded origin/seibert/main)"
+    fi
     return 0
   fi
-  before=$(git -C "$dir" rev-parse HEAD)
-  before_short=$(git -C "$dir" rev-parse --short HEAD)
   if ! out=$(git -C "$dir" merge "$default" --no-edit 2>&1); then
     git -C "$dir" merge --abort >/dev/null 2>&1 || true
+    if [ "$advanced_ff" = yes ]; then
+      after=$(git -C "$dir" rev-parse --short HEAD)
+      instr=$(changed_instr "$dir" "$before")
+      FF_STATUS="updated"
+      FF_INSTR="$instr"
+      echo "$label: updated $before_short..$after (fast-forwarded origin/seibert/main; merge of $default failed: $(first_line "$out"))"
+      return 0
+    fi
     echo "$label: skipped: merge of $default failed: $(first_line "$out")"
     return 0
   fi
@@ -429,10 +494,12 @@ ff_target() {
     return 0
   fi
 
-  # On the seibert/main fork line an origin update first advances the clean `main`
-  # mirror and then MERGES it into the line (own commits rule out a fast-forward).
-  # The local-HEAD sync needs no merge: its base is already a commit of this
-  # line, so seibert/main is fast-forwarded like the default branch below.
+  # On the seibert/main fork line an origin update keeps the clean `main` mirror
+  # at origin/<default> (creating it REF-ONLY when missing), fast-forwards the
+  # line onto origin/seibert/main when it has no own commits, and MERGES the
+  # mirror into the line for the upstream reconciliation. The local-HEAD sync
+  # needs no merge: its base is already a commit of this line, so seibert/main is
+  # fast-forwarded like the default branch below.
   if [ "$cur" = "seibert/main" ] && [ "$base_mode" = origin ]; then
     ff_line_origin "$dir" "$label" "$default" "$base"
     return 0

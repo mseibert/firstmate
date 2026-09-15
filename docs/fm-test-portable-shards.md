@@ -67,7 +67,7 @@ Assignment is longest-processing-time bin packing over per-script duration hints
 The 157 current hints include the slowest measurements retained from the `fm-test-timing-portable-serial-*` artifacts of eight green CI runs on 2026-09-13/14: [34885988388](https://github.com/mseibert/firstmate/actions/runs/34885988388), [34874114551](https://github.com/mseibert/firstmate/actions/runs/34874114551), [34874093783](https://github.com/mseibert/firstmate/actions/runs/34874093783), [34874080148](https://github.com/mseibert/firstmate/actions/runs/34874080148), [34812566654](https://github.com/mseibert/firstmate/actions/runs/34812566654), and [34759444930](https://github.com/mseibert/firstmate/actions/runs/34759444930) on `seibert/main`, plus [34838500046](https://github.com/mseibert/firstmate/actions/runs/34838500046) and [34787351600](https://github.com/mseibert/firstmate/actions/runs/34787351600) on the fork's pull-request line, plus the 5121 ms native-Windows focused runner measurement for `tests/fm-pi-windows-shell-invocation.test.sh` from 2026-09-06T21:02Z.
 Those per-script maxima total 4927598 ms of conservative balance weight.
 Taking the slowest of several CI runs rather than a single run keeps the balance honest on a slow runner: individual scripts varied by up to 20% between runs.
-A script with no hint gets the conservative `PORTABLE_SERIAL_DEFAULT_WEIGHT_MS` default; the current 157-script lane has no such script, so its assignment weight is 4927598 ms.
+A script with no hint gets the conservative `PORTABLE_SERIAL_DEFAULT_WEIGHT_MS` default; the current 158-script lane has one such script, bringing its assignment weight to 4954598 ms.
 Hints only affect balance: the coverage guard keeps the partition complete and disjoint whatever they say, so a stale hint costs a slower shard rather than lost coverage.
 Balance is still worth keeping current, because enough unmeasured scripts let one shard carry more than twice another shard's real work and reach the job cap while another runner sits idle.
 That is not hypothetical: by 2026-09-01 the lane had grown from 116 to 139 scripts and from ~42 to ~63 minutes, 17 scripts were still unmeasured, and several hints were low by 2-5x, so shard 3 of 4 ran 17-20 minutes against its 20-minute cap while shard 1 ran 11.5 minutes and run [33574154856](https://github.com/kunchenguid/firstmate/actions/runs/33574154856) timed out seconds after a passing test.
@@ -77,15 +77,15 @@ Refresh the hints whenever the serial lane gains scripts, rather than waiting fo
 
 | Lane | Script count | Estimated duration |
 |---|---:|---:|
-| `portable-serial-1of5` | 30 | 985535 ms (~16.43 min) |
-| `portable-serial-2of5` | 32 | 985504 ms (~16.43 min) |
-| `portable-serial-3of5` | 32 | 985516 ms (~16.43 min) |
-| `portable-serial-4of5` | 31 | 985511 ms (~16.43 min) |
-| `portable-serial-5of5` | 32 | 985532 ms (~16.43 min) |
-| imbalance | | 31 ms |
+| `portable-serial-1of5` | 30 | 990908 ms (~16.52 min) |
+| `portable-serial-2of5` | 33 | 990924 ms (~16.52 min) |
+| `portable-serial-3of5` | 32 | 990931 ms (~16.52 min) |
+| `portable-serial-4of5` | 31 | 990898 ms (~16.51 min) |
+| `portable-serial-5of5` | 32 | 990937 ms (~16.52 min) |
+| imbalance | | 39 ms |
 
-The current table is generated from the runner's retained maxima, with no script left on the default.
-Every shard's assignment weight is its conservative worst case, 16.43 min, which is 37% of the 45-minute job cap.
+The current table is generated from the runner's retained maxima plus its default for the one unhinted script.
+Every shard's assignment weight is its conservative worst case, 16.52 min, which is 37% of the 45-minute job cap.
 
 Before the refresh the same partition was balanced on hints that no longer described the lane: shard 4's hint said 14.00 min while the scripts it held measured 16.69 min on average and 19.88 min at their slowest.
 
@@ -137,7 +137,7 @@ Portable shards, each portable serial shard, and the Herdr lane upload runner-ge
 | Lane | Bound | Rationale |
 |---|---|---|
 | portable parallel 1/2 | job `timeout-minutes: 10` | The measured shard sums are about three minutes and the timeout is a hang tripwire. |
-| portable serial 1-5 | job `timeout-minutes: 45` | Each balanced shard carries 16.43 minutes of conservative assignment weight, and the worst shard measured so far ran 29m44s of test time in [run 34911370911](https://github.com/mseibert/firstmate/actions/runs/34911370911) on 2026-09-15 - `tests/fm-watch-triage.test.sh` alone took 22m17s against its 6m36s hint - in a job the 30-minute cap cancelled before its timing artifact finished uploading even though every test had passed. 45 minutes keeps the bound a hang tripwire with roughly 1.5x margin over the worst measured shard instead of the routine end of the lane. |
+| portable serial 1-5 | job `timeout-minutes: 45` | Each balanced shard carries 16.52 minutes of conservative assignment weight, and the worst shard measured so far ran 29m44s of test time in [run 34911370911](https://github.com/mseibert/firstmate/actions/runs/34911370911) on 2026-09-15 - `tests/fm-watch-triage.test.sh` alone took 22m17s against its 6m36s hint - in a job the 30-minute cap cancelled before its timing artifact finished uploading even though every test had passed. 45 minutes keeps the bound a hang tripwire with roughly 1.5x margin over the worst measured shard instead of the routine end of the lane. |
 | Herdr | family-run step `timeout-minutes: 20`; job `timeout-minutes: 75` backstop | Healthy runs finished around 7 minutes before this lane gained `fm-backend-herdr-focus-flash-e2e`, which measures about 2 minutes against a real lab locally, so the step bound is still the hang tripwire (cleanup and timing artifacts still upload) while the job cap stays a last-resort backstop. Refresh this figure from the lane's uploaded timing artifact. |
 
 Timeouts are hang tripwires rather than expected healthy durations.

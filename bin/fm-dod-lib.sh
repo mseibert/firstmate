@@ -11,12 +11,12 @@
 # verdict covers the head, and every verdict request is preceded by a target-base
 # check and a mergeable check. local-only never requests a verdict and carries
 # no such block.
-# The direct-PR block additionally carries the five-lens gate requirement: the
-# PR body must hold a `## Five-lens gate` section with the result of every lens,
-# because the captain's merge policy treats a missing or unreported gate exactly
-# like an open finding, and the worker opening the PR is the only actor that can
-# write it. no-mistakes opens its PR through the pipeline and local-only opens
-# none, so only direct-PR carries that block.
+# Both PR-opening blocks carry the five-lens gate requirement: the captain's
+# merge policy treats a missing or unreported gate exactly like an open finding.
+# direct-PR carries it as a mandatory `## Five-lens gate` section in the PR body
+# the worker opens; no-mistakes carries the same lenses as one designated PR
+# comment, because the pipeline writes the PR body. local-only opens no PR and
+# carries neither.
 # fm_dod_block <no-mistakes|direct-PR|local-only> <task-id> prints the block on
 # stdout with no trailing blank line. The caller validates the mode; an unknown
 # mode is refused rather than silently rendered as the pipeline contract.
@@ -232,22 +232,28 @@ Correct a wrong base before requesting anything, then check that the branch is m
 EOF
 }
 
-# Shared five-lens gate requirement for the direct-PR definition of done. The
-# captain's merge policy treats a PR body without a `## Five-lens gate` section
-# exactly like one with open findings, and the block only counts when every
-# lens reports its own result. The one-line focus per lens keeps the requirement
-# self-contained for a worker whose harness has no lens skill of its own, and the
-# block tells the worker to surface an unclean gate in its done line so the
-# ready signal carries the open gate instead of hiding it behind a bare PR URL. Emitted with a trailing
-# blank line so callers can chain it into their definition-of-done heredocs.
-fm_five_lens_gate_block() {
+# Shared five-lens rule text for both PR-opening definitions of done: the lens
+# list with its one-line focus, the per-lens result table, the two-sided Result
+# rule, and the bounded re-run rule that keeps every later fix gated.
+# <lens-intro> opens the lens list, <table-intro> introduces the table, the
+# optional <between> sits between them, and the optional <heading> is emitted
+# directly above the table. Emitted with no trailing blank line so callers can
+# append their own mode-specific sentences.
+fm_five_lens_rules_block() {  # <lens-intro> <table-intro> [<between>] [<heading>]
+  local lens_intro=$1 table_intro=$2 between=${3:-} heading=${4:-}
+  cat <<EOF
+$lens_intro \`code-review\` (correctness), \`maintainability-review\` (rot, bandaids, speculative scaffolding), \`structural-fit-review\` (structural fit and defended choices), \`design-decision-questioner\` (challenge the decisions), \`self-containment-review\` (context a repo reader cannot resolve).
+The \`structural-fit-review\` lens is also called \`architecture-system-design-reviewer\`.
+EOF
+  if [ -n "$between" ]; then
+    printf '%s\n' "$between"
+  fi
+  printf '%s\n' "$table_intro"
+  printf '\n'
+  if [ -n "$heading" ]; then
+    printf '%s\n' "$heading"
+  fi
   cat <<'EOF'
-The PR body must carry its own `## Five-lens gate` section with the result of every lens, because a missing, incomplete, or unreported gate counts exactly like an open finding.
-Run the five lenses over the branch diff, each in its own fresh context (a subagent or a fresh session), and fix what they find: `code-review` (correctness), `maintainability-review` (rot, bandaids, speculative scaffolding), `structural-fit-review` (structural fit and defended choices), `design-decision-questioner` (challenge the decisions), `self-containment-review` (context a repo reader cannot resolve).
-The `structural-fit-review` lens is also called `architecture-system-design-reviewer`.
-Record one row per lens in the PR body - whether it ran, how many findings it reported, how many you fixed - in this shape, replacing every placeholder with the real result:
-
-## Five-lens gate
 | Lens | Ran | Findings | Fixed |
 |---|---|---|---|
 | code-review | <yes or no> | <n> | <n> |
@@ -255,11 +261,59 @@ Record one row per lens in the PR body - whether it ran, how many findings it re
 | structural-fit-review | <yes or no> | <n> | <n> |
 | design-decision-questioner | <yes or no> | <n> | <n> |
 | self-containment-review | <yes or no> | <n> | <n> |
-
+EOF
+  printf '\n'
+  cat <<'EOF'
 End it with `Result: clean` only when every `Ran` cell says `yes` and no finding remains open; otherwise name what is not clean there, as `Result: 1 finding open - see <lens>` or `Result: 1 lens did not report - see <lens>`.
 Fix findings and re-run the lenses each fix affects, up to three rounds (a round is one lens pass plus its fixes; a later round re-runs only the lenses a fix affects); a lens that could not run is retried once before it is recorded as not-run.
+EOF
+}
+
+# Direct-PR five-lens gate requirement. The shared rules helper carries the lens
+# list, table, and Result rule; this block adds the mandatory `## Five-lens gate`
+# body section, its degradation sentences, and the unclean done line. The one-line
+# focus per lens keeps the requirement self-contained for a worker whose harness
+# has no lens skill of its own, and the block tells the worker to surface an
+# unclean gate in its done line so the ready signal carries the open gate instead
+# of hiding it behind a bare PR URL. Emitted with a trailing blank line so callers
+# can chain it into their definition-of-done heredocs.
+fm_five_lens_gate_block() {
+  cat <<'EOF'
+The PR body must carry its own `## Five-lens gate` section with the result of every lens, because a missing, incomplete, or unreported gate counts exactly like an open finding.
+EOF
+  fm_five_lens_rules_block \
+    "Run the five lenses over the branch diff, each in its own fresh context (a subagent or a fresh session), and fix what they find:" \
+    "Record one row per lens in the PR body - whether it ran, how many findings it reported, how many you fixed - in this shape, replacing every placeholder with the real result:" \
+    "" "## Five-lens gate"
+  cat <<'EOF'
 Run the gate on the branch content you are about to push, after the rebase and before the verdict request and freeze in the ordering above; re-run the lenses affected by any later change - a fix, or a rebase that changed the diff - so every pushed line has been gated.
 If the final result is not clean, append `done: PR {url} - five-lens gate: <what is not clean>` instead of the plain done line, so the open gate reaches firstmate with the ready signal.
+
+EOF
+}
+
+# No-mistakes five-lens gate requirement. no-mistakes opens the PR through the
+# pipeline, so the worker cannot write the PR body; the gate evidence goes into
+# one designated PR comment instead. The block calls the shared
+# fm_five_lens_rules_block for the lens list, per-lens result rows, and Result
+# rule, adds the final-head and CI-state rule, and states that the captain's
+# merge policy accepts the exact-titled comment as the five-lens evidence.
+# Emitted with a trailing blank line so callers can chain it into their
+# definition-of-done heredocs.
+fm_five_lens_comment_block() {
+  cat <<'EOF'
+no-mistakes opens the PR through the pipeline, so the five-lens gate for this mode is a separate PR comment instead of a PR-body section.
+EOF
+  fm_five_lens_rules_block \
+    "After the pipeline opens the PR, run the five lenses over the branch diff, each in its own fresh context (a subagent or a fresh session):" \
+    "Then post exactly ONE comment on the PR with the title \`Findings and fixes from 5-lenses-review\`, recording one row per lens in this shape, replacing every placeholder with the real result:" \
+    "Fix what they find and push the fixes as an ADDITIONAL commit on the same branch; when nothing was found, push nothing and say so in the comment."
+  cat <<'EOF'
+The comment must name the FINAL head SHA and the CI state on that head; after a fix commit the gate covers the head after that commit, not the pipeline head.
+The pipeline verdict covers the pipeline head, and the five-lens comment plus CI cover the final head after any lens fix - that split is this mode's accepted tradeoff.
+Keep the order strict: lenses, then fixes, then push, then the comment.
+Never merge the PR; the configured merge authority decides.
+The captain's merge policy accepts this exact-titled comment as the five-lens evidence on a no-mistakes PR, so it satisfies the merge gate; a comment with any other title does not count.
 
 EOF
 }
@@ -301,6 +355,10 @@ When you believe it is complete, append \`done: {summary}\` to the status file a
 Firstmate will then instruct you to run /no-mistakes to validate and ship a PR.
 EOF
       fm_verdict_ordering_block "start or continue the no-mistakes run that computes the review verdict against the branch head"
+      cat <<'EOF'
+The freeze in step 4 covers the pipeline head the run validates; keep it until the verdict has landed and covers that head.
+The five-lens pass below is then the designated post-verdict step, and any fix commit it pushes becomes the final head the comment must cover.
+EOF
       cat <<EOF
 You drive no-mistakes by responding to its gates, not by implementing fixes.
 Follow the guidance no-mistakes itself provides for the mechanics: it loads when you invoke /no-mistakes, and \`no-mistakes axi run --help\` plus the \`help\` lines in each \`axi\` response are authoritative and version-matched to the installed binary.
@@ -310,7 +368,7 @@ Do not include \`## Firstmate spec\`, later Firstmate build constraints, or your
 The \`--intent\` string you pass must be self-sufficient: that string plus the codebase must let a reader reconstruct roughly the same specification, without depending on a separate report, a PR, or context that lives only in this conversation.
 When the captain's intent refers to a report, decision, or PR ("do items 1, 2, 3, and 7 of the report"), write the substance of the referenced items into \`--intent\` in the captain's terms, not only the pointer; that substance is the captain's ask by reference, while Firstmate's build instructions and your own decisions still stay out.
 This replaces the no-mistakes skill's advice to enrich \`--intent\` with decisions and tradeoffs; that advice does not apply to Firstmate-dispatched work.
-Do not hand-edit, commit, or fix findings yourself while a run is active - the pipeline applies every fix.
+Do not hand-edit, commit, or fix findings yourself while a run is active - the pipeline applies every fix; the post-pipeline five-lens pass below is the designated worker-owned commit step.
 
 One drive call blocks until the next gate or outcome, which routinely outlives what your harness lets a single command run: Claude Code kills a command at ten minutes maximum, while one fix round is capped around thirty minutes and up to three rounds chain.
 So background the drive call and poll \`no-mistakes axi status\` from a separate call instead of sitting in one blocking hold your harness will kill.
@@ -324,8 +382,14 @@ Two firstmate-specific rules layer on top of that guidance:
   When the decision comes back, feed it to the gate with \`no-mistakes axi respond\` and let the pipeline apply it - do not route the question to "the user" or implement the fix yourself.
 - NEVER pass \`--yes\` (or \`-y\`) to \`no-mistakes axi run\` or \`no-mistakes axi respond\`. It is banned fleet-wide.
   It auto-resolves every gate including ask-user findings with no escalation, and answering your own ask-user finding is a hard rule violation.
-
-After /no-mistakes reports CI green (the CI-ready return point - do not wait for it to keep monitoring in the background until merge), append \`done: PR {url} checks green\` and stop. You are finished.
+EOF
+      fm_five_lens_comment_block
+      cat <<EOF
+After /no-mistakes reports CI green (the CI-ready return point - do not wait for it to keep monitoring in the background until merge), run the five-lens pass and post its comment.
+The pipeline's CI monitor re-arms on base movement, not on a new head, so when a lens fix commit moved the head, wait for CI to report on that final head and record its state in the comment.
+Append \`done: PR {url} checks green\` only once CI is green on the final head the comment names, or \`done: PR {url} checks green - five-lens comment: <what is not clean>\` when CI is green there but the comment's Result is not clean.
+When CI is red on that final head, append \`done: PR {url} checks red - <what failed>\` instead of any checks-green line, then stop - the pipeline run is complete, so the red head is firstmate's repair call.
+You are finished.
 EOF
       ;;
     *)
