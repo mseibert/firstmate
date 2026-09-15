@@ -1,0 +1,20 @@
+### Regression check: focused test against the PRE-FIX script (b16fd45)
+$ bash focused-fm-pr-green-return.test.sh   # GREEN=<pre-fix script>
+not ok - a clean designated comment did not clear hard stop 1 (missing: 't1	due	ready')
+--- output ---
+t1	held	hard-stop-1: the five-lens gate block is missing or reports an open finding	https://forgejo.example/seibert.group/programmieren-community/pulls/365	1111111111111111111111111111111111111111	since=1767227000	age=0
+exit=1
+
+### Same focused test against HEAD
+$ bash focused-fm-pr-green-return.test.sh   # GREEN=<worktree HEAD script>
+ok - the no-mistakes gate reads the operator's exact-titled comment and the body path is unchanged
+exit=0
+### Round-5 regression check: non-paginating-endpoint case against e0ea41c (pre-hardening)
+$ bash focused-fm-pr-green-return.test.sh   # GREEN=<e0ea41c script>
+not ok - the repeated page was fetched past the first repeat
+exit=1
+
+### Same focused test against HEAD (0cdcf08)
+$ bash focused-fm-pr-green-return.test.sh   # GREEN=<HEAD script>
+ok - the no-mistakes gate reads the operator's exact-titled comment and the body path is unchanged
+exit=0

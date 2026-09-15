@@ -1,0 +1,76 @@
+
+===== FIXTURE: no-mistakes Forgejo task, pipeline-opened body, operator five-lens comment =====
+PR body: "Pipeline-opened body without a gate block."
+PR comment (author op, title exactly "Findings and fixes from 5-lenses-review"):
+| Lens | Ran | Findings | Fixed |
+|---|---|---|---|
+| code-review | yes | 0 | 0 |
+| maintainability-review | yes | 0 | 0 |
+| architecture-system-design-reviewer | yes | 0 | 0 |
+| design-decision-questioner | yes | 0 | 0 |
+| self-containment-review | yes | 0 | 0 |
+
+Result: clean - all five lenses ran and no finding remains open.
+
+===== PRE-FIX (b16fd45) report: the PR #31 failure, held at hard stop 1 =====
+
+$ bin/fm-pr-green-return.sh report   # pre-fix script
+t1	held	hard-stop-1: the five-lens gate block is missing or reports an open finding	https://forgejo.example/seibert.group/programmieren-community/pulls/365	1111111111111111111111111111111111111111	since=1767227000	age=0
+
+===== FIXED (HEAD) report: the same PR is due =====
+
+$ bin/fm-pr-green-return.sh report   # HEAD
+t1	due	ready	https://forgejo.example/seibert.group/programmieren-community/pulls/365	1111111111111111111111111111111111111111	since=1767226200	age=800
+
+===== FIXED (HEAD) scan: the bound-merge check wake MAIN receives =====
+
+$ bin/fm-pr-green-return.sh scan
+actionable: check: green-return t1 due: PR https://forgejo.example/seibert.group/programmieren-community/pulls/365 head 1111111111111111111111111111111111111111 has been green and mergeable for 800s with no policy hold - merge it bound now: bin/fm-pr-merge.sh t1 https://forgejo.example/seibert.group/programmieren-community/pulls/365 --expected-head 1111111111111111111111111111111111111111
+
+queued wake row:
+1789487145	1	check	pr-green-return:t1	check: green-return t1 due: PR https://forgejo.example/seibert.group/programmieren-community/pulls/365 head 1111111111111111111111111111111111111111 has been green and mergeable for 800s with no policy hold - merge it bound now: bin/fm-pr-merge.sh t1 https://forgejo.example/seibert.group/programmieren-community/pulls/365 --expected-head 1111111111111111111111111111111111111111
+
+===== FIXTURE: PR #31 comment form - title + "Result: clean" only =====
+
+$ report   # HEAD
+t1	due	ready	https://forgejo.example/seibert.group/programmieren-community/pulls/365	1111111111111111111111111111111111111111	since=1767226200	age=800
+
+===== FIXTURE: no-mistakes GitHub task, same pipeline body + designated comment =====
+
+===== PRE-FIX (b16fd45) report: held at hard stop 1 (the reported failure) =====
+
+$ report   # pre-fix script
+t1	held	hard-stop-1: the five-lens gate block is missing or reports an open finding	https://github.com/mseibert/firstmate/pull/31	1111111111111111111111111111111111111111	since=1767227000	age=0
+
+===== FIXED (HEAD) report: hard stop 1 is cleared; only the GitHub head-binding hold remains =====
+
+$ report   # HEAD
+t1	held	no-bound-merge: the GitHub merge path cannot bind the reviewed head	https://github.com/mseibert/firstmate/pull/31	1111111111111111111111111111111111111111	since=1767227000	age=0
+
+===== GUARDRAILS: hard-stop-1 semantics otherwise unchanged =====
+
+$ designated comment reports an open finding -> held
+t1	held	hard-stop-1: the five-lens gate block is missing or reports an open finding	https://forgejo.example/seibert.group/programmieren-community/pulls/365	1111111111111111111111111111111111111111	since=1767227000	age=0
+
+$ no designated comment -> held
+t1	held	hard-stop-1: the five-lens gate block is missing or reports an open finding	https://forgejo.example/seibert.group/programmieren-community/pulls/365	1111111111111111111111111111111111111111	since=1767227000	age=0
+
+$ near title (no "5-lenses") -> held
+t1	held	hard-stop-1: the five-lens gate block is missing or reports an open finding	https://forgejo.example/seibert.group/programmieren-community/pulls/365	1111111111111111111111111111111111111111	since=1767227000	age=0
+
+$ exact-titled comment by a foreign author -> held
+t1	held	hard-stop-1: the five-lens gate block is missing or reports an open finding	https://forgejo.example/seibert.group/programmieren-community/pulls/365	1111111111111111111111111111111111111111	since=1767227000	age=0
+
+$ direct-PR body with its own clean block -> body wins, due
+t1	due	ready	https://forgejo.example/seibert.group/programmieren-community/pulls/365	1111111111111111111111111111111111111111	since=1767226200	age=800
+
+$ direct-PR body with an open finding + clean comment -> held
+t1	held	hard-stop-1: the five-lens gate block is missing or reports an open finding	https://forgejo.example/seibert.group/programmieren-community/pulls/365	1111111111111111111111111111111111111111	since=1767227000	age=0
+
+===== FORGEJO PAGINATION HARDENING: non-paginating endpoint with 51 comments =====
+
+$ report (endpoint returns the identical full list for every page)
+t1	due	ready	https://forgejo.example/seibert.group/programmieren-community/pulls/365	1111111111111111111111111111111111111111	since=1767226200	age=800
+comment-endpoint fetches: 2 (stops after the first repeated page; safety cap is 40)
+
+===== DONE =====
