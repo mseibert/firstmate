@@ -14,13 +14,13 @@
 #      "skipped: build token held" and exits 0, so the timer never competes
 #      with a running Next.js build for memory. A stale lock - dead owner, or
 #      ownerless past the age-rig - does not block the pass.
-#   2. Gated restarts. bin/fm-update.sh restarts every live mate it left on the
-#      target commit, including one that was already current, because a restart
-#      is what re-resolves launch-time wiring. That is right for a hand-run
-#      update and wrong for a timer: a naive cadence would restart an
-#      already-current mate four times a day. This wrapper restarts a mate only
-#      when its own home actually advanced ("updated <old>..<new>"), and never
-#      restarts the primary's own session - it records the pass's
+#   2. Gated restarts. bin/fm-update.sh names every live mate it left on the
+#      target commit for restart, including one that was already current,
+#      because a restart is what re-resolves launch-time wiring. That is right
+#      for a hand-run update and wrong for a timer: a naive cadence would
+#      restart an already-current mate four times a day. This wrapper restarts a
+#      mate only when its own home actually advanced ("updated <old>..<new>"),
+#      and never restarts the primary's own session - it records the pass's
 #      "reread-firstmate: yes|no" line for the running session instead.
 #   3. Retry of unconfirmed restarts. A mate whose restart was attempted but
 #      reported "nudged" or "unreached" is recorded in

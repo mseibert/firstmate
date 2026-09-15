@@ -570,17 +570,17 @@ The tracked unit TEMPLATES are [`docs/examples/systemd/firstmate-self-update.ser
 The arm helper renders the service's `@FM_HOME@` and `@FM_SELF_UPDATE_RUN@` placeholders and installs both units at `~/.config/systemd/user/`.
 `OnCalendar=*-*-* 00,06,12,18:00:00` with `Persistent=true` runs the pass every six hours and catches up a run missed while the machine was off or suspended.
 The service is `Type=oneshot` because the timer owns the cadence, and `TimeoutStartSec=30min` because the restart gate asks each mate to persist its open work before its agent is replaced.
-`bin/fm-self-update-timer-arm.sh arm` installs, enables, and starts the timer, and re-arming an unchanged active timer confirms and changes nothing; `status` prints the timer and service state, the run-wrapper path, the log path with its last line, and any mate awaiting a confirmed restart; `disarm` stops and disables the timer, removes both unit files, and keeps the log and pending state.
+`bin/fm-self-update-timer-arm.sh arm` installs, enables, and starts the timer, and re-arming an unchanged active, enabled timer confirms and changes nothing; `status` prints the timer and service state, the run-wrapper path, the log path with its last line, and any mate awaiting a confirmed restart; `disarm` stops and disables the timer, removes both unit files, and keeps the log and pending state.
 
 The run composes the existing fast-forward-only pass (`bin/fm-update.sh`) rather than changing it: dirty, diverged, offline, or wrong-branch targets are still skipped and never forced, stashed, or discarded.
 It appends one plain-text record to `state/self-update-timer.log` (override `FM_SELF_UPDATE_LOG`).
 A run with nothing to report writes exactly one line, `<timestamp> already current`.
 A run that found something records the pass's own `old..new` lines, its skip reasons verbatim, which mates were restarted with what outcome, and the pass's `reread-firstmate:` line recording whether the running firstmate's instruction surface advanced.
 
-The restart policy is gated on actual progress, because the update pass restarts every live mate it leaves on the target commit and a six-hour cadence would otherwise restart an already-current mate four times a day.
+The restart policy is gated on actual progress, because `bin/fm-update.sh` names every live mate it leaves on the target commit for restart, including one that was already current; a six-hour cadence would otherwise restart an already-current mate four times a day.
 A mate is restarted only when its own home advanced (`updated`); a mate whose home was `already current` is left alone.
 The primary's own session is never restarted, and the recorded `reread-firstmate:` line is the signal the operator or the running session acts on to re-read its instructions, not an automatic refresh.
-A restart the pass attempted but could not confirm (`nudged` or `unreached`) is recorded in `state/.self-update-pending-restarts` and retried on the next run even without new progress, so no mate stays permanently on old wiring; a confirmed restart clears the entry.
+A restart the run attempted but could not confirm (`nudged` or `unreached`) is recorded in `state/.self-update-pending-restarts` and retried on the next run even without new progress, so no mate stays permanently on old wiring; a confirmed restart clears the entry.
 
 The run skips entirely while the machine's build token is held.
 When `state/.build-token` names an owner whose process is alive, or is an ownerless lock younger than 20 minutes, the wrapper appends `<timestamp> skipped: build token held` and exits without running the update, so the timer never competes with a running Next.js build.
