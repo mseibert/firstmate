@@ -1488,7 +1488,12 @@ launch_template() {
     # alone disables the feature; keep both so a managed override of one still
     # leaves the other in force. Both are per-launch, scoped to this invocation only,
     # and never touch the captain's global ~/.claude/settings.json.
-    claude) printf '%s' 'CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false CLAUDE_CODE_SEND_FEEDBACK=0 claude --dangerously-skip-permissions --settings '\''{"feedbackDrafts":"off"}'\'' __MODELFLAG____EFFORTFLAG__"$(__OPINPUT__ encode launch-brief < __BRIEF__)"' ;;
+    # PI_CODING_AGENT is cleared here for the same reason the pi launch clears
+    # CLAUDECODE: a claude worker spawned under a Pi primary would otherwise
+    # inherit PI_CODING_AGENT=true and carry both markers, and bin/fm-harness.sh
+    # could then read the worker as pi if the ancestry walk cannot reach its
+    # claude process. CLAUDECODE is claude's own and stays.
+    claude) printf '%s' 'env -u PI_CODING_AGENT CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false CLAUDE_CODE_SEND_FEEDBACK=0 claude --dangerously-skip-permissions --settings '\''{"feedbackDrafts":"off"}'\'' __MODELFLAG____EFFORTFLAG__"$(__OPINPUT__ encode launch-brief < __BRIEF__)"' ;;
     codex)
       if [ "$kind" = secondmate ]; then
         printf '%s' 'codex __MODELFLAG____EFFORTFLAG__--dangerously-bypass-approvals-and-sandbox "$(__OPINPUT__ encode launch-brief < __BRIEF__)"'
@@ -1497,8 +1502,15 @@ launch_template() {
       fi
       ;;
     opencode) printf '%s' 'OPENCODE_CONFIG_CONTENT='\''{"permission":{"*":"allow"}}'\'' opencode __MODELFLAG__--prompt "$(__OPINPUT__ encode launch-brief < __BRIEF__)"' ;;
+    # Pi is marker-ful (its launcher sets PI_CODING_AGENT=true), but its
+    # detection arm sits after CLAUDECODE, and a hand-started primary can
+    # export CLAUDECODE=1 from a shell profile that this launch would inherit
+    # into the worker. Clear that foreign marker here so a spawned worker's
+    # environment names its real harness even when the ancestry walk cannot
+    # reach the Pi process; bin/fm-harness.sh's both-marker branch is what
+    # covers a session a human started by hand.
     pi|pi-signed)
-      printf '%s' '__PIBIN____PITUIMODE__'
+      printf '%s' 'env -u CLAUDECODE __PIBIN____PITUIMODE__'
       if [ "$kind" = secondmate ]; then
         printf '%s' ' __MODELFLAG____EFFORTFLAG__-e __PITURNEND__ -e __PIWATCH__ "$(__OPINPUT__ encode launch-brief < __BRIEF__)"'
       else

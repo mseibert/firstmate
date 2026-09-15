@@ -258,6 +258,15 @@ fm_live_gate() {
   return 0
 }
 
+# fm_test_clear_harness_markers: drop the harness identity markers a suite can
+# inherit from the harness that launched it, so a detection case states the
+# markers it means to test instead of depending on the launcher. Keep the list
+# in step with the verified markers bin/fm-harness.sh consults.
+fm_test_clear_harness_markers() {
+  unset CLAUDECODE PI_CODING_AGENT FM_PI_HARNESS FM_OMP_HARNESS GROK_AGENT CURSOR_AGENT \
+    CURSOR_INVOKED_AS GEMINI_CLI ATLASSIAN_AGENT_TYPE ROVODEV_CLI
+}
+
 # --- fakebin / PATH shims ---------------------------------------------------
 #
 # fm_fakebin <dir> creates <dir>/fakebin and echoes it; prepend it to PATH to
