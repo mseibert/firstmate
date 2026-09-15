@@ -58,6 +58,22 @@
 # URL, nor --sha on GitLab or Forgejo because the head comes only from the live
 # read.
 #
+# An optional --expected-head <sha>, given before the -- separator, names the
+# head the caller's own scan verified. On GitLab and Forgejo a live head that
+# differs refuses before any merge call, so a mandate issued for an older head
+# can never land on a moved one; the forge binding still uses the verified live
+# head. A given value that is not a commit id - including an explicitly empty
+# one - is refused as a usage error rather than read as no expectation at all.
+# GitHub cannot compare a head at all, so it refuses the flag rather than
+# silently dropping the expectation.
+#
+# A mandate that names an expected head is also re-verified against the live
+# return-path verdict for the bound task before it lands: the read-only report
+# bin/fm-pr-green-return.sh already owns is re-read, and a verdict that is no
+# longer due - including a policy hold that arrived at the same head after the
+# mandate was queued - refuses the merge and names the holding reason, so a
+# stale mandate can never land a pull request the scan currently holds.
+#
 # A Forgejo pull request is merged through `tea api` with an explicit JSON body
 # rather than a CLI subcommand, because tea's own `pulls merge` cannot bind the
 # merge to a head commit and that binding is not optional. The body carries
@@ -87,7 +103,7 @@
 # destination, normal-case deduplication, and at-least-once recovery.
 # A landed merge whose outcome cannot be written is reported loudly rather than
 # misreported as a failed merge.
-# Usage: fm-pr-merge.sh <task-id> <pr-url> [-- <extra forge merge args>]
+# Usage: fm-pr-merge.sh <task-id> <pr-url> [--expected-head <sha>] [-- <extra forge merge args>]
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -125,7 +141,29 @@ PR_NUMBER=$FM_PR_NUMBER
 # rebuilt from the parsed identity rather than read from any ambient default.
 PROJECT_URL="https://$FM_PR_HOST/$FM_PR_PATH"
 shift 2
+EXPECTED_HEAD=
+EXPECTED_HEAD_GIVEN=0
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --expected-head)
+      [ "$#" -ge 2 ] || { echo "error: --expected-head requires a commit id" >&2; exit 2; }
+      EXPECTED_HEAD=$2
+      EXPECTED_HEAD_GIVEN=1
+      shift 2
+      ;;
+    --expected-head=*)
+      EXPECTED_HEAD=${1#--expected-head=}
+      EXPECTED_HEAD_GIVEN=1
+      shift
+      ;;
+    *) break ;;
+  esac
+done
 [ "${1:-}" = "--" ] && shift
+if [ "$EXPECTED_HEAD_GIVEN" -eq 1 ] && ! fm_pr_head_valid "$EXPECTED_HEAD"; then
+  echo "error: --expected-head is not a commit id" >&2
+  exit 2
+fi
 
 caller_has_merge_method() {
   local arg
@@ -212,6 +250,12 @@ reject_head_overrides() {
 reject_repo_overrides "$@" || exit 1
 case "$PROVIDER" in
   gitlab|forgejo) reject_head_overrides "$@" || exit 1 ;;
+  github)
+    if [ -n "$EXPECTED_HEAD" ]; then
+      echo "error: refusing --expected-head for a GitHub pull request: this merge path cannot bind the merge to a head" >&2
+      exit 1
+    fi
+    ;;
 esac
 
 # Task-derived paths are constructed only after the canonical ID validation.
@@ -324,6 +368,11 @@ FIELDS
     echo "error: could not read the GitLab merge request head commit before merging" >&2
     return 1
   fi
+  if [ -n "$EXPECTED_HEAD" ] && [ "$EXPECTED_HEAD" != "$live_head" ]; then
+    printf 'error: refusing to merge %s: the expected head %s is not the live head %s\n' \
+      "$URL" "$EXPECTED_HEAD" "$live_head" >&2
+    return 1
+  fi
   # A rebase moves the head and leaves the recorded value behind, so the
   # disagreement is reported and the live head is what gets verified and merged.
   if [ -n "$RECORDED_HEAD" ] && [ "$RECORDED_HEAD" != "$live_head" ]; then
@@ -411,6 +460,11 @@ FIELDS
     echo "error: could not read the Forgejo pull request head commit before merging" >&2
     return 1
   fi
+  if [ -n "$EXPECTED_HEAD" ] && [ "$EXPECTED_HEAD" != "$live_head" ]; then
+    printf 'error: refusing to merge %s: the expected head %s is not the live head %s\n' \
+      "$URL" "$EXPECTED_HEAD" "$live_head" >&2
+    return 1
+  fi
   # A rebase moves the head and leaves the recorded value behind, so the
   # disagreement is reported and the live head is what gets verified and merged.
   if [ -n "$RECORDED_HEAD" ] && [ "$RECORDED_HEAD" != "$live_head" ]; then
@@ -486,6 +540,45 @@ FIELDS
   printf 'verified: %s is open and mergeable, with a successful combined status at head %s\n' \
     "$URL" "$live_head" >&2
   FM_PR_MERGE_HEAD=$live_head
+}
+
+# The live return-path verdict for the task whose expected head this run is
+# about to merge. bin/fm-pr-green-return.sh owns that hard-stop/policy/gate
+# classification, so its read-only report is re-read here: a mandate that was
+# queued while the pull request was due must not land if the same head now
+# holds, because the scan's frozen wait/report semantics deliberately do not
+# revoke an already-queued row.
+green_return_verify() {
+  local output line class reason url head
+  if ! output=$("$SCRIPT_DIR/fm-pr-green-return.sh" report "$ID" 2>/dev/null); then
+    printf 'error: refusing to merge %s: the green-return verdict for %s could not be read\n' \
+      "$URL" "$ID" >&2
+    return 1
+  fi
+  line=$(printf '%s\n' "$output" | head -n 1)
+  IFS=$'\t' read -r _ class reason url head _ _ <<FIELDS
+$line
+FIELDS
+  if [ -z "$class" ]; then
+    printf 'error: refusing to merge %s: the green-return verdict for %s could not be read\n' \
+      "$URL" "$ID" >&2
+    return 1
+  fi
+  if [ "$url" != "$URL" ]; then
+    printf 'error: refusing to merge %s: the green-return verdict for %s is about %s\n' \
+      "$URL" "$ID" "${url:-no pull request}" >&2
+    return 1
+  fi
+  if [ "$class" != due ]; then
+    printf 'error: refusing to merge %s: the green-return verdict for %s at head %s is %s - %s\n' \
+      "$URL" "$ID" "${head:-unreadable}" "$class" "${reason:-unreadable}" >&2
+    return 1
+  fi
+  if [ "$head" != "$EXPECTED_HEAD" ]; then
+    printf 'error: refusing to merge %s: the green-return verdict for %s is at head %s, not the expected head %s\n' \
+      "$URL" "$ID" "${head:-unreadable}" "$EXPECTED_HEAD" >&2
+    return 1
+  fi
 }
 
 # The merge style is never chosen silently: the caller's own arguments win, and
@@ -944,6 +1037,7 @@ case "$PROVIDER" in
     ;;
   gitlab)
     gitlab_verify_mergeable || exit 1
+    [ "$EXPECTED_HEAD_GIVEN" -eq 0 ] || green_return_verify || exit 1
     # --sha binds the merge to the head this run verified, so a push that lands
     # in between is refused by GitLab instead of merged unverified. --yes only
     # skips the interactive confirmation, which no supervised run can answer;
@@ -957,6 +1051,7 @@ case "$PROVIDER" in
   forgejo)
     forgejo_reject_unknown_args "$@" || exit 1
     forgejo_verify_mergeable || exit 1
+    [ "$EXPECTED_HEAD_GIVEN" -eq 0 ] || green_return_verify || exit 1
     FORGEJO_STYLE=$(forgejo_merge_style "$@") || exit 1
     forgejo_style_valid "$FORGEJO_STYLE" || exit 1
     # head_commit_id binds this merge to the head verified above, so a push that
