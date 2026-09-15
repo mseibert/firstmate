@@ -575,11 +575,11 @@ The service is `Type=oneshot` because the timer owns the cadence, and `TimeoutSt
 The run composes the existing fast-forward-only pass (`bin/fm-update.sh`) rather than changing it: dirty, diverged, offline, or wrong-branch targets are still skipped and never forced, stashed, or discarded.
 It appends one plain-text record to `state/self-update-timer.log` (override `FM_SELF_UPDATE_LOG`).
 A run with nothing to report writes exactly one line, `<timestamp> already current`.
-A run that found something records the pass's own `old..new` lines, its skip reasons verbatim, which mates were restarted with what outcome, and the pass's `reread-firstmate:` line for the running firstmate session.
+A run that found something records the pass's own `old..new` lines, its skip reasons verbatim, which mates were restarted with what outcome, and the pass's `reread-firstmate:` line recording whether the running firstmate's instruction surface advanced.
 
 The restart policy is gated on actual progress, because the update pass restarts every live mate it leaves on the target commit and a six-hour cadence would otherwise restart an already-current mate four times a day.
 A mate is restarted only when its own home advanced (`updated`); a mate whose home was `already current` is left alone.
-The primary's own session is never restarted, and the recorded `reread-firstmate:` line is what the running session uses to re-read its instructions.
+The primary's own session is never restarted, and the recorded `reread-firstmate:` line is the signal the operator or the running session acts on to re-read its instructions, not an automatic refresh.
 A restart the pass attempted but could not confirm (`nudged` or `unreached`) is recorded in `state/.self-update-pending-restarts` and retried on the next run even without new progress, so no mate stays permanently on old wiring; a confirmed restart clears the entry.
 
 The run skips entirely while the machine's build token is held.
