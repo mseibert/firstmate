@@ -33,11 +33,9 @@ TMP_ROOT=$(fm_test_tmproot fm-pi-harness)
 BASE_PATH=${FM_TEST_BASE_PATH:-/usr/bin:/bin:/usr/sbin:/sbin}
 
 # The ambient markers of whichever harness launched this suite outrank every
-# case below, so each invocation drops the full foreign-marker set first and
-# then states the markers it means to test.
-CLEAN_MARKERS=(env -u CLAUDECODE -u PI_CODING_AGENT -u FM_PI_HARNESS -u FM_OMP_HARNESS
-  -u GROK_AGENT -u CURSOR_AGENT -u CURSOR_INVOKED_AS -u GEMINI_CLI
-  -u ATLASSIAN_AGENT_TYPE -u ROVODEV_CLI)
+# case below, so drop them first; each case then states the markers it means
+# to test.
+fm_test_clear_harness_markers
 
 # Real processes whose kernel-recorded identity is `pi`, `pi-signed`,
 # `claude`, or `codex`: symlinks to the system shell, never copies (a copied
@@ -118,7 +116,7 @@ test_both_markers_defer_to_the_nearest_harness_ancestor() {
 
   # Case 1: a hand-started Pi primary whose shell exported CLAUDECODE=1.
   # shellcheck disable=SC2016 # the quoted body expands inside the named shell
-  out=$("${CLEAN_MARKERS[@]}" CLAUDECODE=1 PI_CODING_AGENT=true \
+  out=$(CLAUDECODE=1 PI_CODING_AGENT=true \
     "$bin/pi" -c '"$1"; :' _ "$HARNESS")
   [ "$out" = pi ] || fail "a real pi process with an inherited CLAUDECODE must resolve pi, got '$out'"
 
@@ -128,13 +126,13 @@ test_both_markers_defer_to_the_nearest_harness_ancestor() {
   # ten hops up, deeper than any eight-hop walk, and the verdict must still be
   # pi rather than the conservative claude fallback.
   # shellcheck disable=SC2016 # the quoted body expands inside the named shell
-  out=$("${CLEAN_MARKERS[@]}" CLAUDECODE=1 PI_CODING_AGENT=true \
+  out=$(CLAUDECODE=1 PI_CODING_AGENT=true \
     "$bin/pi" -c '"$1" 7 "$2"; :' _ "$layers" "$HARNESS")
   [ "$out" = pi ] || fail "a pi ancestor deeper than eight parents must resolve pi, got '$out'"
 
   # Case 2: a claude worker under a Pi primary inherits PI_CODING_AGENT.
   # shellcheck disable=SC2016 # the quoted body expands inside the named shell
-  out=$("${CLEAN_MARKERS[@]}" CLAUDECODE=1 PI_CODING_AGENT=true \
+  out=$(CLAUDECODE=1 PI_CODING_AGENT=true \
     "$bin/claude" -c '"$1"; :' _ "$HARNESS")
   [ "$out" = claude ] || fail "a real claude process with an inherited PI_CODING_AGENT must stay claude, got '$out'"
 
@@ -144,26 +142,26 @@ test_both_markers_defer_to_the_nearest_harness_ancestor() {
   # bash exec-replace it with the claude process, and the version-named
   # install path is the real native shape whose basename names nothing.
   # shellcheck disable=SC2016 # both layers expand inside their named shells
-  out=$("${CLEAN_MARKERS[@]}" CLAUDECODE=1 PI_CODING_AGENT=true \
+  out=$(CLAUDECODE=1 PI_CODING_AGENT=true \
     "$bin/pi" -c '"$1" -c '\''"$1"; :'\'' _ "$2"; :' _ "$versioned_claude" "$HARNESS")
   [ "$out" = claude ] || fail "a version-named claude process nested inside a pi process must resolve claude, got '$out'"
 
   # A markerless harness under the same inherited markers keeps the
   # conservative verdict, so this branch changes no other adapter's identity.
   # shellcheck disable=SC2016 # both layers expand inside their named shells
-  out=$("${CLEAN_MARKERS[@]}" CLAUDECODE=1 PI_CODING_AGENT=true \
+  out=$(CLAUDECODE=1 PI_CODING_AGENT=true \
     "$bin/pi" -c '"$1" -c '\''"$1"; :'\'' _ "$2"; :' _ "$bin/codex" "$HARNESS")
   [ "$out" = claude ] || fail "both markers under a codex ancestor must keep the conservative claude verdict, got '$out'"
 
   # The signed identity still comes from the launch marker once ancestry proves pi.
   # shellcheck disable=SC2016 # the quoted body expands inside the named shell
-  out=$("${CLEAN_MARKERS[@]}" CLAUDECODE=1 PI_CODING_AGENT=true FM_PI_HARNESS=pi-signed \
+  out=$(CLAUDECODE=1 PI_CODING_AGENT=true FM_PI_HARNESS=pi-signed \
     "$bin/pi" -c '"$1"; :' _ "$HARNESS")
   [ "$out" = pi-signed ] || fail "FM_PI_HARNESS=pi-signed under a real pi ancestor must stay pi-signed, got '$out'"
 
   # ...and an unmarked pi-signed ancestry remains plain pi.
   # shellcheck disable=SC2016 # the quoted body expands inside the named shell
-  out=$("${CLEAN_MARKERS[@]}" CLAUDECODE=1 PI_CODING_AGENT=true \
+  out=$(CLAUDECODE=1 PI_CODING_AGENT=true \
     "$bin/pi-signed" -c '"$1"; :' _ "$HARNESS")
   [ "$out" = pi ] || fail "unmarked pi-signed ancestry with both markers must resolve pi, got '$out'"
 
@@ -176,12 +174,12 @@ test_both_markers_without_a_harness_ancestor_stay_claude() {
   fakebin=$(fm_fakebin "$dir")
   make_fake_ps_no_harness "$fakebin"
 
-  out=$("${CLEAN_MARKERS[@]}" CLAUDECODE=1 PI_CODING_AGENT=true \
+  out=$(CLAUDECODE=1 PI_CODING_AGENT=true \
     PATH="$fakebin:$BASE_PATH" "$HARNESS")
   [ "$out" = claude ] || fail "both markers with no readable harness ancestor must stay claude, got '$out'"
 
   # FM_PI_HARNESS cannot select a Pi identity on its own either.
-  out=$("${CLEAN_MARKERS[@]}" CLAUDECODE=1 PI_CODING_AGENT=true FM_PI_HARNESS=pi-signed \
+  out=$(CLAUDECODE=1 PI_CODING_AGENT=true FM_PI_HARNESS=pi-signed \
     PATH="$fakebin:$BASE_PATH" "$HARNESS")
   [ "$out" = claude ] || fail "FM_PI_HARNESS without pi ancestry must not select pi-signed, got '$out'"
 
@@ -193,15 +191,15 @@ test_single_marker_meanings_are_unchanged() {
   bin=$(make_named_shells "$TMP_ROOT/single")
 
   # shellcheck disable=SC2016 # the quoted body expands inside the named shell
-  out=$("${CLEAN_MARKERS[@]}" CLAUDECODE=1 "$bin/claude" -c '"$1"; :' _ "$HARNESS")
+  out=$(CLAUDECODE=1 "$bin/claude" -c '"$1"; :' _ "$HARNESS")
   [ "$out" = claude ] || fail "CLAUDECODE alone must still resolve claude, got '$out'"
 
   # shellcheck disable=SC2016 # the quoted body expands inside the named shell
-  out=$("${CLEAN_MARKERS[@]}" PI_CODING_AGENT=true "$bin/pi" -c '"$1"; :' _ "$HARNESS")
+  out=$(PI_CODING_AGENT=true "$bin/pi" -c '"$1"; :' _ "$HARNESS")
   [ "$out" = pi ] || fail "PI_CODING_AGENT alone must still resolve pi, got '$out'"
 
   # shellcheck disable=SC2016 # the quoted body expands inside the named shell
-  out=$("${CLEAN_MARKERS[@]}" PI_CODING_AGENT=true FM_PI_HARNESS=pi-signed \
+  out=$(PI_CODING_AGENT=true FM_PI_HARNESS=pi-signed \
     "$bin/pi" -c '"$1"; :' _ "$HARNESS")
   [ "$out" = pi-signed ] || fail "the pi-signed selection marker must still select pi-signed, got '$out'"
 

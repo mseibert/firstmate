@@ -245,8 +245,8 @@ detect_ancestry() {
 }
 
 # True when an exact `omp` process sits within eight parents of this one. The
-# same anchored match as the ancestry walk in detect_own, kept separate so the
-# marker precedence above can demand real process evidence.
+# same anchored match as the ancestry walk in detect_ancestry, kept separate so
+# the marker precedence above can demand real process evidence.
 ancestry_names_omp() {
   local pid=$$ comm
   for _ in 1 2 3 4 5 6 7 8; do
