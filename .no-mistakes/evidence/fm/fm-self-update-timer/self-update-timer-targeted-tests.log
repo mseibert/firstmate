@@ -1,0 +1,27 @@
+$ bash tests/fm-self-update-timer.test.sh
+ok - a no-progress run writes one quiet line and restarts nobody
+ok - a progress run restarts only the mates that advanced and records the pass lines
+ok - a live build token skips the whole run with one skip line
+ok - the ownerless age-rig holds only a young lock and lets a stale one through
+ok - a dead build-token owner is stale and does not block the run
+ok - an unconfirmed restart is retried without new progress and cleared when confirmed
+ok - the pass's skip reasons are logged verbatim
+ok - a failed update pass is logged and exits nonzero
+ok - a hard restart-pass failure is reported and keeps the mate pending
+ok - restart outcomes are matched against the exact mate id
+ok - pass stderr diagnostics are journalled without mislabelling a no-progress run
+ok - a recognized skip line on stderr still drives the skipped header
+ok - unrecognized pass stdout output is recorded without a skip header
+ok - usage and unknown-action handling are pinned
+exit=0
+
+$ bash tests/fm-self-update-timer-arm.test.sh
+ok - arm installs both units with the six-hour calendar and starts the timer
+ok - re-arming an active, enabled timer confirms and changes nothing
+ok - re-arm rewrites only changed unit bytes
+ok - status reports the timer, service, log, last line, and pending restarts
+ok - disarm stops and removes both units but keeps the log and pending state
+ok - a symlink at the timer destination is refused instead of followed
+ok - arm fails closed on a missing unit template
+ok - arm fails closed when the run wrapper is missing
+exit=0

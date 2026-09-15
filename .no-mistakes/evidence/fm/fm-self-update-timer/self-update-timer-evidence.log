@@ -1,0 +1,222 @@
+
+===== PART 1: arm helper renders + installs units (fake systemctl) =====
+$ bin/fm-self-update-timer-arm.sh arm
+self-update timer: armed firstmate-self-update.timer (active, enabled; unit at /tmp/fm-self-update-evidence.isbbnS/home/unit-dir/firstmate-self-update.timer); log /tmp/fm-self-update-evidence.isbbnS/home/state/self-update-timer.log
+arm exit=0
+
+===== installed firstmate-self-update.service (rendered) =====
+# firstmate-self-update.service - systemd --user unit for the periodic
+# self-update pass
+#
+# Tracked TEMPLATE, not a live unit. bin/fm-self-update-timer-arm.sh renders
+# this template by substituting /tmp/fm-self-update-evidence.isbbnS/home with the resolved operational home
+# and /home/martin_seibert/.no-mistakes/worktrees/e36b903ea8f4/01M2JJRH8TBA71M48QGCB8NWE8/bin/fm-self-update-timer.sh with the run wrapper, then installs the result at
+# ~/.config/systemd/user/firstmate-self-update.service. Do not install or edit
+# this file by hand; the arm helper owns the installed copy.
+#
+# Type=oneshot because the timer owns the cadence: unlike the capacity brake's
+# long-running loop, this service does one pass and exits, so Restart=always
+# does not apply. TimeoutStartSec is deliberately generous (minutes, not
+# seconds) because the restart gate asks each mate to persist its open work
+# before its agent is replaced. There is no [Install] section: the timer
+# triggers this service by name, and enabling it would start a pass at login.
+#
+# PATH leads with the invoking user's harness install directories
+# (%h/.local/bin, %h/.npm-global/bin): a gated restart of a local mate resolves
+# that mate's harness executable from PATH, which the pin below would otherwise
+# restrict to system directories.
+#
+# Operator-facing configuration, the six-hour cadence, and the gated-restart
+# policy: docs/configuration.md "Self-update timer".
+[Unit]
+Description=Firstmate self-update pass (fast-forward the fleet and restart advanced mates)
+After=default.target
+
+[Service]
+Type=oneshot
+ExecStart=/home/martin_seibert/.no-mistakes/worktrees/e36b903ea8f4/01M2JJRH8TBA71M48QGCB8NWE8/bin/fm-self-update-timer.sh run
+WorkingDirectory=/tmp/fm-self-update-evidence.isbbnS/home
+Environment=HOME=%h
+Environment=FM_HOME=/tmp/fm-self-update-evidence.isbbnS/home
+Environment=PATH=%h/.local/bin:%h/.npm-global/bin:/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin
+TimeoutStartSec=30min
+
+===== installed firstmate-self-update.timer (rendered) =====
+# firstmate-self-update.timer - systemd --user timer for the periodic
+# self-update pass
+#
+# Tracked TEMPLATE, not a live unit. bin/fm-self-update-timer-arm.sh installs
+# this template at ~/.config/systemd/user/firstmate-self-update.timer and
+# enables and starts the timer. Do not install or edit this file by hand; the
+# arm helper owns the installed copy.
+#
+# Every six hours with Persistent=true, so a run missed while the machine was
+# off or suspended is caught up at the next opportunity instead of silently
+# skipped. One timer per firstmate home; a separate firstmate (proxmox) arms
+# the same tracked code in its own home with its own timer.
+#
+# Operator-facing configuration and the gated-restart policy:
+# docs/configuration.md "Self-update timer".
+[Unit]
+Description=Firstmate self-update timer (every 6 hours)
+
+[Timer]
+OnCalendar=*-*-* 00,06,12,18:00:00
+Persistent=true
+Unit=firstmate-self-update.service
+
+[Install]
+WantedBy=timers.target
+
+===== real systemd consumer: systemd-analyze verify --user (both units) =====
+verify exit=0
+PASS: systemd-analyze verify accepts both rendered units
+
+===== real systemd consumer: systemd-analyze calendar (six-hour cadence) =====
+Normalized form: *-*-* 00,06,12,18:00:00
+    Next elapse: Tue 2026-09-15 18:00:00 CEST
+       (in UTC): Tue 2026-09-15 16:00:00 UTC
+       From now: 2h 4min left
+calendar exit=0
+PASS: systemd-analyze calendar accepts the six-hour OnCalendar expression
+
+===== harness resolution under the unit's PATH (review fix: local pi harness) =====
+rendered PATH : PATH=%h/.local/bin:%h/.npm-global/bin:/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin
+expanded PATH : PATH=/home/martin_seibert/.local/bin:/home/martin_seibert/.npm-global/bin:/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin
+-- pre-fix pinned PATH (without %h/.local/bin and %h/.npm-global/bin):
+pi: NOT FOUND
+-- fixed PATH as rendered:
+/home/martin_seibert/.npm-global/bin/pi
+
+===== arm helper status verb =====
+self-update timer status:
+  timer:    firstmate-self-update.timer - active, enabled (unit installed)
+  service:  firstmate-self-update.service - inactive (unit installed)
+  run:      /home/martin_seibert/.no-mistakes/worktrees/e36b903ea8f4/01M2JJRH8TBA71M48QGCB8NWE8/bin/fm-self-update-timer.sh
+  log:      /tmp/fm-self-update-evidence.isbbnS/home/state/self-update-timer.log
+  last:     <no run recorded yet>
+  pending:  none
+
+===== PART 2: end-to-end with the REAL update pass =====
+
+===== RUN: progress A..B, restart nudged =====
+-- HEADs before: primary=c9bf295 secondmate=c9bf295
+-- restart argv before: 
+-- wrapper exit=0
+-- wrapper stdout (journal surface):
+2026-09-15T15:55:45+0200 updated
+firstmate: updated c9bf295..b478f20 (instructions changed: AGENTS.md)
+secondmate nuc: updated c9bf295..b478f20 (instructions changed: AGENTS.md)
+nudged: nuc: did not confirm its open work was written down [retry pending]
+reread-firstmate: yes
+-- restart argv after: nuc;
+-- pending-restarts file: nuc 
+-- HEADs after: primary=b478f20 secondmate=b478f20
+
+===== RUN: no progress, pending restart retried =====
+-- HEADs before: primary=b478f20 secondmate=b478f20
+-- restart argv before: nuc;
+-- wrapper exit=0
+-- wrapper stdout (journal surface):
+2026-09-15T15:55:46+0200 pending restart retry
+restarted: nuc (fake harness)
+reread-firstmate: no
+-- restart argv after: nuc;nuc;
+-- pending-restarts file: 
+-- HEADs after: primary=b478f20 secondmate=b478f20
+
+===== RUN: no progress, nothing pending (must stay quiet) =====
+-- HEADs before: primary=b478f20 secondmate=b478f20
+-- restart argv before: nuc;nuc;
+-- wrapper exit=0
+-- wrapper stdout (journal surface):
+2026-09-15T15:55:46+0200 already current
+-- restart argv after: nuc;nuc;
+-- pending-restarts file: 
+-- HEADs after: primary=b478f20 secondmate=b478f20
+-- restart argv unchanged during quiet run: yes
+
+===== RUN: new state available, live build token held =====
+-- HEADs before: primary=b478f20 secondmate=b478f20
+-- restart argv before: nuc;nuc;
+-- wrapper exit=0
+-- wrapper stdout (journal surface):
+2026-09-15T15:55:46+0200 skipped: build token held
+-- restart argv after: nuc;nuc;
+-- pending-restarts file: 
+-- HEADs after: primary=b478f20 secondmate=b478f20
+-- origin tip while token held: 4d3ff91
+
+===== RUN: token released, missed run catches up =====
+-- HEADs before: primary=b478f20 secondmate=b478f20
+-- restart argv before: nuc;nuc;
+-- wrapper exit=0
+-- wrapper stdout (journal surface):
+2026-09-15T15:55:47+0200 updated
+firstmate: updated b478f20..4d3ff91
+secondmate nuc: updated b478f20..4d3ff91
+restarted: nuc (fake harness)
+reread-firstmate: no
+-- restart argv after: nuc;nuc;nuc;
+-- pending-restarts file: 
+-- HEADs after: primary=4d3ff91 secondmate=4d3ff91
+
+===== FINAL LOG state/self-update-timer.log (the operator-facing surface) =====
+     1	2026-09-15T15:55:45+0200 updated
+     2	firstmate: updated c9bf295..b478f20 (instructions changed: AGENTS.md)
+     3	secondmate nuc: updated c9bf295..b478f20 (instructions changed: AGENTS.md)
+     4	nudged: nuc: did not confirm its open work was written down [retry pending]
+     5	reread-firstmate: yes
+     6	2026-09-15T15:55:46+0200 pending restart retry
+     7	restarted: nuc (fake harness)
+     8	reread-firstmate: no
+     9	2026-09-15T15:55:46+0200 already current
+    10	2026-09-15T15:55:46+0200 skipped: build token held
+    11	2026-09-15T15:55:47+0200 updated
+    12	firstmate: updated b478f20..4d3ff91
+    13	secondmate nuc: updated b478f20..4d3ff91
+    14	restarted: nuc (fake harness)
+    15	reread-firstmate: no
+
+===== PART 3 (fixed): no-progress run while watcher supervision is down (real pass) =====
+-- wrapper exit=0
+-- wrapper stdout (log/journal surface):
+2026-09-15T15:55:48+0200 already current
+-- wrapper stderr (unit journal surface):
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+●  WATCHER DOWN - SUPERVISION IS OFF
+●  1 task(s) in flight, but no watcher has a fresh beacon (last beat: never, grace 300s).
+●  Trust the emitted supervision protocol for this harness; do not use shell & for watcher repair.
+●  This is a supervision warning only; the guarded operation WILL still run.
+●  repair a missing or failed watcher cycle with the Pi tool fm_watch_arm_pi, or restart Pi with -e /tmp/fm-self-update-evidence.isbbnS/fleet/primary/.pi/extensions/fm-primary-turnend-guard.ts -e /tmp/fm-self-update-evidence.isbbnS/fleet/primary/.pi/extensions/fm-primary-pi-watch.ts if the extensions are not loaded.
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+-- log lines added by this no-progress run:
+2026-09-15T15:55:48+0200 already current
+-- log lines before=15 after=16 added=1
+-- restart argv unchanged: yes
+PASS: a supervision-down no-progress run exits 0
+PASS: the run added exactly one quiet log line
+PASS: the journal line equals the single appended log line
+PASS: the quiet line says already current
+PASS: the WATCHER DOWN banner reached the unit journal (stderr)
+PASS: the banner must not become an operator log record
+PASS: the no-progress run must not be labelled skipped
+
+===== PART 4: regression reproduction - current test file against the PRE-FIX wrapper =====
+ok - a no-progress run writes one quiet line and restarts nobody
+ok - a progress run restarts only the mates that advanced and records the pass lines
+ok - a live build token skips the whole run with one skip line
+ok - the ownerless age-rig holds only a young lock and lets a stale one through
+ok - a dead build-token owner is stale and does not block the run
+ok - an unconfirmed restart is retried without new progress and cleared when confirmed
+ok - the pass's skip reasons are logged verbatim
+ok - a failed update pass is logged and exits nonzero
+ok - a hard restart-pass failure is reported and keeps the mate pending
+ok - restart outcomes are matched against the exact mate id
+not ok - stderr diagnostics must not add log lines (got 4)
+pre-fix test exit=1
+PASS: the new stderr test fails against the pre-fix wrapper
+
+
+===== SUMMARY =====
+all evidence assertions passed
