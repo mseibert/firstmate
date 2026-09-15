@@ -136,10 +136,11 @@ worker_publish_lock_owner() {
   WORKER_LOCK_COMMAND=$command
 }
 
-# The lock still records this exact process. The record is exclusively ours
-# until the directory is removed or rewritten by a replacement, so comparing
-# the recorded values against the ones published here is the whole test and
-# needs no process inspection in the serving loop.
+# The lock still records this exact process, checked without process inspection
+# because the directory is exclusively ours until a replacement removes or
+# rewrites it. The quarantine check is defensive: a marker means an earlier
+# shutdown could not confirm its command tree stopped, and serving must not
+# continue over that even though every marker writer also exits.
 worker_lock_records_self() {
   local pid start command
   [ "$WORKER_LOCK_HELD" -eq 1 ] || return 1
@@ -214,11 +215,9 @@ worker_acquire_lock() {
     fm_remote_job_lock_owner_status "$account_home"
     status=$?
     if [ "$status" -eq 0 ]; then return 2; fi
-    # An indeterminate record may still name a live owner that this process
-    # cannot verify yet, so it is waited out rather than stolen. The heartbeat
-    # is a readiness signal, never an ownership lease. A directory whose pid
-    # was never published has no owner to wait for once its publish window has
-    # passed, so it is reclaimed below.
+    # Wait out anything that could still be a live owner; only a directory with
+    # no published pid past its publish window has nobody left to wait for, and
+    # that falls through to the reclaim below.
     if { [ "$status" -eq 2 ] && ! worker_lock_publish_abandoned; } \
       || fm_remote_job_probe "$account_home" || worker_lock_recent; then
       attempt=$((attempt + 1))

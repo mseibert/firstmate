@@ -913,10 +913,11 @@ fm_remote_job_worker_lock_path() { printf '%s\n' "$FM_REMOTE_JOB_STATE/worker.lo
 fm_remote_job_process_start() {
   local pid=$1 ps_bin value
   if [ -x /bin/ps ]; then ps_bin=/bin/ps; elif [ -x /usr/bin/ps ]; then ps_bin=/usr/bin/ps; else return 1; fi
-  # Identity strings are recorded and later compared from other processes, and
-  # lstart is locale-formatted, so pin the C locale on both sides of that
-  # comparison; a locale difference would read a live owner as a reused pid.
-  value=$(LC_ALL=C "$ps_bin" -p "$pid" -o lstart= 2>/dev/null) || return 1
+  # The ambient locale is deliberately not pinned: a lock record an older build
+  # wrote under a different locale would be misread as a reused pid, so the
+  # comparison relies on the writer and reader sharing the worker environment
+  # rather than on a format change only new records match.
+  value=$("$ps_bin" -p "$pid" -o lstart= 2>/dev/null) || return 1
   [ -n "$value" ] || return 1
   case "$value" in *$'\n'*|*$'\r'*) return 1 ;; esac
   printf '%s\n' "$value"
@@ -925,7 +926,7 @@ fm_remote_job_process_start() {
 fm_remote_job_process_command() {
   local pid=$1 ps_bin value
   if [ -x /bin/ps ]; then ps_bin=/bin/ps; elif [ -x /usr/bin/ps ]; then ps_bin=/usr/bin/ps; else return 1; fi
-  value=$(LC_ALL=C "$ps_bin" -p "$pid" -o command= 2>/dev/null) || return 1
+  value=$("$ps_bin" -p "$pid" -o command= 2>/dev/null) || return 1
   [ -n "$value" ] || return 1
   case "$value" in *$'\n'*|*$'\r'*) return 1 ;; esac
   printf '%s\n' "$value"
@@ -934,7 +935,7 @@ fm_remote_job_process_command() {
 fm_remote_job_process_pgid() { # <pid>
   local pid=$1 ps_bin value
   if [ -x /bin/ps ]; then ps_bin=/bin/ps; elif [ -x /usr/bin/ps ]; then ps_bin=/usr/bin/ps; else return 1; fi
-  value=$(LC_ALL=C "$ps_bin" -p "$pid" -o pgid= 2>/dev/null) || return 1
+  value=$("$ps_bin" -p "$pid" -o pgid= 2>/dev/null) || return 1
   value=$(printf '%s' "$value" | tr -d '[:space:]')
   case "$value" in ''|*[!0-9]*) return 1 ;; esac
   printf '%s\n' "$value"
@@ -1024,7 +1025,6 @@ fm_remote_job_read_single_line() {
 # reclaimed on a timer: acquisition waits out its bounded budget and reports
 # failure, leaving a genuinely corrupted record to deliberate operator removal.
 # The heartbeat is a readiness signal, never an ownership lease.
-# shellcheck disable=SC2034 # FM_REMOTE_JOB_OWNER_PID is a sourceable output consumed by callers.
 fm_remote_job_lock_owner_status() {
   local account_home=$1 lock pid recorded actual
   fm_remote_job_prepare_state "$account_home" || return 2
