@@ -61,7 +61,13 @@
 # `Result: clean`, as a table whose every row ran and closed its findings, or as
 # at least five per-lens result entries, each positively naming a clean result
 # (`clean`, `passed`/`pass`, or a `kein`/`no blocker` entry); any other wording,
-# or a line naming an open finding, trips the stop. The review verdict (item 2)
+# or a line naming an open finding, trips the stop, while a negated `open` such
+# as `no finding remains open` is a clean verdict, not a finding. The evidence
+# is read from the PR body and, when the task's mode is no-mistakes or the body
+# carries no gate block, from the newest PR comment whose first non-empty line
+# is exactly `Findings and fixes from 5-lenses-review`; a clean read from either
+# source passes, and an unreadable or untitled comment is never green. The
+# review verdict (item 2)
 # follows the policy's forge-specific channels - GitHub's newest seibert-pr-agent
 # `**Verdict:**` comment, Forgejo's crabd tracking comment - and the policy's
 # current wording makes that item advisory, not a gate: a verdict that never
@@ -425,25 +431,45 @@ PATHS
 
 # ---------------------------------------------------------------- gate -------
 
+# FIVE_LENS_COMMENT_TITLE: the exact comment title the captain's merge policy
+# designates as the five-lens evidence on a no-mistakes PR. A comment with any
+# other title does not count.
+FIVE_LENS_COMMENT_TITLE='Findings and fixes from 5-lenses-review'
+
 # names_open_finding <text>: the open-finding wording the gate check treats as
-# a stop, shared by the table rows and the per-lens result lines.
+# a stop, shared by the table rows and the per-lens result lines. A bare
+# `open`/`offen` word counts only when nothing negates it: `no finding remains
+# open` and `0 open findings` are clean verdicts, while `1 open finding` and
+# `2 offen` name one.
 names_open_finding() {
   printf '%s\n' "$1" \
     | grep -Eiq 'nicht[ -]?clean|not[[:space:]]+clean|findings?[[:space:]]*:[[:space:]]*[1-9][0-9]*' \
-    || printf '%s\n' "$1" | grep -Eiwq 'majors?|must-?fix|should-?fix|hold|rework|offen|open|leaks?'
+    || printf '%s\n' "$1" | grep -Eiwq 'majors?|must-?fix|should-?fix|hold|rework|leaks?' \
+    || printf '%s\n' "$1" | awk '
+      {
+        count = split(tolower($0), words, /[^a-z0-9]+/)
+        for (i = 1; i <= count; i++) {
+          if (words[i] != "open" && words[i] != "offen") continue
+          negated = 0
+          for (j = i - 1; j >= 1 && j >= i - 4; j--) {
+            if (words[j] == "no" || words[j] == "not" || words[j] == "kein" \
+              || words[j] == "keine" || words[j] == "keinen" || words[j] == "keinem" \
+              || words[j] == "keiner" || words[j] == "without" || words[j] == "zero" \
+              || words[j] == "0") {
+              negated = 1
+              break
+            }
+          }
+          if (!negated) { found = 1; exit }
+        }
+      }
+      END { exit !found }'
 }
 
-# gate_clean <body>: hard stop 1. The policy owner's clarification accepts
-# `Result: clean`, a table in which every data row ran and its result cells
-# prove no finding is open, or a per-lens result for every lens that positively
-# names a clean result; a missing block, fewer than five lens results, a row
-# naming an open finding, a non-numeric result cell whose leading counts do not
-# cover the findings, an unclassifiable row, or a lens result in any other
-# wording trips the stop.
-gate_clean() {
-  local body=$1 section clean table_rows result_lines prose_ok
-  local ran findings fixed total open findings_num fixed_num
-  section=$(printf '%s\n' "$body" | awk '
+# gate_section <body>: the five-lens block of the body - the lines under a
+# heading naming the gate - or empty when the body carries no such block.
+gate_section() {
+  printf '%s\n' "$1" | awk '
     /^#+[ \t]/ {
       line = tolower($0)
       if (inblock) {
@@ -457,7 +483,27 @@ gate_clean() {
       next
     }
     inblock { print }
-  ')
+  '
+}
+
+# gate_block_present <body>: whether the body carries a five-lens gate block at
+# all, regardless of what the block reports. A direct-PR body that owns its
+# gate is never second-guessed by the designated comment.
+gate_block_present() {
+  [ -n "$(gate_section "$1")" ]
+}
+
+# gate_section_clean <section>: hard stop 1's classification of one five-lens
+# block. The policy owner's clarification accepts `Result: clean`, a table in
+# which every data row ran and its result cells prove no finding is open, or a
+# per-lens result for every lens that positively names a clean result; fewer
+# than five lens results, a row naming an open finding, a non-numeric result
+# cell whose leading counts do not cover the findings, an unclassifiable row, or
+# a lens result in any other wording trips the stop. A no-mistakes task's gate
+# comment is classified as one such block, without a heading.
+gate_section_clean() {
+  local section=$1 clean table_rows result_lines prose_ok
+  local ran findings fixed total open findings_num fixed_num
   [ -n "$section" ] || return 1
   clean=$(printf '%s\n' "$section" | sed 's/[*_`]//g' \
     | grep -Eic '^[[:space:]>-]*result:[[:space:]]*clean[[:space:]]*$' || true)
@@ -542,6 +588,15 @@ gate_clean() {
   [ -n "$prose_ok" ]
 }
 
+# gate_clean <body>: hard stop 1 for a PR body. A body without a five-lens
+# block is never clean, however clean its lines would look on their own.
+gate_clean() {
+  local section
+  section=$(gate_section "$1")
+  [ -n "$section" ] || return 1
+  gate_section_clean "$section"
+}
+
 # ---------------------------------------------------------------- checks ----
 
 # check_name_waived <name>: the policy waives exactly the Coolify `deploy /
@@ -608,6 +663,7 @@ PR_HEAD=
 PR_BASE_SHA=
 PR_AUTHOR=
 PR_BODY=
+PR_FIVE_LENS_COMMENT=
 PR_HEAD_TIME=
 PR_CHECKS=
 PR_MERGE_PATH_READY=1
@@ -724,6 +780,34 @@ gh_verdict_read() {
     unreadable) PR_VERDICT=unreadable ;;
     *) PR_VERDICT=absent ;;
   esac
+}
+
+# five_lens_comment_pick <comments-json>: the newest comment whose first
+# non-empty line is exactly the designated five-lens title, printed as its body;
+# empty when no comment matches or the payload cannot be parsed. The GitHub
+# `--paginate --slurp` payload is an array of comment pages, so one array level
+# is flattened first.
+five_lens_comment_pick() { # <comments-json>
+  printf '%s' "$1" | jq -r --arg title "$FIVE_LENS_COMMENT_TITLE" '
+    [ .[] | if type == "array" then .[] else . end
+      | select((.body // "") as $body
+          | ($body | split("\n")
+             | map(gsub("^[ \t\r]+|[ \t\r]+$"; ""))
+             | map(select(length > 0))
+             | .[0] // "") == $title)
+      | { created: (.created_at // ""), body: (.body // "") } ]
+    | sort_by(.created) | last
+    | if . == null then "" else .body end' 2>/dev/null
+}
+
+gh_five_lens_comment_read() {
+  local comments
+  comments=$(fm_run_timed "$FM_PR_GREEN_RETURN_CMD_TIMEOUT" gh api \
+    "repos/$PR_OWNER/$PR_REPO/issues/$PR_NUMBER/comments" --paginate --slurp 2>/dev/null) || {
+    PR_FIVE_LENS_COMMENT=
+    return 0
+  }
+  PR_FIVE_LENS_COMMENT=$(five_lens_comment_pick "$comments")
 }
 
 gh_operator_login() {
@@ -865,6 +949,15 @@ forgejo_verdict_read() {
     unreadable) PR_VERDICT=unreadable ;;
     *) PR_VERDICT=absent ;;
   esac
+}
+
+forgejo_five_lens_comment_read() {
+  local comments
+  comments=$(tea_read "/repos/$PR_PATH/issues/$PR_NUMBER/comments") || {
+    PR_FIVE_LENS_COMMENT=
+    return 0
+  }
+  PR_FIVE_LENS_COMMENT=$(five_lens_comment_pick "$comments")
 }
 
 forgejo_operator_login() {
@@ -1013,7 +1106,7 @@ EV_SINCE_HINT=
 # to merged, closed, waiting, held, or due, and EV_REASON to the concrete
 # reason; EV_SINCE_HINT carries the evidence-backed wait start for a due PR.
 evaluate_task() {
-  local id=$1 meta=$2 candidate owner_name
+  local id=$1 meta=$2 candidate owner_name gate_ok=0 gate_mode
   EV_CLASS=waiting
   EV_REASON=unreadable
   EV_SINCE_HINT=
@@ -1026,6 +1119,7 @@ evaluate_task() {
   PR_OWNER=${PR_PATH%%/*}
   PR_REPO=${PR_PATH#*/}
   PR_BODY=
+  PR_FIVE_LENS_COMMENT=
   PR_FILES=
   PR_FILES_READ=0
   PR_HEAD_TIME=
@@ -1097,7 +1191,22 @@ evaluate_task() {
     *) EV_CLASS=waiting; EV_REASON='checks-unreadable'; return 0 ;;
   esac
 
-  if ! gate_clean "$PR_BODY"; then
+  # Hard stop 1 reads the gate from the PR body and, when the body carries no
+  # gate block or the task is a no-mistakes one, from the designated comment
+  # too: the pipeline opens a no-mistakes PR, so the exact-titled comment is
+  # its normal evidence. A clean read from either source passes; an unreadable
+  # or untitled comment is never green.
+  gate_mode=$(field_of "$meta" mode)
+  if gate_clean "$PR_BODY"; then
+    gate_ok=1
+  elif [ "$gate_mode" = no-mistakes ] || ! gate_block_present "$PR_BODY"; then
+    case "$PR_PROVIDER" in
+      github) gh_five_lens_comment_read ;;
+      forgejo) forgejo_five_lens_comment_read ;;
+    esac
+    gate_section_clean "$PR_FIVE_LENS_COMMENT" && gate_ok=1
+  fi
+  if [ "$gate_ok" != 1 ]; then
     EV_CLASS=held
     EV_REASON="hard-stop-1: the five-lens gate block is missing or reports an open finding"
     return 0
