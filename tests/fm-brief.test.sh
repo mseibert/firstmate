@@ -513,9 +513,9 @@ test_five_lens_gate_in_direct_pr_dod() {
 # 5-lenses-review` instead of the PR body. The comment-based contract pins the
 # same lenses, the final-head and CI-state rule, the strict
 # lens-fix-push-comment order, the honest statement that the captain's merge
-# policy does not yet accept the comment, and the done line that waits for CI
-# green on the final head. direct-PR keeps its body-based block and local-only
-# carries neither.
+# policy does not yet accept the comment, and the done lines that distinguish a
+# green final head from an unclean comment and from a red CI result. direct-PR
+# keeps its body-based block and local-only carries neither.
 test_five_lens_comment_in_no_mistakes_dod() {
   local home id brief mode lens
 
@@ -572,6 +572,10 @@ test_five_lens_comment_in_no_mistakes_dod() {
     "no-mistakes DOD must wait for CI green on the final head before done"
   assert_grep "\`done: PR {url} checks green - five-lens comment: <what is not clean>\`" "$brief" \
     "no-mistakes DOD must surface an unclean comment in the done line"
+  assert_grep "when CI is green there but the comment's Result is not clean" "$brief" \
+    "no-mistakes DOD must gate the unclean-comment done line on green CI too"
+  assert_grep "\`done: PR {url} checks red - <what failed>\` instead of any checks-green line" "$brief" \
+    "no-mistakes DOD must keep a red final head off the checks-green done line"
   assert_grep "wait for CI to report on that final head and record its state in the comment" "$brief" \
     "no-mistakes DOD must make the worker read CI on a moved head"
 
