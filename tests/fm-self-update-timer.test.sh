@@ -2,8 +2,7 @@
 # tests/fm-self-update-timer.test.sh - the periodic self-update run wrapper
 # (bin/fm-self-update-timer.sh).
 #
-# The captain's requirement (2026-09-15): check for a new state at least every
-# six hours and build it, after three hand-run updates in one day. The run
+# The fleet checks for a new state and builds it every six hours. The run
 # wrapper composes the existing fast-forward-only pass with the policy an
 # unattended cadence needs, and these tests pin that policy through its
 # executable interface with deterministic fakes for the two passes it calls:
@@ -330,6 +329,143 @@ test_restart_outcomes_match_ids_exactly() {
   pass "restart outcomes are matched against the exact mate id"
 }
 
+# --- 5b. the pass owns restart candidacy -------------------------------------
+
+test_dead_mate_is_left_to_startup_recovery() {
+  local home out
+  home=$(make_home dead-mate)
+  make_fakes "$home"
+  write_out "$home" update.out \
+    'firstmate: already current' \
+    'secondmate ghost: updated 1111111..2222222' \
+    'reread-firstmate: no' \
+    'restart-secondmates: none' \
+    'nudge-secondmates: none'
+  FM_FAKE_UPDATE_OUT="$home/update.out" FM_FAKE_RESTART_OUT=/dev/null \
+    run_timer "$home" || true
+  out=$(cat "$home/run.out")
+  assert_absent "$home/restart.argv" \
+    "a mate the pass does not classify as live must not be restarted"
+  assert_absent "$home/state/.self-update-pending-restarts" \
+    "a dead mate must not become an endless pending retry"
+  assert_contains "$out" 'no live agent to replace' \
+    "the record must say the dead mate is left to startup recovery"
+  pass "an advanced mate whose endpoint is dead is left to startup recovery"
+}
+
+test_incapable_mate_is_nudged_once_not_retried() {
+  local home out
+  home=$(make_home incapable-mate)
+  make_fakes "$home"
+  write_out "$home" update.out \
+    'firstmate: already current' \
+    'secondmate weird: updated 1111111..2222222' \
+    'reread-firstmate: no' \
+    'restart-secondmates: none' \
+    'nudge-secondmates: fm-weird'
+  write_out "$home" restart.out \
+    'nudged: weird: its runtime cannot prove an agent stopped and came back (backend zellij)' \
+    'summary: 0 of 1 restarted, 1 nudged, 0 unreached'
+  FM_FAKE_UPDATE_OUT="$home/update.out" FM_FAKE_RESTART_OUT="$home/restart.out" \
+    FM_FAKE_RESTART_RC=3 run_timer "$home" || true
+  out=$(cat "$home/run.out")
+  assert_contains "$(cat "$home/restart.argv")" 'weird' \
+    "a live mate whose runtime cannot prove a restart still gets its one re-read nudge"
+  assert_absent "$home/state/.self-update-pending-restarts" \
+    "a capability refusal can never confirm, so it must not be retried forever"
+  assert_contains "$out" '[nudge only]' "the terminal nudge must not be marked for retry"
+  pass "a mate whose runtime cannot prove a restart is nudged once and not retried"
+}
+
+test_pending_mate_that_is_gone_is_dropped() {
+  local home out
+  home=$(make_home pending-gone)
+  make_fakes "$home"
+  write_out "$home" update.out \
+    'firstmate: already current' \
+    'reread-firstmate: no' \
+    'restart-secondmates: none' \
+    'nudge-secondmates: none'
+  printf 'oldmate\n' > "$home/state/.self-update-pending-restarts"
+  FM_FAKE_UPDATE_OUT="$home/update.out" FM_FAKE_RESTART_OUT=/dev/null \
+    run_timer "$home" || true
+  out=$(cat "$home/run.out")
+  assert_absent "$home/restart.argv" "a pending mate the pass no longer sees must not be restarted"
+  assert_absent "$home/state/.self-update-pending-restarts" \
+    "a pending mate that is gone must be dropped"
+  assert_contains "$out" 'no longer a live restart candidate' \
+    "the drop must be recorded for the operator"
+  pass "a pending mate that is no longer a live candidate is dropped"
+}
+
+test_pending_mate_with_skipped_home_keeps_waiting() {
+  local home out
+  home=$(make_home pending-skipped)
+  make_fakes "$home"
+  write_out "$home" update.out \
+    'firstmate: already current' \
+    'secondmate nuc: skipped: dirty working tree' \
+    'reread-firstmate: no' \
+    'restart-secondmates: none' \
+    'nudge-secondmates: none'
+  printf 'nuc\n' > "$home/state/.self-update-pending-restarts"
+  FM_FAKE_UPDATE_OUT="$home/update.out" FM_FAKE_RESTART_OUT=/dev/null \
+    run_timer "$home" || true
+  assert_absent "$home/restart.argv" "a pending mate whose home was skipped must not be restarted"
+  [ "$(cat "$home/state/.self-update-pending-restarts" 2>/dev/null)" = 'nuc' ] \
+    || fail "a pending mate whose home was skipped must keep waiting"
+  pass "a pending mate whose home was skipped this run keeps waiting untouched"
+}
+
+test_attempted_set_is_durable_before_the_restart_pass_runs() {
+  local home out
+  home=$(make_home durable-pending)
+  make_fakes "$home"
+  cat > "$home/fm-secondmate-restart.sh" <<'SH'
+#!/usr/bin/env bash
+cat "${FM_STATE_OVERRIDE:-}/.self-update-pending-restarts" > "${FM_FAKE_PENDING_SNAPSHOT:?}" 2>/dev/null || true
+printf '%s\n' 'restarted: nuc (claude)'
+printf '%s\n' 'summary: 1 of 1 restarted, 0 nudged, 0 unreached'
+SH
+  chmod +x "$home/fm-secondmate-restart.sh"
+  write_out "$home" update.out \
+    'firstmate: already current' \
+    'secondmate nuc: updated 1111111..2222222' \
+    'reread-firstmate: no' \
+    'restart-secondmates: fm-nuc' \
+    'nudge-secondmates: none'
+  FM_FAKE_UPDATE_OUT="$home/update.out" FM_FAKE_RESTART_OUT=/dev/null \
+    FM_FAKE_PENDING_SNAPSHOT="$home/pending-at-restart" \
+    run_timer "$home" || true
+  out=$(cat "$home/run.out")
+  assert_grep 'nuc' "$home/pending-at-restart" \
+    "the attempted set must be durable before the restart pass runs"
+  assert_absent "$home/state/.self-update-pending-restarts" \
+    "a confirmed restart must still clear the pending entry"
+  assert_contains "$out" 'restarted: nuc' "the confirmed restart must be recorded"
+  pass "the attempted set is durable before the restart pass runs and clears on confirmation"
+}
+
+test_incomplete_pass_output_still_retries_pending() {
+  local home
+  home=$(make_home incomplete-output)
+  make_fakes "$home"
+  # No action summary at all: a pass that dies mid-run must not silently drop a
+  # pending retry.
+  write_out "$home" update.out \
+    'firstmate: already current' \
+    'reread-firstmate: no'
+  printf 'nuc\n' > "$home/state/.self-update-pending-restarts"
+  write_out "$home" restart.out 'restarted: nuc (claude)'
+  FM_FAKE_UPDATE_OUT="$home/update.out" FM_FAKE_RESTART_OUT="$home/restart.out" \
+    run_timer "$home" || true
+  assert_contains "$(cat "$home/restart.argv")" 'nuc' \
+    "an incomplete pass output must not drop a pending retry"
+  assert_absent "$home/state/.self-update-pending-restarts" \
+    "the confirmed retry must still clear"
+  pass "an incomplete pass output falls back to retrying known candidates"
+}
+
 # --- 6. pass stderr: diagnostics are journalled, recognized skips still count -
 
 test_stderr_diagnostics_do_not_mislabel_a_no_progress_run() {
@@ -442,6 +578,12 @@ test_skips_are_logged_verbatim
 test_update_failure_is_reported_and_fails_the_run
 test_restart_hard_failure_keeps_the_mate_pending
 test_restart_outcomes_match_ids_exactly
+test_dead_mate_is_left_to_startup_recovery
+test_incapable_mate_is_nudged_once_not_retried
+test_pending_mate_that_is_gone_is_dropped
+test_pending_mate_with_skipped_home_keeps_waiting
+test_attempted_set_is_durable_before_the_restart_pass_runs
+test_incomplete_pass_output_still_retries_pending
 test_stderr_diagnostics_do_not_mislabel_a_no_progress_run
 test_recognized_skip_on_stderr_still_drives_the_skipped_header
 test_unrecognized_pass_output_is_recorded_without_a_skip_header

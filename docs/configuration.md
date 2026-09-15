@@ -577,16 +577,17 @@ It appends one plain-text record to `state/self-update-timer.log` (override `FM_
 A run with nothing to report writes exactly one line, `<timestamp> already current`.
 A run that found something records the pass's own `old..new` lines, its skip reasons verbatim, which mates were restarted with what outcome, and the pass's `reread-firstmate:` line recording whether the running firstmate's instruction surface advanced.
 
-The restart policy is gated on actual progress, because `bin/fm-update.sh` names every live mate it leaves on the target commit for restart, including one that was already current; a six-hour cadence would otherwise restart an already-current mate four times a day.
-A mate is restarted only when its own home advanced (`updated`); a mate whose home was `already current` is left alone.
+Restart candidacy belongs to the pass, and the timer gates it on actual progress.
+`bin/fm-update.sh` names every live mate it leaves on the target commit for restart, including one that was already current; a six-hour cadence would otherwise restart an already-current mate four times a day, so a mate is restarted only when its own home advanced (`updated`).
+The pass's own classification still bounds that: a mate whose endpoint is dead or missing is left to the ordinary startup recovery, and a mate whose runtime can never prove a restart gets the pass's one-time re-read nudge rather than an endless retry.
 The primary's own session is never restarted, and the recorded `reread-firstmate:` line is the signal the operator or the running session acts on to re-read its instructions, not an automatic refresh.
-A restart the run attempted but could not confirm (`nudged` or `unreached`) is recorded in `state/.self-update-pending-restarts` and retried on the next run even without new progress, so no mate stays permanently on old wiring; a confirmed restart clears the entry.
+A restart the run attempted but could not confirm (`nudged` or `unreached`) is recorded in `state/.self-update-pending-restarts` before the restart pass runs, so a run killed mid-restart keeps its retry, and it is retried on the next run even without new progress; a confirmed restart clears the entry, and a pending mate whose home was skipped keeps waiting untouched.
 
 The run skips entirely while the machine's build token is held.
 When `state/.build-token` names an owner whose process is alive, or is an ownerless lock younger than 20 minutes, the wrapper appends `<timestamp> skipped: build token held` and exits without running the update, so the timer never competes with a running Next.js build.
 A token whose owner is gone, or an ownerless lock past 20 minutes, is stale and does not block the pass.
 
-One timer per firstmate home; a separate firstmate (proxmox) arms the same tracked code in its own home with its own timer.
+One timer per firstmate home, armed in that home's own user manager; a separate firstmate on another machine arms the same tracked code there with its own timer.
 Arming this home is a firstmate post-step after the change lands, not part of the tracked change.
 
 ## Relay (.env)
@@ -1012,8 +1013,6 @@ FM_SELF_UPDATE_SYSTEMCTL=        # self-update timer arming: systemctl binary (d
 FM_SELF_UPDATE_UNIT_DIR=         # self-update timer arming: systemd --user unit install directory (default: $HOME/.config/systemd/user)
 FM_SELF_UPDATE_SERVICE_TEMPLATE= # self-update timer arming: tracked service template path (default: <repo>/docs/examples/systemd/firstmate-self-update.service)
 FM_SELF_UPDATE_TIMER_TEMPLATE=   # self-update timer arming: tracked timer template path (default: <repo>/docs/examples/systemd/firstmate-self-update.timer)
-FM_SELF_UPDATE_SERVICE_UNIT=     # self-update timer arming: installed service unit name (default: firstmate-self-update.service)
-FM_SELF_UPDATE_TIMER_UNIT=       # self-update timer arming: installed timer unit name (default: firstmate-self-update.timer)
 FM_SELF_UPDATE_RUN=              # self-update timer arming: run wrapper rendered into the service (default: <repo>/bin/fm-self-update-timer.sh)
 FM_SELF_UPDATE_LOG=              # self-update timer run log path (default: $FM_HOME/state/self-update-timer.log)
 FM_SELF_UPDATE_PENDING=          # self-update timer pending-restart state file (default: $FM_HOME/state/.self-update-pending-restarts)

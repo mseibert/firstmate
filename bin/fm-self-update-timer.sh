@@ -20,8 +20,12 @@
 #      for a hand-run update and wrong for a timer: a naive cadence would
 #      restart an already-current mate four times a day. This wrapper restarts a
 #      mate only when its own home actually advanced ("updated <old>..<new>"),
-#      and never restarts the primary's own session - it records the pass's
-#      "reread-firstmate: yes|no" line for the running session instead.
+#      and only while the pass still classifies it as a live restart candidate;
+#      a mate whose endpoint is dead or missing is left to startup recovery, and
+#      a mate whose runtime can never prove a restart gets the pass's one-time
+#      re-read nudge instead of an endless retry. The primary's own session is
+#      never restarted - the pass's "reread-firstmate: yes|no" line is recorded
+#      as the signal the operator or running session acts on.
 #   3. Retry of unconfirmed restarts. A mate whose restart was attempted but
 #      reported "nudged" or "unreached" is recorded in
 #      state/.self-update-pending-restarts and retried on the next run even
@@ -59,7 +63,9 @@ RESTART_BIN="${FM_SELF_UPDATE_RESTART_BIN:-$SCRIPT_DIR/fm-secondmate-restart.sh}
 LOG="${FM_SELF_UPDATE_LOG:-$STATE/self-update-timer.log}"
 PENDING="${FM_SELF_UPDATE_PENDING:-$STATE/.self-update-pending-restarts}"
 TOKEN="$STATE/.build-token"
-# The build token's own ownerless age-rig (state/build-token.sh: OWNERLESS_AGE).
+# A build-token lock with no live owner older than this is treated as stale and
+# does not block the run, matching the 20-minute ownerless age-rig the home's
+# build-token tooling applies when it reclaims such a lock.
 TOKEN_OWNERLESS_AGE=1200
 
 usage() {
@@ -139,11 +145,7 @@ read_pending() {
   done < "$PENDING"
 }
 
-write_pending() {  # <id>...
-  if [ "$#" -eq 0 ]; then
-    rm -f -- "$PENDING"
-    return 0
-  fi
+write_pending() {  # <id>... (never called empty; the caller removes the file instead)
   local tmp
   tmp=$(mktemp "$STATE/.self-update-pending.XXXXXX" 2>/dev/null) || return 1
   if ! printf '%s\n' "$@" > "$tmp"; then
@@ -182,13 +184,39 @@ outcome_for() {  # <id> -> restarted|nudged|unreached|unknown
   esac
 }
 
+# Normalize a "restart-secondmates:"/"nudge-secondmates:" summary line into a
+# space-padded id set (" " when empty), so membership is a literal match.
+window_set() {  # <summary-line>
+  local rest=${1#*:} tok id out=" "
+  local -a tokens=()
+  read -r -a tokens <<< "$rest"
+  for tok in "${tokens[@]+"${tokens[@]}"}"; do
+    [ "$tok" = none ] && continue
+    id=${tok#fm-}
+    case "$id" in
+      ''|*[!A-Za-z0-9._-]*) continue ;;
+    esac
+    out="$out$id "
+  done
+  printf '%s\n' "$out"
+}
+
+in_spaced_set() {  # <spaced-set> <id>
+  case "$1" in
+    *" $2 "*) return 0 ;;
+  esac
+  return 1
+}
+
 # --- one pass ----------------------------------------------------------------
 
 action_run() {
   local line id i
-  local -a advanced=() detail=() restart_ids=() still_pending=()
-  local primary_updated=no reread_line="" seen=" " skip_count=0
-  local update_out update_err update_err_file update_rc=0 restart_rc=0 hard_fail=no header outcome
+  local -a advanced=() detail=() attempt_ids=() retry_pending=() keep_pending=()
+  local primary_updated=no reread_line="" seen=" " pending_set=" " skip_count=0
+  local restart_live=" " nudge_live=" " skipped_ids=" " saw_summary=no
+  local update_out update_err update_err_file update_rc=0 restart_rc=0
+  local hard_fail=no restart_failed=no header outcome
 
   if [ ! -d "$FM_HOME" ]; then
     error "home directory is unavailable: $FM_HOME"
@@ -229,11 +257,12 @@ action_run() {
 
   # Parse the pass's per-target stdout lines. Only "updated" advances a mate and
   # therefore earns a restart; "already current" is left alone. The pass's two
-  # action-summary lines are deliberately not read: they express the pass's own
-  # unconditional restart policy, which this wrapper replaces with the
-  # progress-gated one above. A recognized skip line is recorded verbatim and is
-  # the only pass line that drives the "skipped" header; any other stdout line
-  # is still kept for the log (failure output) but is not itself a skip.
+  # action-summary lines name which settled mates are live restart candidates
+  # and which are live but can never prove a restart, and that classification is
+  # authoritative for this wrapper too. A recognized skip line is recorded
+  # verbatim and is the only pass line that drives the "skipped" header; any
+  # other stdout line is still kept for the log (failure output) but is not
+  # itself a skip.
   while IFS= read -r line; do
     case "$line" in
       "firstmate: updated "*)
@@ -253,6 +282,9 @@ action_run() {
         ;;
       "secondmate "*": already current") ;;
       "secondmate "*": skipped: "*)
+        id=${line#secondmate }
+        id=${id%%:*}
+        skipped_ids="$skipped_ids$id "
         detail+=("$line")
         skip_count=$((skip_count + 1))
         ;;
@@ -264,13 +296,23 @@ action_run() {
         ;;
       "remote secondmate "*": already current on "*) ;;
       "remote secondmate "*": skipped on "*)
+        id=${line#remote secondmate }
+        id=${id%%:*}
+        skipped_ids="$skipped_ids$id "
         detail+=("$line")
         skip_count=$((skip_count + 1))
         ;;
       "reread-firstmate: "*)
         reread_line=$line
         ;;
-      "restart-secondmates:"*|"nudge-secondmates:"*) ;;
+      "restart-secondmates:"*)
+        restart_live=$(window_set "$line")
+        saw_summary=yes
+        ;;
+      "nudge-secondmates:"*)
+        nudge_live=$(window_set "$line")
+        saw_summary=yes
+        ;;
       "") ;;
       *)
         detail+=("$line")
@@ -283,7 +325,21 @@ action_run() {
   if [ -n "$update_err" ]; then
     while IFS= read -r line; do
       case "$line" in
-        "firstmate: skipped: "*|"secondmate "*": skipped: "*|"remote secondmate "*": skipped on "*)
+        "firstmate: skipped: "*)
+          detail+=("$line")
+          skip_count=$((skip_count + 1))
+          ;;
+        "secondmate "*": skipped: "*)
+          id=${line#secondmate }
+          id=${id%%:*}
+          skipped_ids="$skipped_ids$id "
+          detail+=("$line")
+          skip_count=$((skip_count + 1))
+          ;;
+        "remote secondmate "*": skipped on "*)
+          id=${line#remote secondmate }
+          id=${id%%:*}
+          skipped_ids="$skipped_ids$id "
           detail+=("$line")
           skip_count=$((skip_count + 1))
           ;;
@@ -298,20 +354,53 @@ action_run() {
     detail+=("failed: the update pass exited $update_rc")
   fi
 
-  # This run's candidates: mates that actually advanced, plus mates already
-  # awaiting a confirmed restart from an earlier run.
+  # Restart candidacy belongs to the pass: only it knows which mates are live
+  # and whose runtime can prove a restart. A home that advanced while its
+  # endpoint is dead or missing is left to the ordinary startup recovery; a
+  # mate whose runtime can never prove a restart gets the pass's one-time
+  # re-read nudge and is never retried; a pending retry is attempted only while
+  # the pass still classifies that mate as restart-capable; and a pending mate
+  # whose home was skipped this run keeps waiting untouched. An incomplete pass
+  # output (no action summary) falls back to attempting every known candidate,
+  # so a transient pass failure can never silently drop a pending retry.
   read_pending
+  for i in "${PENDING_IDS[@]+"${PENDING_IDS[@]}"}"; do
+    pending_set="$pending_set$i "
+  done
+  seen=" "
   for i in "${advanced[@]+"${advanced[@]}"}" "${PENDING_IDS[@]+"${PENDING_IDS[@]}"}"; do
     case "$seen" in
       *" $i "*) continue ;;
     esac
     seen="$seen$i "
-    restart_ids+=("$i")
+    if [ "$saw_summary" = no ] \
+      || in_spaced_set "$restart_live" "$i" \
+      || in_spaced_set "$nudge_live" "$i"; then
+      attempt_ids+=("$i")
+    elif in_spaced_set "$pending_set" "$i" && in_spaced_set "$skipped_ids" "$i"; then
+      keep_pending+=("$i")
+    elif in_spaced_set "$pending_set" "$i"; then
+      detail+=("restart $i: dropped - no longer a live restart candidate")
+    else
+      detail+=("restart $i: skipped - no live agent to replace (startup recovery owns it)")
+    fi
   done
 
-  if [ "${#restart_ids[@]}" -gt 0 ]; then
+  # The attempted set is made durable before the restart pass runs, so a run
+  # the unit's TimeoutStartSec kills mid-restart leaves the retry for the next
+  # cadence instead of losing it.
+  if [ "${#attempt_ids[@]}" -gt 0 ] || [ "${#keep_pending[@]}" -gt 0 ]; then
+    write_pending "${attempt_ids[@]+"${attempt_ids[@]}"}" "${keep_pending[@]+"${keep_pending[@]}"}" || {
+      error "cannot write $PENDING"
+      hard_fail=yes
+    }
+  else
+    rm -f -- "$PENDING" 2>/dev/null || true
+  fi
+
+  if [ "${#attempt_ids[@]}" -gt 0 ]; then
     RESTART_OUT=$(FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" \
-      "$RESTART_BIN" "${restart_ids[@]}" 2>&1) || restart_rc=$?
+      "$RESTART_BIN" "${attempt_ids[@]}" 2>&1) || restart_rc=$?
   else
     RESTART_OUT=""
   fi
@@ -319,11 +408,12 @@ action_run() {
     0|3) ;;
     *)
       hard_fail=yes
+      restart_failed=yes
       detail+=("failed: the restart pass exited $restart_rc")
       ;;
   esac
 
-  for id in "${restart_ids[@]+"${restart_ids[@]}"}"; do
+  for id in "${attempt_ids[@]+"${attempt_ids[@]}"}"; do
     outcome=$(outcome_for "$id")
     case "$outcome" in
       restarted)
@@ -332,18 +422,29 @@ action_run() {
         ;;
       nudged|unreached)
         line=$(restart_line_for "$id") || line="$outcome: $id"
-        detail+=("$line [retry pending]")
-        still_pending+=("$id")
+        if [ "$restart_failed" = yes ] || in_spaced_set "$restart_live" "$id"; then
+          detail+=("$line [retry pending]")
+          retry_pending+=("$id")
+        else
+          detail+=("$line [nudge only]")
+        fi
         ;;
       *)
-        detail+=("restart $id: no outcome reported [retry pending]")
-        still_pending+=("$id")
+        if [ "$restart_failed" = yes ] || in_spaced_set "$restart_live" "$id"; then
+          detail+=("restart $id: no outcome reported [retry pending]")
+          retry_pending+=("$id")
+        else
+          detail+=("restart $id: no outcome reported [nudge only]")
+        fi
         ;;
     esac
   done
 
-  if [ "${#still_pending[@]}" -gt 0 ]; then
-    write_pending "${still_pending[@]}" || {
+  for i in "${keep_pending[@]+"${keep_pending[@]}"}"; do
+    retry_pending+=("$i")
+  done
+  if [ "${#retry_pending[@]}" -gt 0 ]; then
+    write_pending "${retry_pending[@]}" || {
       error "cannot write $PENDING"
       hard_fail=yes
     }
@@ -357,7 +458,7 @@ action_run() {
     header="updated"
   elif [ "$skip_count" -gt 0 ]; then
     header="skipped"
-  elif [ "${#restart_ids[@]}" -gt 0 ]; then
+  elif [ "${#attempt_ids[@]}" -gt 0 ]; then
     header="pending restart retry"
   else
     header="already current"

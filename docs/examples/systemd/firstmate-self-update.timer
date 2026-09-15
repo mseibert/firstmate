@@ -8,8 +8,8 @@
 #
 # Every six hours with Persistent=true, so a run missed while the machine was
 # off or suspended is caught up at the next opportunity instead of silently
-# skipped. One timer per firstmate home; a separate firstmate (proxmox) arms
-# the same tracked code in its own home with its own timer.
+# skipped. One timer per firstmate home; a separate firstmate on another machine
+# arms the same tracked code in its own home with its own timer.
 #
 # Operator-facing configuration and the gated-restart policy:
 # docs/configuration.md "Self-update timer".

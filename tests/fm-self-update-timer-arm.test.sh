@@ -3,10 +3,9 @@
 # (bin/fm-self-update-timer-arm.sh): tracked service+timer templates, idempotent
 # arming, an unambiguous status, and a clean disarm.
 #
-# The captain's requirement (2026-09-15): a six-hour cadence for the
-# fast-forward-only self-update pass, armed as systemd --user units like the
-# existing capacity brake. systemd is driven through the
-# FM_SELF_UPDATE_SYSTEMCTL seam and the unit destination through
+# A six-hour cadence for the fast-forward-only self-update pass, armed as
+# systemd --user units like the existing capacity brake. systemd is driven
+# through the FM_SELF_UPDATE_SYSTEMCTL seam and the unit destination through
 # FM_SELF_UPDATE_UNIT_DIR, so the whole lifecycle is pinned deterministically
 # without a real user manager.
 set -u
@@ -26,9 +25,9 @@ make_home() {
   printf '%s\n' "$home"
 }
 
-# Fake systemctl: tracks the timer's and the service's active/enabled state in
-# marker files and logs every invocation, so a test can assert exactly how many
-# starts a re-arm caused.
+# Fake systemctl: tracks the timer's active/enabled state and the service's
+# active state in marker files and logs every invocation, so a test can assert
+# exactly how many starts a re-arm caused.
 make_systemctl() {
   local home=$1
   cat > "$home/fake-systemctl.sh" <<SH
@@ -55,24 +54,11 @@ case "\$cmd" in
     ;;
   enable)
     [ "\${1:-}" = --now ] && shift
-    case "\${1:-}" in
-      $TIMER_UNIT) touch "$home/timer-enabled" "$home/timer-active" ;;
-      $SERVICE_UNIT) touch "$home/service-enabled" "$home/service-active" ;;
-    esac
-    ;;
-  start)
-    [ "\${1:-}" = --now ] && shift
-    case "\${1:-}" in
-      $TIMER_UNIT) touch "$home/timer-active" ;;
-      $SERVICE_UNIT) touch "$home/service-active" ;;
-    esac
+    [ "\${1:-}" = "$TIMER_UNIT" ] && touch "$home/timer-enabled" "$home/timer-active"
     ;;
   disable)
     [ "\${1:-}" = --now ] && shift
-    case "\${1:-}" in
-      $TIMER_UNIT) rm -f "$home/timer-enabled" "$home/timer-active" ;;
-      $SERVICE_UNIT) rm -f "$home/service-enabled" "$home/service-active" ;;
-    esac
+    [ "\${1:-}" = "$TIMER_UNIT" ] && rm -f "$home/timer-enabled" "$home/timer-active"
     ;;
   stop)
     case "\${1:-}" in
