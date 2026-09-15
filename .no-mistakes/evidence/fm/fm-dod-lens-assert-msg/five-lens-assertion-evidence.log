@@ -1,0 +1,21 @@
+repo: /home/martin_seibert/.no-mistakes/worktrees/e36b903ea8f4/01M2JG0RAND8WD3F86RSWW1YGN
+head: ed76465 test(brief): reword the five-lens assertion failure message
+
+== 0. source the real test file (its full suite runs and must pass) ==
+ok - tests/fm-brief.test.sh sourced cleanly; its whole suite passed
+
+== 1. pass path: real generated briefs satisfy the real assertion ==
+ok - direct-PR emitted DOD accepted by assert_five_lens_rules (exit 0, no message)
+ok - no-mistakes emitted DOD accepted by assert_five_lens_rules (exit 0, no message)
+
+== 2. failure path: alias row appended, message captured from the real assertion ==
+exit code: 1
+emitted failure line: not ok - direct-PR DOD must name the installed lens in the result table
+ok - message states what the result table must contain and cites no owner
+
+== 3. contrast: PR #28 revision (64324e9) reproduces the reported message ==
+exit code: 1
+emitted failure line: not ok - direct-PR DOD must name the installed lens, not the captain's alias, in the result table
+ok - pre-change assertion reproduces the reported provenance citation
+
+ALL CHECKS PASSED
