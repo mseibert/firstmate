@@ -11,12 +11,12 @@
 # verdict covers the head, and every verdict request is preceded by a target-base
 # check and a mergeable check. local-only never requests a verdict and carries
 # no such block.
-# The direct-PR block additionally carries the five-lens gate requirement: the
-# PR body must hold a `## Five-lens gate` section with the result of every lens,
-# because the captain's merge policy treats a missing or unreported gate exactly
-# like an open finding, and the worker opening the PR is the only actor that can
-# write it. no-mistakes opens its PR through the pipeline and local-only opens
-# none, so only direct-PR carries that block.
+# Both PR-opening blocks carry the five-lens gate requirement: the captain's
+# merge policy treats a missing or unreported gate exactly like an open finding.
+# direct-PR carries it as a mandatory `## Five-lens gate` section in the PR body
+# the worker opens; no-mistakes carries the same lenses as one designated PR
+# comment, because the pipeline writes the PR body. local-only opens no PR and
+# carries neither.
 # fm_dod_block <no-mistakes|direct-PR|local-only> <task-id> prints the block on
 # stdout with no trailing blank line. The caller validates the mode; an unknown
 # mode is refused rather than silently rendered as the pipeline contract.
@@ -263,6 +263,39 @@ If the final result is not clean, append `done: PR {url} - five-lens gate: <what
 EOF
 }
 
+# Shared five-lens gate requirement for the no-mistakes definition of done.
+# no-mistakes opens the PR through the pipeline, so the worker cannot write the
+# PR body; the gate evidence goes into one designated PR comment instead. The
+# block reuses the direct-PR block's five lenses and per-lens result rows, adds
+# the final-head and CI-state rule, and states plainly that the captain's merge
+# policy does not yet accept the comment as its Hard-Stop 1 body block. Emitted
+# with a trailing blank line so callers can chain it into their
+# definition-of-done heredocs.
+fm_five_lens_comment_block() {
+  cat <<'EOF'
+no-mistakes opens the PR through the pipeline, so the five-lens gate for this mode is a separate PR comment instead of a PR-body section.
+After the pipeline opens the PR, run the five lenses over the branch diff, each in its own fresh context (a subagent or a fresh session): `code-review` (correctness), `maintainability-review` (rot, bandaids, speculative scaffolding), `architecture-system-design-reviewer` (structural fit and defended choices), `design-decision-questioner` (challenge the decisions), `self-containment-review` (context a repo reader cannot resolve).
+Fix what they find and push the fixes as an ADDITIONAL commit on the same branch; when nothing was found, push nothing and say so in the comment.
+Then post exactly ONE comment on the PR with the title `Findings and fixes from 5-lenses-review`, recording one row per lens in this shape, replacing every placeholder with the real result:
+
+| Lens | Ran | Findings | Fixed |
+|---|---|---|---|
+| code-review | <yes or no> | <n> | <n> |
+| maintainability-review | <yes or no> | <n> | <n> |
+| architecture-system-design-reviewer | <yes or no> | <n> | <n> |
+| design-decision-questioner | <yes or no> | <n> | <n> |
+| self-containment-review | <yes or no> | <n> | <n> |
+
+The comment must name the FINAL head SHA and the CI state on that head; after a fix commit the gate covers the head after that commit, not the pipeline head.
+End it with `Result: clean` only when every `Ran` cell says `yes` and no finding remains open; otherwise name what is not clean there, as `Result: 1 finding open - see <lens>` or `Result: 1 lens did not report - see <lens>`.
+Keep the order strict: lenses, then fixes, then push, then the comment.
+Never merge the PR; the configured merge authority decides.
+The captain's merge policy still requires the `## Five-lens gate` body block on every PR (its Hard-Stop 1), and until the captain's policy recognizes this comment, the comment does NOT count as evidence for that stop.
+Do not treat the comment as having satisfied that stop.
+
+EOF
+}
+
 fm_dod_block() {  # <mode> <task-id>
   local mode=$1 id=$2
   case "$mode" in
@@ -300,6 +333,10 @@ When you believe it is complete, append \`done: {summary}\` to the status file a
 Firstmate will then instruct you to run /no-mistakes to validate and ship a PR.
 EOF
       fm_verdict_ordering_block "start or continue the no-mistakes run that computes the review verdict against the branch head"
+      cat <<'EOF'
+The freeze in step 4 covers the pipeline head the run validates; keep it until the verdict has landed and covers that head.
+The five-lens pass below is then the designated post-verdict step, and any fix commit it pushes becomes the final head the comment must cover.
+EOF
       cat <<EOF
 You drive no-mistakes by responding to its gates, not by implementing fixes.
 Follow the guidance no-mistakes itself provides for the mechanics: it loads when you invoke /no-mistakes, and \`no-mistakes axi run --help\` plus the \`help\` lines in each \`axi\` response are authoritative and version-matched to the installed binary.
@@ -323,8 +360,13 @@ Two firstmate-specific rules layer on top of that guidance:
   When the decision comes back, feed it to the gate with \`no-mistakes axi respond\` and let the pipeline apply it - do not route the question to "the user" or implement the fix yourself.
 - NEVER pass \`--yes\` (or \`-y\`) to \`no-mistakes axi run\` or \`no-mistakes axi respond\`. It is banned fleet-wide.
   It auto-resolves every gate including ask-user findings with no escalation, and answering your own ask-user finding is a hard rule violation.
-
-After /no-mistakes reports CI green (the CI-ready return point - do not wait for it to keep monitoring in the background until merge), append \`done: PR {url} checks green\` and stop. You are finished.
+EOF
+      fm_five_lens_comment_block
+      cat <<EOF
+After /no-mistakes reports CI green (the CI-ready return point - do not wait for it to keep monitoring in the background until merge), run the five-lens pass and post its comment.
+The pipeline's CI monitor re-arms on base movement, not on a new head, so when a lens fix commit moved the head, wait for CI to report on that final head and record its state in the comment.
+Append \`done: PR {url} checks green\` only once CI is green on the final head the comment names, or \`done: PR {url} checks green - five-lens comment: <what is not clean>\` when the comment's Result is not clean, then stop.
+You are finished.
 EOF
       ;;
     *)

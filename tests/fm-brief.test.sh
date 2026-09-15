@@ -447,11 +447,12 @@ test_verdict_head_ordering_in_verdict_modes() {
 # The captain's merge policy treats a PR body without a `## Five-lens gate`
 # section exactly like one with open findings, and a gate that never ran looks
 # exactly like one that found nothing. The direct-PR definition of done is the
-# only place a PR-opening worker is told to write that section, so the block,
-# the per-lens placeholder rows, the two-sided Result rule, the degradation
-# path, and the unclean-gate done line are pinned there.
-# no-mistakes opens its PR through the pipeline and local-only opens none, so
-# neither carries the requirement.
+# place a PR-opening worker is told to write that section, so the block, the
+# per-lens placeholder rows, the two-sided Result rule, the degradation path,
+# and the unclean-gate done line are pinned there.
+# no-mistakes carries the same five lenses as a PR comment through its own block
+# (test_five_lens_comment_in_no_mistakes_dod), and local-only opens no PR and
+# must stay free of both.
 test_five_lens_gate_in_direct_pr_dod() {
   local home id brief mode lens
   home="$TMP_ROOT/five-lens-home"
@@ -496,17 +497,97 @@ test_five_lens_gate_in_direct_pr_dod() {
   assert_grep "so the open gate reaches firstmate with the ready signal" "$brief" \
     "direct-PR DOD must not claim a consequence no firstmate path enforces"
 
-  for mode in no-mistakes local-only; do
-    id="brief-five-lens-$(printf '%s' "$mode" | tr '[:upper:]' '[:lower:]')"
+  id="brief-five-lens-local-only"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode local-only >/dev/null 2>&1
+  brief="$home/data/$id/brief.md"
+  assert_present "$brief" "local-only brief was not scaffolded"
+  assert_no_grep "## Five-lens gate" "$brief" \
+    "local-only DOD must not require a PR-body section that mode never opens"
+  assert_no_grep "self-containment-review" "$brief" \
+    "local-only DOD must not carry the lens list"
+  pass "fm-brief.sh: direct-PR DOD makes the Five-lens gate block mandatory in the PR body"
+}
+
+# no-mistakes opens the PR through the pipeline, so its five-lens evidence goes
+# into one designated PR comment with the exact title `Findings and fixes from
+# 5-lenses-review` instead of the PR body. The comment-based contract pins the
+# same lenses, the final-head and CI-state rule, the strict
+# lens-fix-push-comment order, the honest statement that the captain's merge
+# policy does not yet accept the comment, and the done line that waits for CI
+# green on the final head. direct-PR keeps its body-based block and local-only
+# carries neither.
+test_five_lens_comment_in_no_mistakes_dod() {
+  local home id brief mode lens
+
+  home="$TMP_ROOT/five-lens-comment-home"
+  mkdir -p "$home/data"
+
+  id="brief-five-lens-nm"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode no-mistakes >/dev/null 2>&1
+  brief="$home/data/$id/brief.md"
+  assert_present "$brief" "no-mistakes brief was not scaffolded"
+  assert_grep "no-mistakes opens the PR through the pipeline, so the five-lens gate for this mode is a separate PR comment instead of a PR-body section" "$brief" \
+    "no-mistakes DOD must place the five-lens evidence in a PR comment"
+  assert_grep "the title \`Findings and fixes from 5-lenses-review\`" "$brief" \
+    "no-mistakes DOD must pin the exact comment title"
+  assert_grep "each in its own fresh context (a subagent or a fresh session)" "$brief" \
+    "no-mistakes DOD must require a fresh-context pass per lens"
+  assert_grep "\`code-review\` (correctness), \`maintainability-review\` (rot, bandaids, speculative scaffolding), \`architecture-system-design-reviewer\` (structural fit and defended choices), \`design-decision-questioner\` (challenge the decisions), \`self-containment-review\` (context a repo reader cannot resolve)" "$brief" \
+    "no-mistakes DOD must define all five lens foci in the emitted block"
+  assert_grep "push the fixes as an ADDITIONAL commit on the same branch" "$brief" \
+    "no-mistakes DOD must push lens fixes as an additional commit"
+  assert_grep "when nothing was found, push nothing and say so in the comment" "$brief" \
+    "no-mistakes DOD must not push an empty fix commit"
+  assert_grep "| Lens | Ran | Findings | Fixed |" "$brief" \
+    "no-mistakes DOD must carry the per-lens table header"
+  for lens in code-review maintainability-review architecture-system-design-reviewer design-decision-questioner self-containment-review; do
+    assert_grep "| $lens | <yes or no> | <n> | <n> |" "$brief" \
+      "no-mistakes DOD must carry the $lens placeholder row"
+  done
+  assert_grep "The comment must name the FINAL head SHA and the CI state on that head" "$brief" \
+    "no-mistakes DOD must require the final head SHA and its CI state in the comment"
+  assert_grep "after a fix commit the gate covers the head after that commit, not the pipeline head" "$brief" \
+    "no-mistakes DOD must move the gate to the post-fix head"
+  assert_grep "\`Result: clean\` only when every \`Ran\` cell says \`yes\` and no finding remains open" "$brief" \
+    "no-mistakes DOD must define clean as every lens ran and nothing is open"
+  assert_grep "\`Result: 1 finding open - see <lens>\`" "$brief" \
+    "no-mistakes DOD must show the open-finding Result shape"
+  assert_grep "\`Result: 1 lens did not report - see <lens>\`" "$brief" \
+    "no-mistakes DOD must show the not-reported Result shape"
+  assert_grep "Keep the order strict: lenses, then fixes, then push, then the comment." "$brief" \
+    "no-mistakes DOD must pin the lens-fix-push-comment order"
+  assert_grep "Never merge the PR; the configured merge authority decides." "$brief" \
+    "no-mistakes DOD must leave the merge to the configured authority"
+  assert_grep "The captain's merge policy still requires the \`## Five-lens gate\` body block on every PR (its Hard-Stop 1)" "$brief" \
+    "no-mistakes DOD must state the merge policy still requires the body block"
+  assert_grep "until the captain's policy recognizes this comment, the comment does NOT count as evidence for that stop" "$brief" \
+    "no-mistakes DOD must state the comment is not yet accepted as the stop's evidence"
+  assert_grep "Do not treat the comment as having satisfied that stop." "$brief" \
+    "no-mistakes DOD must stop the worker from believing the stop is served"
+  assert_grep "The freeze in step 4 covers the pipeline head the run validates" "$brief" \
+    "no-mistakes DOD must reconcile the freeze with the post-verdict lens pass"
+  assert_grep "The five-lens pass below is then the designated post-verdict step" "$brief" \
+    "no-mistakes DOD must name the lens pass as the designated post-verdict step"
+  assert_grep "Append \`done: PR {url} checks green\` only once CI is green on the final head the comment names" "$brief" \
+    "no-mistakes DOD must wait for CI green on the final head before done"
+  assert_grep "\`done: PR {url} checks green - five-lens comment: <what is not clean>\`" "$brief" \
+    "no-mistakes DOD must surface an unclean comment in the done line"
+  assert_grep "wait for CI to report on that final head and record its state in the comment" "$brief" \
+    "no-mistakes DOD must make the worker read CI on a moved head"
+
+  # direct-PR keeps its body-based block and local-only opens no PR, so neither
+  # may carry the comment-based variant.
+  for mode in direct-PR local-only; do
+    id="brief-five-lens-comment-$(printf '%s' "$mode" | tr '[:upper:]' '[:lower:]')"
     FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode "$mode" >/dev/null 2>&1
     brief="$home/data/$id/brief.md"
     assert_present "$brief" "$mode brief was not scaffolded"
-    assert_no_grep "## Five-lens gate" "$brief" \
-      "$mode DOD must not require a PR-body section that mode never opens"
-    assert_no_grep "self-containment-review" "$brief" \
-      "$mode DOD must not carry the direct-PR-only lens list"
+    assert_no_grep "Findings and fixes from 5-lenses-review" "$brief" \
+      "$mode DOD must not carry the no-mistakes-only comment gate"
+    assert_no_grep "The comment must name the FINAL head SHA" "$brief" \
+      "$mode DOD must not carry the no-mistakes-only final-head rule"
   done
-  pass "fm-brief.sh: direct-PR DOD makes the Five-lens gate block mandatory in the PR body"
+  pass "fm-brief.sh: no-mistakes DOD posts the Five-lens gate as a designated PR comment"
 }
 
 test_ask_user_escalation_format() {
@@ -1017,6 +1098,7 @@ test_faster_paths_use_configured_authority_without_stacked_review
 test_no_mistakes_dod_wording
 test_verdict_head_ordering_in_verdict_modes
 test_five_lens_gate_in_direct_pr_dod
+test_five_lens_comment_in_no_mistakes_dod
 test_ask_user_escalation_format
 test_ship_project_memory_wording
 test_herdr_lab_contract_is_explicit_and_complete
