@@ -1,0 +1,6 @@
+$ gh pr view 27 --repo mseibert/firstmate --json state,mergedAt,baseRefName,headRefName,mergeable
+{"baseRefName":"seibert/main","headRefName":"fm/fm-five-lens-nm-comment","mergeable":"MERGEABLE","mergedAt":null,"state":"OPEN"}
+
+$ git rev-parse origin/seibert/main  # f3dcd77^ (this branch parent): PR #27 not merged
+33203c30f810d89373bb6be3aaeed5256b930df8
+33203c30f810d89373bb6be3aaeed5256b930df8
