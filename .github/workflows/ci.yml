@@ -135,10 +135,17 @@ jobs:
   tests-portable-serial:
     name: Behavior portable serial ${{ matrix.shard }}
     runs-on: ubuntu-latest
-    # Measured whole remainder is ~63 min of serial work; the balanced shards
-    # are ~12.7 min each. Cap is a hang tripwire with roughly 1.6x margin, not
-    # the expected healthy end of the lane.
-    timeout-minutes: 20
+    # Cap is a hang tripwire, not the expected healthy end of the lane, so it
+    # must sit well clear of the slowest shard a loaded runner really produces.
+    # The refreshed hints give every shard 16.43 minutes of conservative
+    # assignment weight, but a loaded runner can stretch one script far past its
+    # hint: on 2026-09-15 shard 1 ran all 30 tests green in 29m44s while
+    # fm-watch-triage alone took 22m17s against its 6m36s hint, and the
+    # 30-minute cap cancelled the job before its timing artifact finished
+    # uploading even though every test had passed.
+    # 45 minutes keeps the bound a hang tripwire with roughly 1.5x margin over
+    # that worst measured shard instead of the routine end of the lane.
+    timeout-minutes: 45
     strategy:
       # Every shard reports so one failure never hides another shard's result.
       fail-fast: false

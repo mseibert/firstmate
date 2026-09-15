@@ -3564,8 +3564,14 @@ JS
     --dump-dom \
     "file://$export_file" >"$export_dom" 2>/dev/null &
   chrome_pid=$!
+  # A healthy Chrome breaks this poll as soon as the complete DOM is on disk, so
+  # the bound only decides how long a busy runner may take before the test gives
+  # up. Ten seconds was too short: on a loaded CI runner this step was observed
+  # consuming the whole bound and still failing with an incomplete DOM while
+  # every assertion before it had passed. Thirty seconds keeps the wait bounded
+  # while leaving real headroom over a cold Chrome start.
   chrome_wait=0
-  while kill -0 "$chrome_pid" 2>/dev/null && [ "$chrome_wait" -lt 100 ]; do
+  while kill -0 "$chrome_pid" 2>/dev/null && [ "$chrome_wait" -lt 300 ]; do
     grep -Fq '</html>' "$export_dom" 2>/dev/null && break
     sleep 0.1
     chrome_wait=$((chrome_wait + 1))
