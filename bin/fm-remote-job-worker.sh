@@ -1146,13 +1146,6 @@ worker_supervisor_shutdown() {
   exit 0
 }
 
-worker_supervisor_foreign_owner() { # <account-home>
-  local account_home=$1 status
-  fm_remote_job_lock_owner_status "$account_home"
-  status=$?
-  [ "$status" -eq 0 ]
-}
-
 worker_supervise_linux() {
   local account_home child_status started failures=0 restarts=0 backoff
   account_home=$(worker_account_home) || { worker_error "cannot resolve account home"; return 1; }
@@ -1168,7 +1161,7 @@ worker_supervise_linux() {
     # A live owner elsewhere means this supervisor has nothing to serve; never
     # start (or restart) a generation beside the owner that already holds the
     # queue.
-    if worker_supervisor_foreign_owner "$account_home"; then
+    if fm_remote_job_lock_owner_status "$account_home"; then
       worker_error "another remote job worker owns the queue; stopping the supervisor"
       return 0
     fi
@@ -1187,7 +1180,7 @@ worker_supervise_linux() {
     fi
     worker_supervisor_cleanup_dead_child "$account_home" "$WORKER_SUPERVISED_PID" || true
     WORKER_SUPERVISED_PID=
-    if worker_supervisor_foreign_owner "$account_home"; then
+    if fm_remote_job_lock_owner_status "$account_home"; then
       worker_error "another remote job worker owns the queue; stopping the supervisor"
       return 0
     fi

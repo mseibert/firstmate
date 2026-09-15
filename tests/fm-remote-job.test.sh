@@ -60,15 +60,12 @@ cleanup_remote_job_fixture() {
   [ -z "$FOREIGN_OWNER_SERVE_PID" ] || kill "$FOREIGN_OWNER_SERVE_PID" 2>/dev/null || true
   [ -z "$FOREIGN_SLEEP_PID" ] || kill "$FOREIGN_SLEEP_PID" 2>/dev/null || true
   local state
-  for state in "$INDETERMINATE_STATE" "$LOSS_STATE" "$NEVERPUBLISHED_STATE" "$QUARANTINE_TEMP_STATE" "$DISPLACED_STATE" "$FOREIGN_STATE"; do
+  for state in "$INDETERMINATE_STATE" "$LOSS_STATE" "$NEVERPUBLISHED_STATE" "$QUARANTINE_TEMP_STATE" "$DISPLACED_STATE" "$FOREIGN_STATE" "$STATE_ROOT"; do
     [ -n "$state" ] || continue
     if [ -f "$state/worker.pid" ]; then
       fm_remote_job_stop_worker_tree "$(cat "$state/worker.pid")" || true
     fi
   done
-  if [ -f "$STATE_ROOT/worker.pid" ]; then
-    fm_remote_job_stop_worker_tree "$(cat "$STATE_ROOT/worker.pid")" || true
-  fi
   rm -rf -- "$TMP_ROOT"
 }
 trap cleanup_remote_job_fixture EXIT
