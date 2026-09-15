@@ -75,6 +75,8 @@ UNREGISTER_BIN="$SCRIPT_DIR/fm-check-unregister.sh"
 . "$SCRIPT_DIR/fm-wake-lib.sh"
 # shellcheck source=bin/fm-pr-lib.sh
 . "$SCRIPT_DIR/fm-pr-lib.sh"
+# shellcheck source=bin/fm-unit-install-lib.sh
+. "$SCRIPT_DIR/fm-unit-install-lib.sh"
 
 usage() {
   cat <<'EOF'
@@ -179,37 +181,11 @@ replace_naked_loop() {
 }
 
 # --- unit install ------------------------------------------------------------
-# Render the tracked template (literal @FM_HOME@ substitution) and install it
-# at UNIT_DIR/UNIT by rename. Refuses a symlink or a non-regular destination and
-# rewrites only when the rendered bytes differ, so a re-arm does not churn the
-# file or force an unnecessary daemon-reload.
-render_template() {
-  local text rendered
-  text=$(cat "$TEMPLATE") || return 1
-  rendered=${text//@FM_HOME@/$FM_HOME}
-  printf '%s\n' "$rendered"
-}
-
+# The render/install mechanics live once in bin/fm-unit-install-lib.sh; this
+# wrapper supplies this home's substitution.
 install_unit() {
-  local rendered device tmp
-  [ -d "$UNIT_DIR" ] && [ ! -L "$UNIT_DIR" ] || mkdir -p "$UNIT_DIR" || return 1
-  device=$(fm_pr_file_device "$UNIT_DIR") || return 1
-  fm_pr_regular_destination_on_device_or_absent "$UNIT_FILE" "$device" \
-    || { error "refusing symlink or unusable path at $UNIT_FILE"; return 1; }
-  rendered=$(render_template) || return 1
-  if [ -f "$UNIT_FILE" ] && [ ! -L "$UNIT_FILE" ] \
-    && [ "$(cat "$UNIT_FILE" 2>/dev/null)" = "$rendered" ]; then
-    return 0
-  fi
-  tmp=$(umask 022; mktemp "$UNIT_DIR/.fm-capacity-brake.XXXXXX" 2>/dev/null) || return 1
-  if ! printf '%s\n' "$rendered" > "$tmp" \
-    || ! chmod 0644 "$tmp" \
-    || ! fm_pr_regular_destination_on_device_or_absent "$UNIT_FILE" "$device" \
-    || ! mv -f -- "$tmp" "$UNIT_FILE"; then
-    rm -f -- "$tmp"
-    return 1
-  fi
-  return 0
+  fm_unit_install "$UNIT_DIR" "$TEMPLATE" "$UNIT_FILE" "@FM_HOME@=$FM_HOME" \
+    || { error "${FM_UNIT_ERROR:-could not install $UNIT_FILE}"; return 1; }
 }
 
 # --- beat check arming -------------------------------------------------------

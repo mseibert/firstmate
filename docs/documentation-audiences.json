@@ -349,6 +349,14 @@
       "audience": "operator-example"
     },
     {
+      "path": "docs/examples/systemd/firstmate-self-update.service",
+      "audience": "operator-example"
+    },
+    {
+      "path": "docs/examples/systemd/firstmate-self-update.timer",
+      "audience": "operator-example"
+    },
+    {
       "path": "docs/examples/watched-tools.json",
       "audience": "operator-example"
     },

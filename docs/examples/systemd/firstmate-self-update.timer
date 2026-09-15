@@ -1,0 +1,25 @@
+# firstmate-self-update.timer - systemd --user timer for the periodic
+# self-update pass
+#
+# Tracked TEMPLATE, not a live unit. bin/fm-self-update-timer-arm.sh installs
+# this template at ~/.config/systemd/user/firstmate-self-update.timer and
+# enables and starts the timer. Do not install or edit this file by hand; the
+# arm helper owns the installed copy.
+#
+# Every six hours with Persistent=true, so a run missed while the machine was
+# off or suspended is caught up at the next opportunity instead of silently
+# skipped. One timer per firstmate home; a separate firstmate on another machine
+# arms the same tracked code in its own home with its own timer.
+#
+# Operator-facing configuration and the gated-restart policy:
+# docs/configuration.md "Self-update timer".
+[Unit]
+Description=Firstmate self-update timer (every 6 hours)
+
+[Timer]
+OnCalendar=*-*-* 00,06,12,18:00:00
+Persistent=true
+Unit=firstmate-self-update.service
+
+[Install]
+WantedBy=timers.target

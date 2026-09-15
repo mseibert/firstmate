@@ -561,6 +561,35 @@ The helper replaces a naked loop only when the recorded lock pid really is the c
 `arm` also writes `state/capacity-brake.check.sh` and binds it with `bin/fm-check-register.sh`, so the existing watcher polls it on its normal cadence and turns that line into a `check:` wake - a dead loop is immediately visible instead of silent.
 `status` prints the unit state, beat age, and check registration; `disarm` stops and disables the unit, removes the installed unit file, and unregisters the check.
 
+## Self-update timer
+
+The fleet checks for a new Firstmate state and builds it at least every six hours, instead of a hand-run `/updatefirstmate`.
+[`bin/fm-self-update-timer-arm.sh`](../bin/fm-self-update-timer-arm.sh) arms one systemd --user timer per firstmate home, and [`bin/fm-self-update-timer.sh`](../bin/fm-self-update-timer.sh) is the run wrapper its service executes; this section is the operator-facing owner of the timer contract, while each script's header owns the exact commands, seams, and mechanics.
+
+The tracked unit TEMPLATES are [`docs/examples/systemd/firstmate-self-update.service`](examples/systemd/firstmate-self-update.service) and [`docs/examples/systemd/firstmate-self-update.timer`](examples/systemd/firstmate-self-update.timer).
+The arm helper renders the service's `@FM_HOME@` and `@FM_SELF_UPDATE_RUN@` placeholders and installs both units at `~/.config/systemd/user/`.
+`OnCalendar=*-*-* 00,06,12,18:00:00` with `Persistent=true` runs the pass every six hours and catches up a run missed while the machine was off or suspended.
+The service is `Type=oneshot` because the timer owns the cadence, and `TimeoutStartSec=30min` because the restart gate asks each mate to persist its open work before its agent is replaced.
+`bin/fm-self-update-timer-arm.sh arm` installs, enables, and starts the timer, and re-arming an unchanged active, enabled timer confirms and changes nothing; `status` prints the timer and service state, the run-wrapper path, the log path with its last line, and any mate awaiting a confirmed restart; `disarm` stops and disables the timer, removes both unit files, and keeps the log and pending state.
+
+The run composes the existing fast-forward-only pass (`bin/fm-update.sh`) rather than changing it: dirty, diverged, offline, or wrong-branch targets are still skipped and never forced, stashed, or discarded.
+It appends one plain-text record to `state/self-update-timer.log` (override `FM_SELF_UPDATE_LOG`).
+A run with nothing to report writes exactly one line, `<timestamp> already current`.
+A run that found something records the pass's own `old..new` lines, its skip reasons verbatim, which mates were restarted with what outcome, and the pass's `reread-firstmate:` line recording whether the running firstmate's instruction surface advanced.
+
+Restart candidacy belongs to the pass, and the timer gates it on actual progress.
+`bin/fm-update.sh` names every live mate it leaves on the target commit for restart, including one that was already current; a six-hour cadence would otherwise restart an already-current mate four times a day, so a mate is restarted only when its own home advanced (`updated`).
+The pass's own classification still bounds that: a mate whose endpoint is dead or missing is left to the ordinary startup recovery, and a mate whose runtime can never prove a restart gets the pass's one-time re-read nudge rather than an endless retry.
+The primary's own session is never restarted, and the recorded `reread-firstmate:` line is the signal the operator or the running session acts on to re-read its instructions, not an automatic refresh.
+A restart the run attempted but could not confirm (`nudged` or `unreached`) is recorded in `state/.self-update-pending-restarts` before the restart pass runs, so a run killed mid-restart keeps its retry, and it is retried on the next run even without new progress; a confirmed restart clears the entry, and a pending mate whose home was skipped keeps waiting untouched.
+
+The run skips entirely while the machine's build token is held.
+When `state/.build-token` names an owner whose process is alive, or is an ownerless lock younger than 20 minutes, the wrapper appends `<timestamp> skipped: build token held` and exits without running the update, so the timer never competes with a running Next.js build.
+A token whose owner is gone, or an ownerless lock past 20 minutes, is stale and does not block the pass.
+
+One timer per firstmate home, armed in that home's own user manager; a separate firstmate on another machine arms the same tracked code there with its own timer.
+Arming this home is a firstmate post-step after the change lands, not part of the tracked change.
+
 ## Relay (.env)
 
 Relay lets a firstmate instance answer public mentions and act on normal reversible mention requests through firstmate's normal lifecycle.
@@ -980,6 +1009,13 @@ FM_CAPACITY_BRAKE_TEMPLATE=   # capacity-brake arming: tracked unit template pat
 FM_CAPACITY_BRAKE_UNIT=       # capacity-brake arming: installed unit name (default: firstmate-capacity-brake.service)
 FM_CAPACITY_BRAKE_BEAT_GRACE= # capacity-brake beat-age alarm threshold in seconds (default: 300)
 FM_CAPACITY_BRAKE_STOP_WAIT=  # bounded seconds to wait for the naked capacity-brake loop to exit (default: 30)
+FM_SELF_UPDATE_SYSTEMCTL=        # self-update timer arming: systemctl binary (default: systemctl)
+FM_SELF_UPDATE_UNIT_DIR=         # self-update timer arming: systemd --user unit install directory (default: $HOME/.config/systemd/user)
+FM_SELF_UPDATE_SERVICE_TEMPLATE= # self-update timer arming: tracked service template path (default: <repo>/docs/examples/systemd/firstmate-self-update.service)
+FM_SELF_UPDATE_TIMER_TEMPLATE=   # self-update timer arming: tracked timer template path (default: <repo>/docs/examples/systemd/firstmate-self-update.timer)
+FM_SELF_UPDATE_RUN=              # self-update timer arming: run wrapper rendered into the service (default: <repo>/bin/fm-self-update-timer.sh)
+FM_SELF_UPDATE_LOG=              # self-update timer run log path (default: $FM_HOME/state/self-update-timer.log)
+FM_SELF_UPDATE_PENDING=          # self-update timer pending-restart state file (default: $FM_HOME/state/.self-update-pending-restarts)
 FM_SECONDMATE_WAKE_STALL_SECS=60   # minimum age of the oldest valid foreign wake-queue row before an endpoint-recorded local secondmate produces one durable parent wake-loop-stall notification; zero or invalid values use 60
 FM_WEDGE_DEMAND_INSPECT_COUNT=3    # consecutive provably-working stale escalations on the same unchanged pane before demand-deep-inspection is added
 FM_WORKTREE_WRITE_PRUNE='.git node_modules .venv venv __pycache__ .mypy_cache .pytest_cache .ruff_cache .tox target dist build .next .cache vendor'   # directory names the wedge detector's task-worktree write probe skips; the default keeps .git out so a supervisor's own read-only git command can never look like crew progress; set it to the empty string to prune nothing, which widens the probe to the whole depth-bounded tree rather than disabling it

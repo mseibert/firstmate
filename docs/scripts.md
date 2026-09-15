@@ -21,6 +21,8 @@ The shared no-mistakes gate refusal for fleet lifecycle entrypoints is summarize
 | `fm-bearings-board.sh`   | Build and arm the stable interactive `/bearings lavish` fleet board                  |
 | `fm-secondmate-reconcile.sh` | Queue Bearings reconcile requests for later supervision delivery and ask each mismatched home through its durable inbox with a per-home cooldown |
 | `fm-update.sh`           | Guarded self-update of firstmate and local or remote secondmate homes, classifying every live mate left on the target commit for restart or fallback nudge |
+| `fm-self-update-timer.sh` | Run one progress-gated self-update pass for the six-hour timer: build-token gate, restart only advanced mates, retry unconfirmed restarts, and write the bounded run log ([configuration.md](configuration.md#self-update-timer)) |
+| `fm-self-update-timer-arm.sh` | Install, inspect, and remove the self-update service and six-hour timer under tracked systemd --user units ([configuration.md](configuration.md#self-update-timer)) |
 | `fm-secondmate-restart.sh` | Persist open conversational work, then restart eligible second mates or report the fallback outcome |
 | `fm-secondmate-restart-lib.sh` | Shared second-mate restart capability and persistence-request contract |
 | `fm-captain-context-watch.sh` | Measure the captain session's context from outside that session and restart it only behind a correlated persist answer |
@@ -130,6 +132,7 @@ The shared no-mistakes gate refusal for fleet lifecycle entrypoints is summarize
 | `fm-check-lib.sh`        | Validate custom-check registrations and prepare private execution snapshots          |
 | `fm-tool-update-check.sh` | Report watched tooling with an update available, and updates installed but left inert by PATH order |
 | `fm-pr-lib.sh`           | Own canonical task and PR validation plus private atomic PR-poll publication, merge-notification identity, and retirement |
+| `fm-unit-install-lib.sh` | Render and install a tracked systemd --user unit template safely for the arm helpers, refusing symlinks and rewriting only changed bytes |
 | `fm-pr-poll.sh`          | Provide the byte-static watcher program for validated PR/MR-poll sidecars           |
 | `fm-pr-check.sh`         | Record validated `pr=` and `pr_head=` values, then atomically arm a static merge poll |
 | `fm-pr-green-return.sh`  | Surface a green own-task PR past its return wait as a bound-merge mandate or a named policy hold |

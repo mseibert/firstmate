@@ -2120,7 +2120,7 @@ SH
 
 test_config_reread_serializes_concurrent_pushes() {
   local w head fakebin marker entered log first_out second_out first_pid first_status second_status
-  local first_instr second_instr first_line second_line
+  local first_instr second_instr first_line second_line i
   w=$(new_world config-reread-serialized-pushes)
   head=$(git -C "$w/main" rev-parse HEAD)
   add_sm_worktree "$w" sm "$head"
@@ -2154,11 +2154,18 @@ SH
       "$ROOT/bin/fm-config-push.sh" > "$first_out" 2>&1
   ) &
   first_pid=$!
-  for _ in $(seq 1 100); do
-    [ -e "$entered" ] && break
-    sleep 0.02
+  # The push runs a supervision guard and live-home discovery before its pointer
+  # send, so its prelude is variable-duration on a loaded runner. Wait for the
+  # delivery itself instead of a fixed short budget that races the prelude; the
+  # process check fails a genuinely early exit and the counter is a hang tripwire.
+  i=0
+  while [ ! -e "$entered" ]; do
+    kill -0 "$first_pid" 2>/dev/null \
+      || fail "first config push exited before pointer delivery"
+    i=$((i + 1))
+    [ "$i" -le 1200 ] || fail "first config push never reached pointer delivery"
+    sleep 0.05
   done
-  [ -e "$entered" ] || fail "first config push did not reach pointer delivery"
   first_instr=$(reread_instruction_path "$w/sm") \
     || fail "first concurrent push did not publish its generation"
   printf 'two\n' > "$w/home/config/crew-harness"

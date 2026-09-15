@@ -1,0 +1,35 @@
+# firstmate-self-update.service - systemd --user unit for the periodic
+# self-update pass
+#
+# Tracked TEMPLATE, not a live unit. bin/fm-self-update-timer-arm.sh renders
+# this template by substituting @FM_HOME@ with the resolved operational home
+# and @FM_SELF_UPDATE_RUN@ with the run wrapper, then installs the result at
+# ~/.config/systemd/user/firstmate-self-update.service. Do not install or edit
+# this file by hand; the arm helper owns the installed copy.
+#
+# Type=oneshot because the timer owns the cadence: unlike the capacity brake's
+# long-running loop, this service does one pass and exits, so Restart=always
+# does not apply. TimeoutStartSec is deliberately generous (minutes, not
+# seconds) because the restart gate asks each mate to persist its open work
+# before its agent is replaced. There is no [Install] section: the timer
+# triggers this service by name, and enabling it would start a pass at login.
+#
+# PATH leads with the invoking user's harness install directories
+# (%h/.local/bin, %h/.npm-global/bin): a gated restart of a local mate resolves
+# that mate's harness executable from PATH, which the pin below would otherwise
+# restrict to system directories.
+#
+# Operator-facing configuration, the six-hour cadence, and the gated-restart
+# policy: docs/configuration.md "Self-update timer".
+[Unit]
+Description=Firstmate self-update pass (fast-forward the fleet and restart advanced mates)
+After=default.target
+
+[Service]
+Type=oneshot
+ExecStart=@FM_SELF_UPDATE_RUN@ run
+WorkingDirectory=@FM_HOME@
+Environment=HOME=%h
+Environment=FM_HOME=@FM_HOME@
+Environment=PATH=%h/.local/bin:%h/.npm-global/bin:/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin
+TimeoutStartSec=30min
