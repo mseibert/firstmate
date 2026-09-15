@@ -1,0 +1,26 @@
+== wedge: an untrapped kill left a dead owner record and a quarantine publish temp ==
+lock dir before start: command pid .quarantine.deadbeef start 
+
+== start the worker the way the supervisor/doctor does ==
+PASS  wedged queue reclaimed: worker published its readiness heartbeat
+worker.pid=1850682 lock/pid=1850682
+PASS  the reclaiming worker published its own ownership record
+PASS  the quarantine publish temp file was cleared from the reclaimed lock
+
+== a real queued job through the public stage/wait API ==
+job1 id=job-5GSv9e exit=0 stdout=probe served: home=/tmp/fm-remote-job-e2e.6rG8J8/remote-home root=/tmp/fm-remote-job-e2e.6rG8J8/remote-root
+PASS  the reclaimed queue served a probe job to completion
+
+== a competing second generation must not displace the live owner ==
+challenger exited rc=0; stderr: 
+PASS  the challenger exited instead of racing the live owner
+PASS  the live owner kept its ownership record
+PASS  the live owner kept serving after the challenger left
+job2 id=job-GnMR7Z exit=0 stdout=probe served: home=/tmp/fm-remote-job-e2e.6rG8J8/remote-home root=/tmp/fm-remote-job-e2e.6rG8J8/remote-root
+PASS  the surviving owner completed a second job
+
+== owner shutdown releases the queue ==
+PASS  the owner released the ownership lock on shutdown
+
+E2E RESULT: PASS
+script exit=0
