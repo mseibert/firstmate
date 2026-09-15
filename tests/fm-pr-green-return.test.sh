@@ -21,7 +21,10 @@
 #   (f) a missing or open five-lens gate holds and names hard stop 1, per-lens
 #       prose results outside the clean forms hold, a table row naming an open
 #       finding or lacking covering counts holds while a covered refuted cell
-#       passes, and clean per-lens prose or a clean table passes
+#       passes, and clean per-lens prose or a clean table passes; a no-mistakes
+#       task reads the exact-titled PR comment of the authenticated operator as
+#       its gate source, an open, missing, foreign-authored, or untitled
+#       comment still holds, and the direct-PR body path is unchanged
 #   (g) a missing, negative, or stale review verdict holds and names hard stop 2
 #   (g) the advisory review verdict holds only a blocking verdict or an
 #       unreadable channel, and names hard stop 2, while a missing or stale
@@ -133,7 +136,19 @@ case "${1:-} ${2:-}" in
       */pulls/*) cat "$fixed/tea-pull.json" ;;
       */git/commits/*) cat "$fixed/tea-commit.json" ;;
       */commits/*/status) cat "$fixed/tea-status.json" ;;
-      */issues/*/comments) cat "$fixed/tea-comments.json" ;;
+      */issues/*/comments*)
+        page=1
+        case "$2" in
+          *page=*) page=${2##*page=}; page=${page%%&*} ;;
+        esac
+        if [ -f "$fixed/tea-comments-page$page.json" ]; then
+          cat "$fixed/tea-comments-page$page.json"
+        elif [ -f "$fixed/tea-comments.json" ]; then
+          cat "$fixed/tea-comments.json"
+        else
+          printf '[]\n'
+        fi
+        ;;
       */raw/*)
         ref=${2##*ref=}
         path=${2#*/raw/}
@@ -205,15 +220,34 @@ EOF
   } > "$dir/fix/policy.md"
 }
 
-write_meta() { # <dir> <id> <url> [project-name]
-  local dir=$1 id=$2 url=$3 project=${4:-project}
+write_meta() { # <dir> <id> <url> [project-name] [mode]
+  local dir=$1 id=$2 url=$3 project=${4:-project} mode=${5:-direct-PR}
   fm_write_meta "$dir/home/state/$id.meta" \
     "window=firstmate:fm-$id" \
     "kind=ship" \
-    "mode=direct-PR" \
+    "mode=$mode" \
     "project=$dir/projects/$project" \
     "pr=$url" \
     "pr_head=$HEAD"
+}
+
+# write_gate_table [<code-review findings> [<code-review fixed>]]: the five-lens
+# result table the gate fixtures share, with the first row's cells as optional
+# parameters; every other lens row stays clean.
+write_gate_table() { # [<findings> [<fixed>]]
+  printf '| Lens | Ran | Findings | Fixed |\n|---|---|---|---|\n| code-review | yes | %s | %s |\n| maintainability-review | yes | 0 | 0 |\n| architecture-system-design-reviewer | yes | 0 | 0 |\n| design-decision-questioner | yes | 0 | 0 |\n| self-containment-review | yes | 0 | 0 |' "${1:-0}" "${2:-0}"
+}
+
+# gate_body_case <name> <body>: build a Forgejo task case whose body is the
+# given five-lens block, and echo the case directory.
+gate_body_case() { # <name> <body>
+  local dir
+  dir=$(make_case "$1")
+  write_policy "$dir" programmieren-community
+  write_meta "$dir" t1 "https://forgejo.example/seibert.group/programmieren-community/pulls/365" programmieren-community
+  tea_green "$dir"
+  tea_set_body "$dir" "$2"
+  printf '%s\n' "$dir"
 }
 
 gh_green() { # <dir>
@@ -276,6 +310,24 @@ gh_set_verdict() { # <dir> <verdict-value|none> [timestamp]
   mv "$tmp" "$dir/fix/gh-comments.json"
 }
 
+# gh_set_five_lens_comment <dir> <body|none> [title] [author]: rewrite the
+# GitHub comment fixture with the verdict comment and, unless `none`, one
+# designated five-lens comment. The title and the comment author can be
+# overridden to pin the exact-title and operator-author rules.
+gh_set_five_lens_comment() { # <dir> <body|none> [title] [author]
+  local dir=$1 body=$2 title=${3:-Findings and fixes from 5-lenses-review} author=${4:-op} tmp
+  tmp=$(mktemp)
+  if [ "$body" = none ]; then
+    jq -n --arg time "$VERDICT_TIME" \
+      '[[{user: {login: "seibert-pr-agent"}, created_at: $time, updated_at: $time, body: "**Verdict:** Good to merge\n"}]]' > "$tmp"
+  else
+    jq -n --arg time "$VERDICT_TIME" --arg title "$title" --arg body "$body" --arg author "$author" \
+      '[[{user: {login: "seibert-pr-agent"}, created_at: $time, updated_at: $time, body: "**Verdict:** Good to merge\n"},
+        {user: {login: $author}, created_at: $time, updated_at: $time, body: ($title + "\n\n" + $body)}]]' > "$tmp"
+  fi
+  mv "$tmp" "$dir/fix/gh-comments.json"
+}
+
 gh_set_head_time() { # <dir> <time>
   local dir=$1 tmp
   tmp=$(mktemp)
@@ -301,7 +353,7 @@ tea_green() { # <dir>
   jq -n --arg head "$HEAD" '{sha: $head, state: "success", total_count: 2}' > "$dir/fix/tea-status.json"
   jq -n --arg time "$HEAD_TIME" '{created: $time}' > "$dir/fix/tea-commit.json"
   jq -n --arg time "$VERDICT_TIME" \
-    '[{user: {login: "seibert-pr-agent"}, updated_at: $time, body: "Reviewed this pull request — **Good to merge (LGTM).**\n<!-- crabd:tracking -->"}]' \
+    '[{id: 1, user: {login: "seibert-pr-agent"}, updated_at: $time, body: "Reviewed this pull request — **Good to merge (LGTM).**\n<!-- crabd:tracking -->"}]' \
     > "$dir/fix/tea-comments.json"
   jq -n '[{filename: "src/app.ts"}]' > "$dir/fix/tea-files.json"
   printf '%s\n' '{"login":"op"}' > "$dir/fix/tea-user.json"
@@ -310,8 +362,26 @@ tea_green() { # <dir>
 tea_set_verdict() { # <dir> <body-json>
   local dir=$1
   jq -n --arg time "$VERDICT_TIME" --arg body "$2" \
-    '[{user: {login: "seibert-pr-agent"}, updated_at: $time, body: $body}]' \
+    '[{id: 1, user: {login: "seibert-pr-agent"}, updated_at: $time, body: $body}]' \
     > "$dir/fix/tea-comments.json"
+}
+
+# tea_set_five_lens_comment <dir> <body|none> [title] [author]: rewrite the
+# Forgejo comment fixture with the crabd verdict comment and, unless `none`,
+# one designated five-lens comment. The title and the comment author can be
+# overridden to pin the exact-title and operator-author rules.
+tea_set_five_lens_comment() { # <dir> <body|none> [title] [author]
+  local dir=$1 body=$2 title=${3:-Findings and fixes from 5-lenses-review} author=${4:-op} tmp
+  tmp=$(mktemp)
+  if [ "$body" = none ]; then
+    jq -n --arg time "$VERDICT_TIME" \
+      '[{id: 1, user: {login: "seibert-pr-agent"}, updated_at: $time, body: "Reviewed this pull request - **Good to merge (LGTM).**\n<!-- crabd:tracking -->"}]' > "$tmp"
+  else
+    jq -n --arg time "$VERDICT_TIME" --arg title "$title" --arg body "$body" --arg author "$author" \
+      '[{id: 1, user: {login: "seibert-pr-agent"}, updated_at: $time, body: "Reviewed this pull request - **Good to merge (LGTM).**\n<!-- crabd:tracking -->"},
+        {id: 2, user: {login: $author}, updated_at: $time, body: ($title + "\n\n" + $body)}]' > "$tmp"
+  fi
+  mv "$tmp" "$dir/fix/tea-comments.json"
 }
 
 tea_set_body() { # <dir> <body>
@@ -338,7 +408,7 @@ tea_move_head() { # <dir> <head> <time>
   jq -n --arg head "$head" '{sha: $head, state: "success", total_count: 2}' > "$dir/fix/tea-status.json"
   jq -n --arg time "$time" '{created: $time}' > "$dir/fix/tea-commit.json"
   jq -n --arg time "$time" \
-    '[{user: {login: "seibert-pr-agent"}, updated_at: $time, body: "Reviewed this pull request — **Good to merge (LGTM).**\n<!-- crabd:tracking -->"}]' \
+    '[{id: 1, user: {login: "seibert-pr-agent"}, updated_at: $time, body: "Reviewed this pull request — **Good to merge (LGTM).**\n<!-- crabd:tracking -->"}]' \
     > "$dir/fix/tea-comments.json"
 }
 
@@ -1293,16 +1363,10 @@ test_gate_prose_does_not_accept_open_findings() {
   write_policy "$dir" programmieren-community
   write_meta "$dir" t1 "https://forgejo.example/seibert.group/programmieren-community/pulls/365" programmieren-community
   tea_green "$dir"
-  tea_set_body "$dir" '## Five-Lens-Block
+  tea_set_body "$dir" "## Five-Lens-Block
 
-| Lens | Ran | Findings | Fixed |
-|---|---|---|---|
-| code-review | yes | 0 | 0 |
-| maintainability-review | yes | 0 | 0 |
-| architecture-system-design-reviewer | yes | 0 | 0 |
-| design-decision-questioner | yes | 0 | 0 |
-| self-containment-review | yes | 0 | 0 |
-'
+$(write_gate_table)
+"
   out=$(report_case "$dir" "$NOW_LATE")
   assert_contains "$out" $'t1\tdue\tready' "a clean five-lens table without the literal Result line was rejected"
 
@@ -1347,91 +1411,166 @@ test_gate_table_never_drops_a_data_row() {
 
   # A sixth row that names an open finding must hold even though the five lens
   # rows are numeric-clean, and the trailing Result line must not be skipped.
-  dir=$(make_case gate-table-open-row)
-  write_policy "$dir" programmieren-community
-  write_meta "$dir" t1 "https://forgejo.example/seibert.group/programmieren-community/pulls/365" programmieren-community
-  tea_green "$dir"
-  tea_set_body "$dir" '## Five-Lens-Block
+  dir=$(gate_body_case gate-table-open-row "## Five-Lens-Block
 
-| Lens | Ran | Findings | Fixed |
-|---|---|---|---|
-| code-review | yes | 0 | 0 |
-| maintainability-review | yes | 0 | 0 |
-| architecture-system-design-reviewer | yes | 0 | 0 |
-| design-decision-questioner | yes | 0 | 0 |
-| self-containment-review | yes | 0 | 0 |
+$(write_gate_table)
 | security-review (zusaetzlich) | yes | 1 offen | 0 |
 
 Result: 1 finding open - see security-review
-'
+")
   scan_hold_wake "$dir" "$NOW_LATE" >/dev/null
   assert_contains "$(queue_keys "$dir")" "pr-green-return:t1" "a sixth row naming an open finding was dropped"
   assert_contains "$(queue_rows "$dir")" "hard stop 1" "the open sixth row did not name hard stop 1"
   assert_not_contains "$(queue_rows "$dir")" "merge it bound now" "the open sixth row queued a merge mandate"
 
   # The open row holds on its own too, without any trailing Result line.
-  dir=$(make_case gate-table-open-row-only)
-  write_policy "$dir" programmieren-community
-  write_meta "$dir" t1 "https://forgejo.example/seibert.group/programmieren-community/pulls/365" programmieren-community
-  tea_green "$dir"
-  tea_set_body "$dir" '## Five-Lens-Block
+  dir=$(gate_body_case gate-table-open-row-only "## Five-Lens-Block
 
-| Lens | Ran | Findings | Fixed |
-|---|---|---|---|
-| code-review | yes | 0 | 0 |
-| maintainability-review | yes | 0 | 0 |
-| architecture-system-design-reviewer | yes | 0 | 0 |
-| design-decision-questioner | yes | 0 | 0 |
-| self-containment-review | yes | 0 | 0 |
+$(write_gate_table)
 | security-review (zusaetzlich) | yes | 1 offen | 0 |
-'
+")
   out=$(report_case "$dir" "$NOW_LATE")
   assert_contains "$out" "hard-stop-1" "an open table row was accepted without a Result line"
 
   # A clean table whose trailing Result line names an open finding also holds.
-  dir=$(make_case gate-table-open-result)
-  write_policy "$dir" programmieren-community
-  write_meta "$dir" t1 "https://forgejo.example/seibert.group/programmieren-community/pulls/365" programmieren-community
-  tea_green "$dir"
-  tea_set_body "$dir" '## Five-Lens-Block
+  dir=$(gate_body_case gate-table-open-result "## Five-Lens-Block
 
-| Lens | Ran | Findings | Fixed |
-|---|---|---|---|
-| code-review | yes | 0 | 0 |
-| maintainability-review | yes | 0 | 0 |
-| architecture-system-design-reviewer | yes | 0 | 0 |
-| design-decision-questioner | yes | 0 | 0 |
-| self-containment-review | yes | 0 | 0 |
+$(write_gate_table)
 
 Result: 1 finding open - see security-review
-'
+")
   out=$(report_case "$dir" "$NOW_LATE")
   assert_contains "$out" "hard-stop-1" "a clean table hid an open Result line"
 
-  # A non-numeric cell whose leading counts cover the findings stays clean.
-  dir=$(make_case gate-table-refuted)
-  write_policy "$dir" programmieren-community
-  write_meta "$dir" t1 "https://forgejo.example/seibert.group/programmieren-community/pulls/365" programmieren-community
-  tea_green "$dir"
-  tea_set_body "$dir" '## Five-Lens-Block
+  # A negator in an earlier clause must not reach a later, separate open: a
+  # clean table cannot hide `Result: no blocker, 2 findings open`.
+  dir=$(gate_body_case gate-table-negation-window "## Five-Lens-Block
 
-| Lens | Ran | Findings | Fixed |
-|---|---|---|---|
-| code-review | yes | 6 | 6 (1 widerlegt) |
-| maintainability-review | yes | 0 | 0 |
-| architecture-system-design-reviewer | yes | 0 | 0 |
-| design-decision-questioner | yes | 0 | 0 |
-| self-containment-review | yes | 0 | 0 |
-'
+$(write_gate_table)
+
+Result: no blocker, 2 findings open
+")
+  out=$(report_case "$dir" "$NOW_LATE")
+  assert_contains "$out" "hard-stop-1" "a negator in an earlier clause hid an open Result line"
+
+  # The negation does not cross result cells: the 0 in Findings must not
+  # negate the `1 offen` in Fixed.
+  dir=$(gate_body_case gate-table-cross-cell "## Five-Lens-Block
+
+$(write_gate_table 0 '0 (1 offen)')
+")
+  out=$(report_case "$dir" "$NOW_LATE")
+  assert_contains "$out" "hard-stop-1" "a zero in Findings negated an open in Fixed"
+
+  # An inflected German open finding and a count-bearing remain phrase must
+  # hold even when the table itself is clean.
+  dir=$(gate_body_case gate-table-inflected-open "## Five-Lens-Block
+
+$(write_gate_table)
+
+Ergebnis: 2 offene Findings
+")
+  out=$(report_case "$dir" "$NOW_LATE")
+  assert_contains "$out" "hard-stop-1" "an inflected offene Findings result was accepted"
+
+  dir=$(gate_body_case gate-table-findings-remain "## Five-Lens-Block
+
+$(write_gate_table)
+
+Result: 2 findings remain
+")
+  out=$(report_case "$dir" "$NOW_LATE")
+  assert_contains "$out" "hard-stop-1" "a count-bearing findings remain result was accepted"
+
+  # A zero count and a negation keep their clean reads.
+  dir=$(gate_body_case gate-table-zero-open "## Five-Lens-Block
+
+$(write_gate_table)
+
+Result: 0 open findings
+")
+  out=$(report_case "$dir" "$NOW_LATE")
+  assert_contains "$out" $'t1\tdue\tready' "a zero-count open findings result was rejected"
+
+  # Negations outside the original word list keep their clean reads too.
+  for phrase in 'Result: nothing open' 'Result: none open'; do
+    dir=$(gate_body_case "gate-table-negation-$(printf '%s' "$phrase" | tr -c 'a-z0-9' '-')" "## Five-Lens-Block
+
+$(write_gate_table)
+
+$phrase
+")
+    out=$(report_case "$dir" "$NOW_LATE")
+    assert_contains "$out" $'t1\tdue\tready' "the clean negation \"$phrase\" was rejected"
+  done
+
+  # A count immediately qualified as fixed/closed/resolved/behoben is a clean
+  # summary, not an open finding.
+  dir=$(gate_body_case gate-table-fixed-summary "## Five-Lens-Block
+
+$(write_gate_table)
+
+Result: 2 findings fixed, 0 remain
+")
+  out=$(report_case "$dir" "$NOW_LATE")
+  assert_contains "$out" $'t1\tdue\tready' "a fixed-summary count was held as an open finding"
+
+  # A clause boundary between the count and its qualifier keeps the same clean
+  # read: `2 findings, fixed` is the fixed summary, not an open finding.
+  dir=$(gate_body_case gate-table-fixed-summary-comma "## Five-Lens-Block
+
+$(write_gate_table)
+
+Result: 2 findings, fixed
+")
+  out=$(report_case "$dir" "$NOW_LATE")
+  assert_contains "$out" $'t1\tdue\tready' "a comma-qualified fixed summary was held as an open finding"
+
+  # A clause boundary before a remainder count still holds: the count is not
+  # qualified as fixed, so the open finding stands.
+  dir=$(gate_body_case gate-table-fixed-then-remain "## Five-Lens-Block
+
+$(write_gate_table)
+
+Result: 2 findings, 1 remaining
+")
+  out=$(report_case "$dir" "$NOW_LATE")
+  assert_contains "$out" "hard-stop-1" "a comma-separated remaining count was accepted"
+
+  dir=$(gate_body_case gate-table-behoben-summary "## Five-Lens-Block
+
+$(write_gate_table)
+
+Ergebnis: 1 Finding behoben, 0 offen
+")
+  out=$(report_case "$dir" "$NOW_LATE")
+  assert_contains "$out" $'t1\tdue\tready' "a behoben-summary count was held as an open finding"
+
+  # Open, left, and remainder-adjective counts still hold; the remain count is
+  # pinned above and the fixed count is exempt.
+  for phrase in 'Result: 2 findings open' 'Result: 2 findings left' \
+    'Result: 2 findings fixed, 1 remaining' 'Result: 2 findings fixed, 1 unresolved' \
+    'Result: 2 findings fixed, 1 outstanding'; do
+    dir=$(gate_body_case "gate-table-count-$(printf '%s' "$phrase" | tr -c 'a-z0-9' '-')" "## Five-Lens-Block
+
+$(write_gate_table)
+
+$phrase
+")
+    out=$(report_case "$dir" "$NOW_LATE")
+    assert_contains "$out" "hard-stop-1" "the count phrase \"$phrase\" was accepted"
+  done
+
+  # A non-numeric cell whose leading counts cover the findings stays clean.
+  dir=$(gate_body_case gate-table-refuted "## Five-Lens-Block
+
+$(write_gate_table 6 '6 (1 widerlegt)')
+")
   out=$(report_case "$dir" "$NOW_LATE")
   assert_contains "$out" $'t1\tdue\tready' "a refuted-but-covered result cell was rejected"
 
   # A non-numeric row that cannot be classified holds.
-  dir=$(make_case gate-table-unclassifiable)
-  write_policy "$dir" programmieren-community
-  write_meta "$dir" t1 "https://forgejo.example/seibert.group/programmieren-community/pulls/365" programmieren-community
-  tea_green "$dir"
-  tea_set_body "$dir" '## Five-Lens-Block
+  dir=$(gate_body_case gate-table-unclassifiable '## Five-Lens-Block
 
 | Lens | Ran | Findings | Fixed |
 |---|---|---|---|
@@ -1440,28 +1579,180 @@ Result: 1 finding open - see security-review
 | architecture-system-design-reviewer | yes | 0 | 0 |
 | design-decision-questioner | yes | 0 | 0 |
 | self-containment-review | yes | n/a | n/a |
-'
+')
   out=$(report_case "$dir" "$NOW_LATE")
   assert_contains "$out" "hard-stop-1" "an unclassifiable table row was accepted"
 
   # A non-numeric row whose count does not cover the findings holds.
-  dir=$(make_case gate-table-uncovered)
-  write_policy "$dir" programmieren-community
-  write_meta "$dir" t1 "https://forgejo.example/seibert.group/programmieren-community/pulls/365" programmieren-community
-  tea_green "$dir"
-  tea_set_body "$dir" '## Five-Lens-Block
+  dir=$(gate_body_case gate-table-uncovered "## Five-Lens-Block
 
-| Lens | Ran | Findings | Fixed |
-|---|---|---|---|
-| code-review | yes | 6 | 2 (1 widerlegt) |
-| maintainability-review | yes | 0 | 0 |
-| architecture-system-design-reviewer | yes | 0 | 0 |
-| design-decision-questioner | yes | 0 | 0 |
-| self-containment-review | yes | 0 | 0 |
-'
+$(write_gate_table 6 '2 (1 widerlegt)')
+")
   out=$(report_case "$dir" "$NOW_LATE")
   assert_contains "$out" "hard-stop-1" "an uncovered non-numeric row was accepted"
   pass "a table row naming an open finding or lacking covering counts holds; a covered refuted cell passes"
+}
+
+test_no_mistakes_gate_reads_the_designated_comment() {
+  local dir out clean_comment open_comment
+
+  # The designated comment format: exact title, per-lens table, and a Result
+  # line whose trailing explanation says no finding remains open. A no-mistakes
+  # task's pipeline-opened body carries no gate block, so the comment alone
+  # must clear hard stop 1 and reach the bound-merge wake.
+  clean_comment=$(printf '%s\n\nResult: clean - all five lenses ran and no finding remains open.' "$(write_gate_table)")
+  open_comment=$(printf '%s\n\nResult: 1 finding open - see code-review' "$(write_gate_table 3 0)")
+
+  # Forgejo: a clean designated comment clears the gate and the PR is due.
+  dir=$(make_case nm-comment-forgejo)
+  write_policy "$dir" programmieren-community
+  write_meta "$dir" t1 "https://forgejo.example/seibert.group/programmieren-community/pulls/365" programmieren-community no-mistakes
+  tea_green "$dir"
+  tea_set_body "$dir" "Pipeline-opened body without a gate block."
+  tea_set_five_lens_comment "$dir" "$clean_comment"
+  out=$(report_case "$dir" "$NOW_LATE")
+  assert_contains "$out" $'t1\tdue\tready' "a clean designated comment did not clear hard stop 1"
+  out=$(scan_case "$dir" "$NOW_LATE")
+  assert_contains "$out" "merge it bound now" "the clean comment did not reach the bound-merge wake"
+
+  # GitHub: the same clean comment clears the gate; the GitHub merge path then
+  # holds on its own unbound-head reason, never on hard stop 1.
+  dir=$(make_case nm-comment-github)
+  write_policy "$dir" project
+  write_meta "$dir" t1 "https://github.com/op/project/pull/7" project no-mistakes
+  gh_green "$dir"
+  gh_set_body "$dir" "Pipeline-opened body without a gate block."
+  gh_set_five_lens_comment "$dir" "$clean_comment"
+  out=$(report_case "$dir" "$NOW_LATE")
+  assert_not_contains "$out" "hard-stop-1" "a clean designated comment did not clear hard stop 1 on GitHub"
+  assert_contains "$out" "no-bound-merge" "the clean GitHub read did not reach the unbound-merge hold"
+
+  # An open finding in the designated comment still trips hard stop 1.
+  dir=$(make_case nm-comment-open)
+  write_policy "$dir" programmieren-community
+  write_meta "$dir" t1 "https://forgejo.example/seibert.group/programmieren-community/pulls/365" programmieren-community no-mistakes
+  tea_green "$dir"
+  tea_set_body "$dir" "Pipeline-opened body without a gate block."
+  tea_set_five_lens_comment "$dir" "$open_comment"
+  out=$(report_case "$dir" "$NOW_LATE")
+  assert_contains "$out" "hard-stop-1" "an open finding in the designated comment was accepted"
+
+  # A no-mistakes task with no designated comment, and one whose comment carries
+  # any other title, both stay held: the exact title is the evidence.
+  dir=$(make_case nm-comment-missing)
+  write_policy "$dir" programmieren-community
+  write_meta "$dir" t1 "https://forgejo.example/seibert.group/programmieren-community/pulls/365" programmieren-community no-mistakes
+  tea_green "$dir"
+  tea_set_body "$dir" "Pipeline-opened body without a gate block."
+  tea_set_five_lens_comment "$dir" none
+  out=$(report_case "$dir" "$NOW_LATE")
+  assert_contains "$out" "hard-stop-1" "a no-mistakes task without a designated comment was accepted"
+
+  dir=$(make_case nm-comment-github-missing)
+  write_policy "$dir" project
+  write_meta "$dir" t1 "https://github.com/op/project/pull/7" project no-mistakes
+  gh_green "$dir"
+  gh_set_body "$dir" "Pipeline-opened body without a gate block."
+  gh_set_five_lens_comment "$dir" none
+  out=$(report_case "$dir" "$NOW_LATE")
+  assert_contains "$out" "hard-stop-1" "a GitHub no-mistakes task without a designated comment was accepted"
+
+  dir=$(make_case nm-comment-wrong-title)
+  write_policy "$dir" programmieren-community
+  write_meta "$dir" t1 "https://forgejo.example/seibert.group/programmieren-community/pulls/365" programmieren-community no-mistakes
+  tea_green "$dir"
+  tea_set_body "$dir" "Pipeline-opened body without a gate block."
+  tea_set_five_lens_comment "$dir" "$clean_comment" "Findings and fixes from five-lens-review"
+  out=$(report_case "$dir" "$NOW_LATE")
+  assert_contains "$out" "hard-stop-1" "a comment with a near title counted as the gate evidence"
+
+  # A clean exact-titled comment from anyone but the authenticated operator is
+  # not the evidence, on either forge.
+  dir=$(make_case nm-comment-foreign-forgejo)
+  write_policy "$dir" programmieren-community
+  write_meta "$dir" t1 "https://forgejo.example/seibert.group/programmieren-community/pulls/365" programmieren-community no-mistakes
+  tea_green "$dir"
+  tea_set_body "$dir" "Pipeline-opened body without a gate block."
+  tea_set_five_lens_comment "$dir" "$clean_comment" "Findings and fixes from 5-lenses-review" "intruder"
+  out=$(report_case "$dir" "$NOW_LATE")
+  assert_contains "$out" "hard-stop-1" "a foreign-authored comment cleared hard stop 1 on Forgejo"
+
+  dir=$(make_case nm-comment-foreign-github)
+  write_policy "$dir" project
+  write_meta "$dir" t1 "https://github.com/op/project/pull/7" project no-mistakes
+  gh_green "$dir"
+  gh_set_body "$dir" "Pipeline-opened body without a gate block."
+  gh_set_five_lens_comment "$dir" "$clean_comment" "Findings and fixes from 5-lenses-review" "intruder"
+  out=$(report_case "$dir" "$NOW_LATE")
+  assert_contains "$out" "hard-stop-1" "a foreign-authored comment cleared hard stop 1 on GitHub"
+
+  # The designated comment beyond the first API page is still found: 50 first-page
+  # comments push the operator's clean comment onto page 2.
+  dir=$(make_case nm-comment-paged)
+  write_policy "$dir" programmieren-community
+  write_meta "$dir" t1 "https://forgejo.example/seibert.group/programmieren-community/pulls/365" programmieren-community no-mistakes
+  tea_green "$dir"
+  tea_set_body "$dir" "Pipeline-opened body without a gate block."
+  jq -n --arg time "$VERDICT_TIME" \
+    '[range(1; 50) | {id: ., user: {login: "someone"}, updated_at: $time, body: ("chatter " + (. | tostring))}]
+     + [{id: 50, user: {login: "seibert-pr-agent"}, updated_at: $time, body: "Reviewed this pull request - **Good to merge (LGTM).**\n<!-- crabd:tracking -->"}]' \
+    > "$dir/fix/tea-comments-page1.json"
+  jq -n --arg time "$VERDICT_TIME" --arg body "$clean_comment" \
+    '[{id: 51, user: {login: "op"}, updated_at: $time, body: ("Findings and fixes from 5-lenses-review\n\n" + $body)}]' \
+    > "$dir/fix/tea-comments-page2.json"
+  out=$(report_case "$dir" "$NOW_LATE")
+  assert_contains "$out" $'t1\tdue\tready' "the designated comment beyond the first page was not read"
+
+  # A non-paginating forge returns the identical full list for every page: the
+  # reader stops at the repeated page and still finds the designated comment.
+  dir=$(make_case nm-comment-static)
+  write_policy "$dir" programmieren-community
+  write_meta "$dir" t1 "https://forgejo.example/seibert.group/programmieren-community/pulls/365" programmieren-community no-mistakes
+  tea_green "$dir"
+  tea_set_body "$dir" "Pipeline-opened body without a gate block."
+  jq -n --arg time "$VERDICT_TIME" --arg body "$clean_comment" \
+    '[range(1; 50) | {id: ., user: {login: "someone"}, updated_at: $time, body: ("chatter " + (. | tostring))}]
+     + [{id: 50, user: {login: "seibert-pr-agent"}, updated_at: $time, body: "Reviewed this pull request - **Good to merge (LGTM).**\n<!-- crabd:tracking -->"},
+        {id: 51, user: {login: "op"}, updated_at: $time, body: ("Findings and fixes from 5-lenses-review\n\n" + $body)}]' \
+    > "$dir/fix/tea-comments-page1.json"
+  cp "$dir/fix/tea-comments-page1.json" "$dir/fix/tea-comments-page2.json"
+  out=$(report_case "$dir" "$NOW_LATE")
+  assert_contains "$out" $'t1\tdue\tready' "a non-paginating comment endpoint held the designated comment"
+  [ "$(grep -Fc 'comments?limit=50&page=' "$dir/fix/calls.log")" -eq 2 ] || fail "the repeated page was fetched past the first repeat"
+
+  # The direct-PR body path is unchanged: its own clean block still passes, its
+  # own open block is never rescued by a clean comment, and a body without a
+  # block may fall back to the designated comment.
+  dir=$(make_case nm-direct-body-clean)
+  write_policy "$dir" programmieren-community
+  write_meta "$dir" t1 "https://forgejo.example/seibert.group/programmieren-community/pulls/365" programmieren-community
+  tea_green "$dir"
+  tea_set_five_lens_comment "$dir" "$open_comment"
+  out=$(report_case "$dir" "$NOW_LATE")
+  assert_contains "$out" $'t1\tdue\tready' "a direct-PR body with its own clean block was not accepted"
+
+  dir=$(make_case nm-direct-body-open)
+  write_policy "$dir" programmieren-community
+  write_meta "$dir" t1 "https://forgejo.example/seibert.group/programmieren-community/pulls/365" programmieren-community
+  tea_green "$dir"
+  tea_set_body "$dir" "## Five-Lens-Block
+
+$(write_gate_table 3 0)
+"
+  tea_set_five_lens_comment "$dir" "$clean_comment"
+  out=$(report_case "$dir" "$NOW_LATE")
+  assert_contains "$out" "hard-stop-1" "a clean comment rescued a direct-PR body that reports an open finding"
+
+  dir=$(make_case nm-direct-body-missing)
+  write_policy "$dir" programmieren-community
+  write_meta "$dir" t1 "https://forgejo.example/seibert.group/programmieren-community/pulls/365" programmieren-community
+  tea_green "$dir"
+  tea_set_body "$dir" "No gate block here."
+  tea_set_five_lens_comment "$dir" "$clean_comment"
+  out=$(report_case "$dir" "$NOW_LATE")
+  assert_contains "$out" $'t1\tdue\tready' "a body without a gate block did not fall back to the designated comment"
+
+  pass "the no-mistakes gate reads the operator's exact-titled comment and the body path is unchanged"
 }
 
 test_forgejo_file_list_pagination() {
@@ -1562,6 +1853,7 @@ test_foreign_pr_holds_hard_stop_6
 test_gate_holds_hard_stop_1
 test_gate_prose_does_not_accept_open_findings
 test_gate_table_never_drops_a_data_row
+test_no_mistakes_gate_reads_the_designated_comment
 test_verdict_channel_is_advisory_and_holds_only_on_a_blocking_read
 test_sensitive_diff_holds_hard_stop_5
 test_forgejo_file_list_pagination
