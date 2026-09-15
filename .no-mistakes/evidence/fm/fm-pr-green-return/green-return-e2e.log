@@ -1,0 +1,155 @@
+
+===== POSITIVE: green, mergeable, gate-clean own-task Forgejo PR, no human action =====
+task t1 records its own pr=https://forgejo.example/seibert.group/programmieren-community/pulls/365
+policy allowlists programmieren-community; head is 1111111111111111111111111111111111111111
+
+$ FM_PR_GREEN_RETURN_NOW=1767227000 FM_PR_GREEN_RETURN_SECS=600 /home/martin_seibert/.no-mistakes/worktrees/4771d2997321/01M2FEC6B11623C46JB4RT9SGG/bin/fm-pr-green-return.sh scan
+actionable: check: green-return t1 due: PR https://forgejo.example/seibert.group/programmieren-community/pulls/365 head 1111111111111111111111111111111111111111 has been green and mergeable for 800s with no policy hold - merge it bound now: bin/fm-pr-merge.sh t1 https://forgejo.example/seibert.group/programmieren-community/pulls/365 --expected-head 1111111111111111111111111111111111111111
+[exit 0]
+
+$ cat /tmp/fm-green-return-e2e.R6HyQo/positive/state/.wake-queue
+1789467148	1	check	pr-green-return:t1	check: green-return t1 due: PR https://forgejo.example/seibert.group/programmieren-community/pulls/365 head 1111111111111111111111111111111111111111 has been green and mergeable for 800s with no policy hold - merge it bound now: bin/fm-pr-merge.sh t1 https://forgejo.example/seibert.group/programmieren-community/pulls/365 --expected-head 1111111111111111111111111111111111111111
+
+$ cat /tmp/fm-green-return-e2e.R6HyQo/positive/state/pr-green-return/t1
+schema=fm-pr-green-return.v1
+task=t1
+provider=forgejo
+url=https://forgejo.example/seibert.group/programmieren-community/pulls/365
+head=1111111111111111111111111111111111111111
+class=due
+reason=ready
+since=1767226200
+observed=1767227000
+notified=due:1111111111111111111111111111111111111111
+
+The wake handed main this mandate:
+  bin/fm-pr-merge.sh t1 https://forgejo.example/seibert.group/programmieren-community/pulls/365 --expected-head 1111111111111111111111111111111111111111
+
+$ (cd /home/martin_seibert/.no-mistakes/worktrees/4771d2997321/01M2FEC6B11623C46JB4RT9SGG && bin/fm-pr-merge.sh t1 https://forgejo.example/seibert.group/programmieren-community/pulls/365 --expected-head 1111111111111111111111111111111111111111)
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+●  WATCHER DOWN - SUPERVISION IS OFF
+●  1 task(s) in flight, but no watcher has a fresh beacon (last beat: never, grace 300s).
+●  Trust the emitted supervision protocol for this harness; do not use shell & for watcher repair.
+●  This is a supervision warning only; the guarded operation WILL still run.
+●  After draining queued wakes, watcher supervision needs Stop-owned automatic recovery; inspect the hook registration and startup status before ending the turn.
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+WARNING: queued wakes pending - drain them with bin/fm-wake-drain.sh before anything else.
+armed: state/t1.check.sh
+verified: https://forgejo.example/seibert.group/programmieren-community/pulls/365 is open and mergeable, with a successful combined status at head 1111111111111111111111111111111111111111
+verified: https://forgejo.example/seibert.group/programmieren-community/pulls/365 is merged (style=merge, head=1111111111111111111111111111111111111111)
+[exit 0]
+
+The merge body the protected path sent to the forge (head binding):
+{"Do":"merge","head_commit_id":"1111111111111111111111111111111111111111"}
+
+===== NEGATIVE 1: red head holds as hard stop 3 and never merges =====
+
+$ FM_PR_GREEN_RETURN_NOW=1767227000 FM_PR_GREEN_RETURN_SECS=600 /home/martin_seibert/.no-mistakes/worktrees/4771d2997321/01M2FEC6B11623C46JB4RT9SGG/bin/fm-pr-green-return.sh scan
+[exit 0]
+
+$ FM_PR_GREEN_RETURN_NOW=1767227601 FM_PR_GREEN_RETURN_SECS=600 /home/martin_seibert/.no-mistakes/worktrees/4771d2997321/01M2FEC6B11623C46JB4RT9SGG/bin/fm-pr-green-return.sh scan
+actionable: check: green-return t1 held: PR https://forgejo.example/seibert.group/programmieren-community/pulls/365 head 1111111111111111111111111111111111111111 601s - hard stop 3 (CI red); present to the captain, do not merge
+[exit 0]
+
+$ cat /tmp/fm-green-return-e2e.R6HyQo/negative-red/state/.wake-queue
+1789467153	1	check	pr-green-return:t1	check: green-return t1 held: PR https://forgejo.example/seibert.group/programmieren-community/pulls/365 head 1111111111111111111111111111111111111111 601s - hard stop 3 (CI red); present to the captain, do not merge
+
+$ bin/fm-pr-merge.sh t1 https://forgejo.example/seibert.group/programmieren-community/pulls/365 --expected-head 1111111111111111111111111111111111111111
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+●  WATCHER DOWN - SUPERVISION IS OFF
+●  1 task(s) in flight, but no watcher has a fresh beacon (last beat: never, grace 300s).
+●  Trust the emitted supervision protocol for this harness; do not use shell & for watcher repair.
+●  This is a supervision warning only; the guarded operation WILL still run.
+●  After draining queued wakes, watcher supervision needs Stop-owned automatic recovery; inspect the hook registration and startup status before ending the turn.
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+WARNING: queued wakes pending - drain them with bin/fm-wake-drain.sh before anything else.
+armed: state/t1.check.sh
+error: refusing to merge https://forgejo.example/seibert.group/programmieren-community/pulls/365
+  - the combined status of head 1111111111111111111111111111111111111111 is "failure", not success
+[exit 1]
+
+merge bodies recorded (must be 0 bytes): 0 bytes
+
+===== NEGATIVE 2: same head, fresh five-lens hold (hard stop 1) refuses a queued mandate =====
+
+$ FM_PR_GREEN_RETURN_NOW=1767227000 FM_PR_GREEN_RETURN_SECS=600 /home/martin_seibert/.no-mistakes/worktrees/4771d2997321/01M2FEC6B11623C46JB4RT9SGG/bin/fm-pr-green-return.sh scan
+[exit 0]
+
+$ FM_PR_GREEN_RETURN_NOW=1767227601 FM_PR_GREEN_RETURN_SECS=600 /home/martin_seibert/.no-mistakes/worktrees/4771d2997321/01M2FEC6B11623C46JB4RT9SGG/bin/fm-pr-green-return.sh scan
+actionable: check: green-return t1 held: PR https://forgejo.example/seibert.group/programmieren-community/pulls/365 head 1111111111111111111111111111111111111111 601s - hard stop 1 (five-lens gate); present to the captain, do not merge
+[exit 0]
+
+$ cat /tmp/fm-green-return-e2e.R6HyQo/negative-gate/state/.wake-queue
+1789467155	1	check	pr-green-return:t1	check: green-return t1 held: PR https://forgejo.example/seibert.group/programmieren-community/pulls/365 head 1111111111111111111111111111111111111111 601s - hard stop 1 (five-lens gate); present to the captain, do not merge
+
+$ bin/fm-pr-merge.sh t1 https://forgejo.example/seibert.group/programmieren-community/pulls/365 --expected-head 1111111111111111111111111111111111111111
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+●  WATCHER DOWN - SUPERVISION IS OFF
+●  1 task(s) in flight, but no watcher has a fresh beacon (last beat: never, grace 300s).
+●  Trust the emitted supervision protocol for this harness; do not use shell & for watcher repair.
+●  This is a supervision warning only; the guarded operation WILL still run.
+●  After draining queued wakes, watcher supervision needs Stop-owned automatic recovery; inspect the hook registration and startup status before ending the turn.
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+WARNING: queued wakes pending - drain them with bin/fm-wake-drain.sh before anything else.
+armed: state/t1.check.sh
+verified: https://forgejo.example/seibert.group/programmieren-community/pulls/365 is open and mergeable, with a successful combined status at head 1111111111111111111111111111111111111111
+error: refusing to merge https://forgejo.example/seibert.group/programmieren-community/pulls/365: the green-return verdict for t1 at head 1111111111111111111111111111111111111111 is held - hard-stop-1: the five-lens gate block is missing or reports an open finding
+[exit 1]
+
+merge bodies recorded (must be 0 bytes): 0 bytes
+
+===== NEGATIVE 3: a repository without checks holds as hard stop 4 =====
+
+$ FM_PR_GREEN_RETURN_NOW=1767227000 FM_PR_GREEN_RETURN_SECS=600 /home/martin_seibert/.no-mistakes/worktrees/4771d2997321/01M2FEC6B11623C46JB4RT9SGG/bin/fm-pr-green-return.sh scan
+[exit 0]
+
+$ FM_PR_GREEN_RETURN_NOW=1767227601 FM_PR_GREEN_RETURN_SECS=600 /home/martin_seibert/.no-mistakes/worktrees/4771d2997321/01M2FEC6B11623C46JB4RT9SGG/bin/fm-pr-green-return.sh scan
+actionable: check: green-return t1 held: PR https://forgejo.example/seibert.group/programmieren-community/pulls/365 head 1111111111111111111111111111111111111111 601s - hard stop 4 (no CI checks); present to the captain, do not merge
+[exit 0]
+
+$ cat /tmp/fm-green-return-e2e.R6HyQo/negative-nochecks/state/.wake-queue
+1789467159	1	check	pr-green-return:t1	check: green-return t1 held: PR https://forgejo.example/seibert.group/programmieren-community/pulls/365 head 1111111111111111111111111111111111111111 601s - hard stop 4 (no CI checks); present to the captain, do not merge
+
+$ bin/fm-pr-merge.sh t1 https://forgejo.example/seibert.group/programmieren-community/pulls/365 --expected-head 1111111111111111111111111111111111111111
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+●  WATCHER DOWN - SUPERVISION IS OFF
+●  1 task(s) in flight, but no watcher has a fresh beacon (last beat: never, grace 300s).
+●  Trust the emitted supervision protocol for this harness; do not use shell & for watcher repair.
+●  This is a supervision warning only; the guarded operation WILL still run.
+●  After draining queued wakes, watcher supervision needs Stop-owned automatic recovery; inspect the hook registration and startup status before ending the turn.
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+WARNING: queued wakes pending - drain them with bin/fm-wake-drain.sh before anything else.
+armed: state/t1.check.sh
+error: refusing to merge https://forgejo.example/seibert.group/programmieren-community/pulls/365
+  - the combined status of head 1111111111111111111111111111111111111111 is "none", not success
+[exit 1]
+
+merge bodies recorded (must be 0 bytes): 0 bytes
+
+===== NEGATIVE 4: the head moved after the mandate; the binding refuses =====
+
+$ FM_PR_GREEN_RETURN_NOW=1767227000 FM_PR_GREEN_RETURN_SECS=600 /home/martin_seibert/.no-mistakes/worktrees/4771d2997321/01M2FEC6B11623C46JB4RT9SGG/bin/fm-pr-green-return.sh scan
+actionable: check: green-return t1 due: PR https://forgejo.example/seibert.group/programmieren-community/pulls/365 head 1111111111111111111111111111111111111111 has been green and mergeable for 800s with no policy hold - merge it bound now: bin/fm-pr-merge.sh t1 https://forgejo.example/seibert.group/programmieren-community/pulls/365 --expected-head 1111111111111111111111111111111111111111
+[exit 0]
+
+queued mandate names the verified head:
+  bin/fm-pr-merge.sh t1 https://forgejo.example/seibert.group/programmieren-community/pulls/365 --expected-head 1111111111111111111111111111111111111111
+
+the branch is then pushed to a new head 3333333333333333333333333333333333333333
+
+$ bin/fm-pr-merge.sh t1 https://forgejo.example/seibert.group/programmieren-community/pulls/365 --expected-head 1111111111111111111111111111111111111111
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+●  WATCHER DOWN - SUPERVISION IS OFF
+●  1 task(s) in flight, but no watcher has a fresh beacon (last beat: never, grace 300s).
+●  Trust the emitted supervision protocol for this harness; do not use shell & for watcher repair.
+●  This is a supervision warning only; the guarded operation WILL still run.
+●  After draining queued wakes, watcher supervision needs Stop-owned automatic recovery; inspect the hook registration and startup status before ending the turn.
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+WARNING: queued wakes pending - drain them with bin/fm-wake-drain.sh before anything else.
+armed: state/t1.check.sh
+error: refusing to merge https://forgejo.example/seibert.group/programmieren-community/pulls/365: the expected head 1111111111111111111111111111111111111111 is not the live head 3333333333333333333333333333333333333333
+[exit 1]
+
+merge bodies recorded (must be 0 bytes): 0 bytes
+
+===== END OF TRANSCRIPT =====
