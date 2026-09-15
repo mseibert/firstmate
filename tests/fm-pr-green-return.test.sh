@@ -238,6 +238,18 @@ write_gate_table() { # [<findings> [<fixed>]]
   printf '| Lens | Ran | Findings | Fixed |\n|---|---|---|---|\n| code-review | yes | %s | %s |\n| maintainability-review | yes | 0 | 0 |\n| architecture-system-design-reviewer | yes | 0 | 0 |\n| design-decision-questioner | yes | 0 | 0 |\n| self-containment-review | yes | 0 | 0 |' "${1:-0}" "${2:-0}"
 }
 
+# gate_body_case <name> <body>: build a Forgejo task case whose body is the
+# given five-lens block, and echo the case directory.
+gate_body_case() { # <name> <body>
+  local dir
+  dir=$(make_case "$1")
+  write_policy "$dir" programmieren-community
+  write_meta "$dir" t1 "https://forgejo.example/seibert.group/programmieren-community/pulls/365" programmieren-community
+  tea_green "$dir"
+  tea_set_body "$dir" "$2"
+  printf '%s\n' "$dir"
+}
+
 gh_green() { # <dir>
   local dir=$1
   jq -n --arg head "$HEAD" --arg base "$BASE" --arg time "$HEAD_TIME" '{
@@ -1399,186 +1411,126 @@ test_gate_table_never_drops_a_data_row() {
 
   # A sixth row that names an open finding must hold even though the five lens
   # rows are numeric-clean, and the trailing Result line must not be skipped.
-  dir=$(make_case gate-table-open-row)
-  write_policy "$dir" programmieren-community
-  write_meta "$dir" t1 "https://forgejo.example/seibert.group/programmieren-community/pulls/365" programmieren-community
-  tea_green "$dir"
-  tea_set_body "$dir" '## Five-Lens-Block
+  dir=$(gate_body_case gate-table-open-row "## Five-Lens-Block
 
-| Lens | Ran | Findings | Fixed |
-|---|---|---|---|
-| code-review | yes | 0 | 0 |
-| maintainability-review | yes | 0 | 0 |
-| architecture-system-design-reviewer | yes | 0 | 0 |
-| design-decision-questioner | yes | 0 | 0 |
-| self-containment-review | yes | 0 | 0 |
+$(write_gate_table)
 | security-review (zusaetzlich) | yes | 1 offen | 0 |
 
 Result: 1 finding open - see security-review
-'
+")
   scan_hold_wake "$dir" "$NOW_LATE" >/dev/null
   assert_contains "$(queue_keys "$dir")" "pr-green-return:t1" "a sixth row naming an open finding was dropped"
   assert_contains "$(queue_rows "$dir")" "hard stop 1" "the open sixth row did not name hard stop 1"
   assert_not_contains "$(queue_rows "$dir")" "merge it bound now" "the open sixth row queued a merge mandate"
 
   # The open row holds on its own too, without any trailing Result line.
-  dir=$(make_case gate-table-open-row-only)
-  write_policy "$dir" programmieren-community
-  write_meta "$dir" t1 "https://forgejo.example/seibert.group/programmieren-community/pulls/365" programmieren-community
-  tea_green "$dir"
-  tea_set_body "$dir" '## Five-Lens-Block
+  dir=$(gate_body_case gate-table-open-row-only "## Five-Lens-Block
 
-| Lens | Ran | Findings | Fixed |
-|---|---|---|---|
-| code-review | yes | 0 | 0 |
-| maintainability-review | yes | 0 | 0 |
-| architecture-system-design-reviewer | yes | 0 | 0 |
-| design-decision-questioner | yes | 0 | 0 |
-| self-containment-review | yes | 0 | 0 |
+$(write_gate_table)
 | security-review (zusaetzlich) | yes | 1 offen | 0 |
-'
+")
   out=$(report_case "$dir" "$NOW_LATE")
   assert_contains "$out" "hard-stop-1" "an open table row was accepted without a Result line"
 
   # A clean table whose trailing Result line names an open finding also holds.
-  dir=$(make_case gate-table-open-result)
-  write_policy "$dir" programmieren-community
-  write_meta "$dir" t1 "https://forgejo.example/seibert.group/programmieren-community/pulls/365" programmieren-community
-  tea_green "$dir"
-  tea_set_body "$dir" "## Five-Lens-Block
+  dir=$(gate_body_case gate-table-open-result "## Five-Lens-Block
 
 $(write_gate_table)
 
 Result: 1 finding open - see security-review
-"
+")
   out=$(report_case "$dir" "$NOW_LATE")
   assert_contains "$out" "hard-stop-1" "a clean table hid an open Result line"
 
   # A negator in an earlier clause must not reach a later, separate open: a
   # clean table cannot hide `Result: no blocker, 2 findings open`.
-  dir=$(make_case gate-table-negation-window)
-  write_policy "$dir" programmieren-community
-  write_meta "$dir" t1 "https://forgejo.example/seibert.group/programmieren-community/pulls/365" programmieren-community
-  tea_green "$dir"
-  tea_set_body "$dir" "## Five-Lens-Block
+  dir=$(gate_body_case gate-table-negation-window "## Five-Lens-Block
 
 $(write_gate_table)
 
 Result: no blocker, 2 findings open
-"
+")
   out=$(report_case "$dir" "$NOW_LATE")
   assert_contains "$out" "hard-stop-1" "a negator in an earlier clause hid an open Result line"
 
   # The negation does not cross result cells: the 0 in Findings must not
   # negate the `1 offen` in Fixed.
-  dir=$(make_case gate-table-cross-cell)
-  write_policy "$dir" programmieren-community
-  write_meta "$dir" t1 "https://forgejo.example/seibert.group/programmieren-community/pulls/365" programmieren-community
-  tea_green "$dir"
-  tea_set_body "$dir" "## Five-Lens-Block
+  dir=$(gate_body_case gate-table-cross-cell "## Five-Lens-Block
 
 $(write_gate_table 0 '0 (1 offen)')
-"
+")
   out=$(report_case "$dir" "$NOW_LATE")
   assert_contains "$out" "hard-stop-1" "a zero in Findings negated an open in Fixed"
 
   # An inflected German open finding and a count-bearing remain phrase must
   # hold even when the table itself is clean.
-  dir=$(make_case gate-table-inflected-open)
-  write_policy "$dir" programmieren-community
-  write_meta "$dir" t1 "https://forgejo.example/seibert.group/programmieren-community/pulls/365" programmieren-community
-  tea_green "$dir"
-  tea_set_body "$dir" "## Five-Lens-Block
+  dir=$(gate_body_case gate-table-inflected-open "## Five-Lens-Block
 
 $(write_gate_table)
 
 Ergebnis: 2 offene Findings
-"
+")
   out=$(report_case "$dir" "$NOW_LATE")
   assert_contains "$out" "hard-stop-1" "an inflected offene Findings result was accepted"
 
-  dir=$(make_case gate-table-findings-remain)
-  write_policy "$dir" programmieren-community
-  write_meta "$dir" t1 "https://forgejo.example/seibert.group/programmieren-community/pulls/365" programmieren-community
-  tea_green "$dir"
-  tea_set_body "$dir" "## Five-Lens-Block
+  dir=$(gate_body_case gate-table-findings-remain "## Five-Lens-Block
 
 $(write_gate_table)
 
 Result: 2 findings remain
-"
+")
   out=$(report_case "$dir" "$NOW_LATE")
   assert_contains "$out" "hard-stop-1" "a count-bearing findings remain result was accepted"
 
   # A zero count and a negation keep their clean reads.
-  dir=$(make_case gate-table-zero-open)
-  write_policy "$dir" programmieren-community
-  write_meta "$dir" t1 "https://forgejo.example/seibert.group/programmieren-community/pulls/365" programmieren-community
-  tea_green "$dir"
-  tea_set_body "$dir" "## Five-Lens-Block
+  dir=$(gate_body_case gate-table-zero-open "## Five-Lens-Block
 
 $(write_gate_table)
 
 Result: 0 open findings
-"
+")
   out=$(report_case "$dir" "$NOW_LATE")
   assert_contains "$out" $'t1\tdue\tready' "a zero-count open findings result was rejected"
 
   # A count immediately qualified as fixed/closed/resolved/behoben is a clean
   # summary, not an open finding.
-  dir=$(make_case gate-table-fixed-summary)
-  write_policy "$dir" programmieren-community
-  write_meta "$dir" t1 "https://forgejo.example/seibert.group/programmieren-community/pulls/365" programmieren-community
-  tea_green "$dir"
-  tea_set_body "$dir" "## Five-Lens-Block
+  dir=$(gate_body_case gate-table-fixed-summary "## Five-Lens-Block
 
 $(write_gate_table)
 
 Result: 2 findings fixed, 0 remain
-"
+")
   out=$(report_case "$dir" "$NOW_LATE")
   assert_contains "$out" $'t1\tdue\tready' "a fixed-summary count was held as an open finding"
 
   # A clause boundary between the count and its qualifier keeps the same clean
   # read: `2 findings, fixed` is the fixed summary, not an open finding.
-  dir=$(make_case gate-table-fixed-summary-comma)
-  write_policy "$dir" programmieren-community
-  write_meta "$dir" t1 "https://forgejo.example/seibert.group/programmieren-community/pulls/365" programmieren-community
-  tea_green "$dir"
-  tea_set_body "$dir" "## Five-Lens-Block
+  dir=$(gate_body_case gate-table-fixed-summary-comma "## Five-Lens-Block
 
 $(write_gate_table)
 
 Result: 2 findings, fixed
-"
+")
   out=$(report_case "$dir" "$NOW_LATE")
   assert_contains "$out" $'t1\tdue\tready' "a comma-qualified fixed summary was held as an open finding"
 
   # A clause boundary before a remainder count still holds: the count is not
   # qualified as fixed, so the open finding stands.
-  dir=$(make_case gate-table-fixed-then-remain)
-  write_policy "$dir" programmieren-community
-  write_meta "$dir" t1 "https://forgejo.example/seibert.group/programmieren-community/pulls/365" programmieren-community
-  tea_green "$dir"
-  tea_set_body "$dir" "## Five-Lens-Block
+  dir=$(gate_body_case gate-table-fixed-then-remain "## Five-Lens-Block
 
 $(write_gate_table)
 
 Result: 2 findings, 1 remaining
-"
+")
   out=$(report_case "$dir" "$NOW_LATE")
   assert_contains "$out" "hard-stop-1" "a comma-separated remaining count was accepted"
 
-  dir=$(make_case gate-table-behoben-summary)
-  write_policy "$dir" programmieren-community
-  write_meta "$dir" t1 "https://forgejo.example/seibert.group/programmieren-community/pulls/365" programmieren-community
-  tea_green "$dir"
-  tea_set_body "$dir" "## Five-Lens-Block
+  dir=$(gate_body_case gate-table-behoben-summary "## Five-Lens-Block
 
 $(write_gate_table)
 
 Ergebnis: 1 Finding behoben, 0 offen
-"
+")
   out=$(report_case "$dir" "$NOW_LATE")
   assert_contains "$out" $'t1\tdue\tready' "a behoben-summary count was held as an open finding"
 
@@ -1587,38 +1539,26 @@ Ergebnis: 1 Finding behoben, 0 offen
   for phrase in 'Result: 2 findings open' 'Result: 2 findings left' \
     'Result: 2 findings fixed, 1 remaining' 'Result: 2 findings fixed, 1 unresolved' \
     'Result: 2 findings fixed, 1 outstanding'; do
-    dir=$(make_case "gate-table-count-$(printf '%s' "$phrase" | tr -c 'a-z0-9' '-')")
-    write_policy "$dir" programmieren-community
-    write_meta "$dir" t1 "https://forgejo.example/seibert.group/programmieren-community/pulls/365" programmieren-community
-    tea_green "$dir"
-    tea_set_body "$dir" "## Five-Lens-Block
+    dir=$(gate_body_case "gate-table-count-$(printf '%s' "$phrase" | tr -c 'a-z0-9' '-')" "## Five-Lens-Block
 
 $(write_gate_table)
 
 $phrase
-"
+")
     out=$(report_case "$dir" "$NOW_LATE")
     assert_contains "$out" "hard-stop-1" "the count phrase \"$phrase\" was accepted"
   done
 
   # A non-numeric cell whose leading counts cover the findings stays clean.
-  dir=$(make_case gate-table-refuted)
-  write_policy "$dir" programmieren-community
-  write_meta "$dir" t1 "https://forgejo.example/seibert.group/programmieren-community/pulls/365" programmieren-community
-  tea_green "$dir"
-  tea_set_body "$dir" "## Five-Lens-Block
+  dir=$(gate_body_case gate-table-refuted "## Five-Lens-Block
 
 $(write_gate_table 6 '6 (1 widerlegt)')
-"
+")
   out=$(report_case "$dir" "$NOW_LATE")
   assert_contains "$out" $'t1\tdue\tready' "a refuted-but-covered result cell was rejected"
 
   # A non-numeric row that cannot be classified holds.
-  dir=$(make_case gate-table-unclassifiable)
-  write_policy "$dir" programmieren-community
-  write_meta "$dir" t1 "https://forgejo.example/seibert.group/programmieren-community/pulls/365" programmieren-community
-  tea_green "$dir"
-  tea_set_body "$dir" '## Five-Lens-Block
+  dir=$(gate_body_case gate-table-unclassifiable '## Five-Lens-Block
 
 | Lens | Ran | Findings | Fixed |
 |---|---|---|---|
@@ -1627,19 +1567,15 @@ $(write_gate_table 6 '6 (1 widerlegt)')
 | architecture-system-design-reviewer | yes | 0 | 0 |
 | design-decision-questioner | yes | 0 | 0 |
 | self-containment-review | yes | n/a | n/a |
-'
+')
   out=$(report_case "$dir" "$NOW_LATE")
   assert_contains "$out" "hard-stop-1" "an unclassifiable table row was accepted"
 
   # A non-numeric row whose count does not cover the findings holds.
-  dir=$(make_case gate-table-uncovered)
-  write_policy "$dir" programmieren-community
-  write_meta "$dir" t1 "https://forgejo.example/seibert.group/programmieren-community/pulls/365" programmieren-community
-  tea_green "$dir"
-  tea_set_body "$dir" "## Five-Lens-Block
+  dir=$(gate_body_case gate-table-uncovered "## Five-Lens-Block
 
 $(write_gate_table 6 '2 (1 widerlegt)')
-"
+")
   out=$(report_case "$dir" "$NOW_LATE")
   assert_contains "$out" "hard-stop-1" "an uncovered non-numeric row was accepted"
   pass "a table row naming an open finding or lacking covering counts holds; a covered refuted cell passes"

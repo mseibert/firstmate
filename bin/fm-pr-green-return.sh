@@ -63,10 +63,11 @@
 # (`clean`, `passed`/`pass`, or a `kein`/`no blocker` entry); any other wording,
 # or a line naming an open finding, trips the stop. An `open`/`offen` word (or
 # its German inflections) is a finding unless a negation reaches it inside its
-# own clause or result cell; a positive count before `finding(s)` is a finding
-# unless the count is immediately qualified as fixed, closed, resolved, or
-# behoben, and a positive count before `remain(s)`, `remaining`, `left`,
-# `unresolved`, or `outstanding` is always a finding. The evidence is read from
+# own clause or result cell; a `finding(s):` count with a positive value is
+# always a finding, a positive count before `finding(s)` is a finding unless
+# the count is immediately qualified as fixed, closed, resolved, or behoben,
+# and a positive count before `remain(s)`, `remaining`, `left`, `unresolved`,
+# or `outstanding` is always a finding. The evidence is read from
 # the PR body and, when the task's mode is no-mistakes or the body carries no
 # gate block, from the newest exact-titled
 # comment of the authenticated operator; a clean read from either source
@@ -981,23 +982,12 @@ forgejo_verdict_read() {
 # test alone would exhaust the page cap and read no comment at all (hard stop 1).
 forgejo_five_lens_comment_read() {
   local page=1 page_json page_count comments='[]' merged merged_count comment_count=0
+  PR_FIVE_LENS_COMMENT=
   while [ "$page" -le "$API_PAGE_MAX" ]; do
-    page_json=$(tea_read "/repos/$PR_PATH/issues/$PR_NUMBER/comments?limit=$API_PAGE_LIMIT&page=$page") || {
-      PR_FIVE_LENS_COMMENT=
-      return 0
-    }
-    page_count=$(printf '%s' "$page_json" | jq -r 'if type == "array" then length else error("not a comment array") end' 2>/dev/null) || {
-      PR_FIVE_LENS_COMMENT=
-      return 0
-    }
-    merged=$(printf '%s\n%s\n' "$comments" "$page_json" | jq -cs '.[0] + .[1] | unique_by(.id)' 2>/dev/null) || {
-      PR_FIVE_LENS_COMMENT=
-      return 0
-    }
-    merged_count=$(printf '%s' "$merged" | jq -r 'length' 2>/dev/null) || {
-      PR_FIVE_LENS_COMMENT=
-      return 0
-    }
+    page_json=$(tea_read "/repos/$PR_PATH/issues/$PR_NUMBER/comments?limit=$API_PAGE_LIMIT&page=$page") || return 0
+    page_count=$(printf '%s' "$page_json" | jq -r 'if type == "array" then length else error("not a comment array") end' 2>/dev/null) || return 0
+    merged=$(printf '%s\n%s\n' "$comments" "$page_json" | jq -cs '.[0] + .[1] | unique_by(.id)' 2>/dev/null) || return 0
+    merged_count=$(printf '%s' "$merged" | jq -r 'length' 2>/dev/null) || return 0
     if [ "$page_count" -lt "$API_PAGE_LIMIT" ] || [ "$merged_count" -eq "$comment_count" ]; then
       PR_FIVE_LENS_COMMENT=$(five_lens_comment_pick "$merged" "$OP_LOGIN")
       return 0
@@ -1006,7 +996,6 @@ forgejo_five_lens_comment_read() {
     comment_count=$merged_count
     page=$((page + 1))
   done
-  PR_FIVE_LENS_COMMENT=
 }
 
 forgejo_operator_login() {
