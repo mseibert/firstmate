@@ -15,7 +15,7 @@
 # fixed mapping logic, no heuristics and no LLM. Output is one stable, parseable,
 # token-tight line firstmate can read every heartbeat:
 #
-#   state: <working|parked|done|blocked|paused|failed|unknown> · source: <run-step|pane|status-log|remote-endpoint|none> · <detail>
+#   state: <working|parked|done|blocked|paused|failed|unknown> · source: <run-step|pane|status-log|remote-endpoint|park-marker|none> · <detail>
 #
 # Logic, in order:
 #   1. Resolve worktree + backend target + kind from state/<id>.meta. A meta
@@ -26,6 +26,12 @@
 #      to the routed status log; dead/missing report the remote verdict; an
 #      unreachable or unreadable remote reports unknown-remote, never a false
 #      gone/dead.
+#   1b. A released park marker at state/<id>.parked short-circuits every later
+#      read: bin/fm-park.sh writes state=released only after bin/fm-control.sh
+#      verified the worker stopped, so the task is deliberately idle awaiting a
+#      merge or a decision and reads parked with its reason and pointer. A
+#      marker still at state=releasing records an unverified release and falls
+#      through to the ordinary reads below, never claiming a free slot.
 #   2. Matching no-mistakes run for this crew's branch AND current code identity,
 #      active or terminal (from `axi status`, or the coarse `no-mistakes runs`
 #      fallback)? Branch name alone is not enough: a historical run on a reused
@@ -149,6 +155,21 @@ REMOTE_HOST=$(meta_value remote_host)
 # probe proves nothing for it - the remote arm below reads the true source.
 if [ -z "$REMOTE_HOST" ] && { [ -z "$WT" ] || [ ! -d "$WT" ]; }; then
   emit unknown none "worktree gone (torn down?)"
+fi
+
+# --- released park marker ---------------------------------------------------
+# bin/fm-park.sh owns the operating-point release. Its marker is authoritative
+# current state because state=released is committed only after the control
+# plane verified the worker stopped; a `releasing` marker is a recorded but
+# unverified release and is deliberately not read here.
+PARK_MARKER="$STATE/$ID.parked"
+if [ -f "$PARK_MARKER" ] && [ ! -L "$PARK_MARKER" ]; then
+  PARK_MARKER_STATE=$(grep '^state=' "$PARK_MARKER" 2>/dev/null | tail -1 | cut -d= -f2- || true)
+  if [ "$PARK_MARKER_STATE" = released ]; then
+    PARK_REASON=$(grep '^reason=' "$PARK_MARKER" 2>/dev/null | tail -1 | cut -d= -f2- || true)
+    PARK_POINTER=$(grep '^pointer=' "$PARK_MARKER" 2>/dev/null | tail -1 | cut -d= -f2- || true)
+    emit parked park-marker "released awaiting ${PARK_REASON:-unknown} - ${PARK_POINTER:-no pointer}"
+  fi
 fi
 
 # --- status log ------------------------------------------------------------

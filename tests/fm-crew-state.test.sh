@@ -1725,6 +1725,33 @@ test_torn_down_worktree() {
   pass "torn-down worktree is handled gracefully"
 }
 
+# (j2) a released park marker (bin/fm-park.sh) is authoritative current state,
+# and a still-releasing marker is a recorded but unverified release that must
+# fall through to the ordinary reads rather than claim a free slot.
+test_park_marker_reads_parked() {
+  reset_fakes
+  local d; d=$(new_case parkmarker)
+  make_fakebin "$d" >/dev/null
+  mkdir -p "$d/wt"
+  fm_write_meta "$d/state/parked-k.meta" "window=fm:fm-parked-k" "worktree=$d/wt" "kind=ship" "harness=grok"
+  printf 'done: PR https://example.invalid/1 checks green\n' > "$d/state/parked-k.status"
+  printf 'schema=fm-park.v1\ntask=parked-k\nreason=merge\npointer=https://example.invalid/1\nbranch=fm/x\npr=https://example.invalid/1\nepoch=1\nincarnation=s1\nstate=released\n' \
+    > "$d/state/parked-k.parked"
+  local out rc
+  out=$(run_crew_state "$d" parked-k); rc=$?
+  expect_code 0 "$rc" "a released park marker exits 0"
+  assert_contains "$out" "state: parked" "a released park marker reads parked"
+  assert_contains "$out" "source: park-marker" "the marker read names its source"
+  assert_contains "$out" "released awaiting merge - https://example.invalid/1" \
+    "the marker detail carries the reason and pointer"
+  printf 'schema=fm-park.v1\ntask=parked-k\nreason=merge\npointer=https://example.invalid/1\nbranch=fm/x\npr=https://example.invalid/1\nepoch=1\nincarnation=s1\nstate=releasing\n' \
+    > "$d/state/parked-k.parked"
+  out=$(run_crew_state "$d" parked-k)
+  assert_not_contains "$out" "state: parked" "a releasing marker must not read as a verified release"
+  assert_contains "$out" "state: done" "a releasing marker falls through to the ordinary read"
+  pass "the released park marker is authoritative and releasing is not"
+}
+
 # --- remote secondmate arm ---------------------------------------------------
 # A meta recording remote_host= must never be read through the local worktree
 # probe or a local backend adapter: the recorded worktree and pane live on the
@@ -2357,6 +2384,7 @@ test_dead_window_still_reports_active_run_step
 test_no_timeout_uses_perl_bound
 test_scout_skips_run_lookup
 test_torn_down_worktree
+test_park_marker_reads_parked
 test_remote_alive_with_log_uses_status_log
 test_remote_alive_idle_is_healthy_not_gone
 test_remote_unreachable_is_unknown_remote_not_dead
