@@ -469,8 +469,8 @@ test_five_lens_gate_in_direct_pr_dod() {
     "direct-PR DOD must require a fresh-context pass per lens without assuming one dispatch mechanism"
   assert_grep "\`code-review\` (correctness), \`maintainability-review\` (rot, bandaids, speculative scaffolding), \`structural-fit-review\` (structural fit and defended choices), \`design-decision-questioner\` (challenge the decisions), \`self-containment-review\` (context a repo reader cannot resolve)" "$brief" \
     "direct-PR DOD must define all five lens foci in the emitted block"
-  assert_grep "The captain's list calls the \`structural-fit-review\` lens \`architecture-system-design-reviewer\`" "$brief" \
-    "direct-PR DOD must keep the captain's lens name resolvable as a mapping to the installed skill"
+  assert_grep "The \`structural-fit-review\` lens is also called \`architecture-system-design-reviewer\`" "$brief" \
+    "direct-PR DOD must map the architecture-system-design-reviewer alias to the installed skill"
   assert_grep "| Lens | Ran | Findings | Fixed |" "$brief" \
     "direct-PR DOD must carry the per-lens table header"
   for lens in code-review maintainability-review structural-fit-review design-decision-questioner self-containment-review; do

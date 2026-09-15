@@ -244,7 +244,7 @@ fm_five_lens_gate_block() {
   cat <<'EOF'
 The PR body must carry its own `## Five-lens gate` section with the result of every lens, because a missing, incomplete, or unreported gate counts exactly like an open finding.
 Run the five lenses over the branch diff, each in its own fresh context (a subagent or a fresh session), and fix what they find: `code-review` (correctness), `maintainability-review` (rot, bandaids, speculative scaffolding), `structural-fit-review` (structural fit and defended choices), `design-decision-questioner` (challenge the decisions), `self-containment-review` (context a repo reader cannot resolve).
-The captain's list calls the `structural-fit-review` lens `architecture-system-design-reviewer`.
+The `structural-fit-review` lens is also called `architecture-system-design-reviewer`.
 Record one row per lens in the PR body - whether it ran, how many findings it reported, how many you fixed - in this shape, replacing every placeholder with the real result:
 
 ## Five-lens gate
