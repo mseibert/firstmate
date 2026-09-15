@@ -14,7 +14,7 @@ A task is parked when firstmate handles a wake that shows a worker waiting, or w
 - A documented decision wait: the status log holds an open keyed `needs-decision` or `blocked` event, or the backlog row is captain-held (`hold_kind: captain`).
 - A no-mistakes run parked at a gate counts as a decision wait: the run step reads `parked` and its ask-user or fix-review decision is the pointer.
 
-The sweep (`bin/fm-park.sh sweep`) is the bounded session-start and heartbeat housekeeping pass: the locked startup child of `bin/fm-startup-network.sh` runs it next to the inactive-outcome scan, and heartbeat review runs it by hand.
+The sweep (`bin/fm-park.sh sweep`) is the bounded session-start and heartbeat housekeeping pass: the locked startup child of `bin/fm-startup-network.sh` runs it after the network sweeps, and heartbeat review runs it by hand.
 It is silent on success, bounded by `FM_PARK_SWEEP_LIMIT` (default 2) and `FM_PARK_SWEEP_BUDGET_SECS` (default 20), and prints one `PARK_SWEEP:` line per release it could not complete.
 
 ## Eligibility
