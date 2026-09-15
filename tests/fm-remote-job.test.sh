@@ -27,6 +27,12 @@ LOSS_STATE=
 LOSS_OWNER_PID=
 LOSS_REPLACEMENT_PID=
 LOSS_CHALLENGER_PID=
+NEVERPUBLISHED_STATE=
+NEVERPUBLISHED_WORKER_PID=
+DISPLACED_STATE=
+DISPLACED_OWNER_PID=
+DISPLACED_REPLACEMENT_PID=
+DISPLACED_COMMAND_GROUP_PID=
 FOREIGN_STATE=
 FOREIGN_OWNER_SERVE_PID=
 FOREIGN_SLEEP_PID=
@@ -44,10 +50,14 @@ cleanup_remote_job_fixture() {
   [ -z "$LOSS_OWNER_PID" ] || kill -KILL "$LOSS_OWNER_PID" 2>/dev/null || true
   [ -z "$LOSS_REPLACEMENT_PID" ] || kill "$LOSS_REPLACEMENT_PID" 2>/dev/null || true
   [ -z "$LOSS_CHALLENGER_PID" ] || kill -KILL "$LOSS_CHALLENGER_PID" 2>/dev/null || true
+  [ -z "$NEVERPUBLISHED_WORKER_PID" ] || kill "$NEVERPUBLISHED_WORKER_PID" 2>/dev/null || true
+  [ -z "$DISPLACED_OWNER_PID" ] || kill -KILL "$DISPLACED_OWNER_PID" 2>/dev/null || true
+  [ -z "$DISPLACED_REPLACEMENT_PID" ] || kill "$DISPLACED_REPLACEMENT_PID" 2>/dev/null || true
+  [ -z "$DISPLACED_COMMAND_GROUP_PID" ] || kill -KILL -- "-$DISPLACED_COMMAND_GROUP_PID" 2>/dev/null || true
   [ -z "$FOREIGN_OWNER_SERVE_PID" ] || kill "$FOREIGN_OWNER_SERVE_PID" 2>/dev/null || true
   [ -z "$FOREIGN_SLEEP_PID" ] || kill "$FOREIGN_SLEEP_PID" 2>/dev/null || true
   local state
-  for state in "$INDETERMINATE_STATE" "$LOSS_STATE" "$FOREIGN_STATE"; do
+  for state in "$INDETERMINATE_STATE" "$LOSS_STATE" "$NEVERPUBLISHED_STATE" "$DISPLACED_STATE" "$FOREIGN_STATE"; do
     [ -n "$state" ] || continue
     if [ -f "$state/worker.pid" ]; then
       fm_remote_job_stop_worker_tree "$(cat "$state/worker.pid")" || true
@@ -822,6 +832,44 @@ wait "$INDETERMINATE_OWNER_PID" 2>/dev/null || true
 INDETERMINATE_OWNER_PID=
 pass "an indeterminate live ownership record is waited out, never stolen"
 
+# A lock directory whose publisher died between mkdir and the pid move has no
+# owner at all. Once the publish window has passed it must be reclaimed,
+# including the publish temp files that would otherwise block its removal, or
+# an untrapped kill during acquisition wedges the queue forever.
+NEVERPUBLISHED_STATE="$TMP_ROOT/never-published-jobs"
+NEVERPUBLISHED_HOME="$TMP_ROOT/never-published-account"
+mkdir -p "$NEVERPUBLISHED_HOME" "$NEVERPUBLISHED_STATE/jobs" "$NEVERPUBLISHED_STATE/logs" \
+  "$NEVERPUBLISHED_STATE/worker.lock"
+chmod 700 "$NEVERPUBLISHED_HOME" "$NEVERPUBLISHED_STATE" "$NEVERPUBLISHED_STATE/jobs" \
+  "$NEVERPUBLISHED_STATE/logs" "$NEVERPUBLISHED_STATE/worker.lock"
+: > "$NEVERPUBLISHED_STATE/worker.lock/.pid.deadbeef"
+: > "$NEVERPUBLISHED_STATE/worker.lock/.start.deadbeef"
+: > "$NEVERPUBLISHED_STATE/worker.lock/.command.deadbeef"
+chmod 600 "$NEVERPUBLISHED_STATE/worker.lock"/.pid.deadbeef \
+  "$NEVERPUBLISHED_STATE/worker.lock"/.start.deadbeef "$NEVERPUBLISHED_STATE/worker.lock"/.command.deadbeef
+touch -t 200001010000 "$NEVERPUBLISHED_STATE/worker.lock"
+HOME="$NEVERPUBLISHED_HOME" FM_ROOT_OVERRIDE="$REMOTE_ROOT" \
+  FM_REMOTE_JOB_STATE_ROOT="$NEVERPUBLISHED_STATE" FM_REMOTE_JOB_PLATFORM_OVERRIDE=Linux \
+  "$REMOTE_ROOT/bin/fm-remote-job-worker.sh" --serve \
+  > "$TMP_ROOT/never-published.out" 2> "$TMP_ROOT/never-published.err" &
+NEVERPUBLISHED_WORKER_PID=$!
+for _ in $(seq 1 400); do
+  [ -f "$NEVERPUBLISHED_STATE/worker.ready" ] && break
+  sleep 0.05
+done
+assert_present "$NEVERPUBLISHED_STATE/worker.ready" \
+  "a never-published ownership record wedged the queue instead of being reclaimed"
+[ "$(cat "$NEVERPUBLISHED_STATE/worker.lock/pid" 2>/dev/null || true)" = "$NEVERPUBLISHED_WORKER_PID" ] \
+  || fail "the reclaiming worker did not publish its own ownership record"
+for leftover in "$NEVERPUBLISHED_STATE/worker.lock"/.pid.* \
+  "$NEVERPUBLISHED_STATE/worker.lock"/.start.* "$NEVERPUBLISHED_STATE/worker.lock"/.command.*; do
+  [ ! -e "$leftover" ] || fail "a reclaimed lock directory kept the publish temp file ${leftover##*/}"
+done
+kill -TERM "$NEVERPUBLISHED_WORKER_PID"
+wait "$NEVERPUBLISHED_WORKER_PID" 2>/dev/null || true
+NEVERPUBLISHED_WORKER_PID=
+pass "a never-published ownership record is reclaimed once its publish window passes"
+
 # Lock loss stops a serving generation: it must stop its own lane and exit
 # without touching the replacement's claim, so a displaced generation can never
 # keep claiming jobs beside the new owner.
@@ -904,6 +952,80 @@ kill -TERM "$LOSS_REPLACEMENT_PID" 2>/dev/null || true
 wait "$LOSS_REPLACEMENT_PID" 2>/dev/null || true
 LOSS_REPLACEMENT_PID=
 pass "a worker that loses its claim stops its lane and exits"
+
+# A displaced generation must never write into the replacement's ownership
+# lock. Until it notices the loss its shutdown handler still believes it holds
+# the queue, so a stop signal would publish its quarantine into whatever lock
+# directory now exists and stop the healthy replacement that owns the queue.
+DISPLACED_STATE="$TMP_ROOT/displaced-jobs"
+DISPLACED_HOME="$TMP_ROOT/displaced-account"
+mkdir -p "$DISPLACED_HOME"
+chmod 700 "$DISPLACED_HOME"
+HOME="$DISPLACED_HOME" FM_ROOT_OVERRIDE="$REMOTE_ROOT" FM_REMOTE_JOB_STATE_ROOT="$DISPLACED_STATE" \
+  FM_REMOTE_JOB_PLATFORM_OVERRIDE=Linux "$REMOTE_ROOT/bin/fm-remote-job-worker.sh" --serve \
+  > "$TMP_ROOT/displaced-owner.out" 2> "$TMP_ROOT/displaced-owner.err" &
+DISPLACED_OWNER_PID=$!
+for _ in $(seq 1 300); do
+  [ -f "$DISPLACED_STATE/worker.ready" ] && break
+  sleep 0.05
+done
+assert_present "$DISPLACED_STATE/worker.ready" "the displacement fixture worker did not become ready"
+DISPLACED_STARTED="$TMP_ROOT/displaced-started"
+DISPLACED_SIDE_EFFECT="$TMP_ROOT/displaced-side-effect"
+FM_REMOTE_JOB_TIMEOUT=5
+FM_REMOTE_JOB_STATE_ROOT="$DISPLACED_STATE" fm_remote_job_stage "$DISPLACED_HOME" "$REMOTE_ROOT" "$REMOTE_HOME" \
+  fm-shutdown-job.sh "$DISPLACED_STARTED" "$DISPLACED_SIDE_EFFECT" < /dev/null > /dev/null
+DISPLACED_JOB_ID=$FM_REMOTE_JOB_ID
+DISPLACED_JOB_DIR="$DISPLACED_STATE/jobs/$DISPLACED_JOB_ID"
+for _ in $(seq 1 200); do
+  [ -f "$DISPLACED_STARTED" ] && break
+  sleep 0.05
+done
+assert_present "$DISPLACED_STARTED" "the displacement fixture job did not begin executing"
+assert_present "$DISPLACED_JOB_DIR/.claim/group" "the displacement fixture did not record its command group"
+DISPLACED_COMMAND_GROUP_PID=$(cat "$DISPLACED_JOB_DIR/.claim/group")
+# A claim record that cannot be read makes the displaced generation's lane
+# stop fail, so a quarantine it wrongly published into the replacement's lock
+# is left behind instead of being cleared on its way out.
+printf 'invalid\n' > "$DISPLACED_JOB_DIR/.claim/group"
+chmod 600 "$DISPLACED_JOB_DIR/.claim/group"
+# Freezing the displaced generation keeps it from noticing the loss, so the
+# queued TERM is guaranteed to enter its shutdown handler while it still
+# believes it owns the lock.
+kill -STOP "$DISPLACED_OWNER_PID"
+rm -rf -- "$DISPLACED_STATE/worker.lock"
+HOME="$DISPLACED_HOME" FM_ROOT_OVERRIDE="$REMOTE_ROOT" FM_REMOTE_JOB_STATE_ROOT="$DISPLACED_STATE" \
+  FM_REMOTE_JOB_PLATFORM_OVERRIDE=Linux "$REMOTE_ROOT/bin/fm-remote-job-worker.sh" --serve \
+  > "$TMP_ROOT/displaced-replacement.out" 2> "$TMP_ROOT/displaced-replacement.err" &
+DISPLACED_REPLACEMENT_PID=$!
+for _ in $(seq 1 300); do
+  [ "$(cat "$DISPLACED_STATE/worker.lock/pid" 2>/dev/null || true)" = "$DISPLACED_REPLACEMENT_PID" ] && break
+  sleep 0.05
+done
+[ "$(cat "$DISPLACED_STATE/worker.lock/pid" 2>/dev/null || true)" = "$DISPLACED_REPLACEMENT_PID" ] \
+  || fail "the replacement worker did not take the displaced lock"
+kill -TERM "$DISPLACED_OWNER_PID" 2>/dev/null || true
+kill -CONT "$DISPLACED_OWNER_PID" 2>/dev/null || true
+wait "$DISPLACED_OWNER_PID" 2>/dev/null || true
+DISPLACED_OWNER_PID=
+assert_absent "$DISPLACED_STATE/worker.lock/quarantine" \
+  "a displaced generation quarantined the replacement's ownership lock"
+[ "$(cat "$DISPLACED_STATE/worker.lock/pid" 2>/dev/null || true)" = "$DISPLACED_REPLACEMENT_PID" ] \
+  || fail "the displaced generation disturbed the replacement's ownership record"
+kill -0 "$DISPLACED_REPLACEMENT_PID" 2>/dev/null \
+  || fail "the replacement worker stopped serving after the displaced generation exited"
+FM_REMOTE_JOB_STATE_ROOT="$DISPLACED_STATE" fm_remote_job_stage "$DISPLACED_HOME" "$REMOTE_ROOT" "$REMOTE_HOME" \
+  fm-probe-job.sh < /dev/null > /dev/null
+DISPLACED_PROBE_ID=$FM_REMOTE_JOB_ID
+FM_REMOTE_JOB_STATE_ROOT="$DISPLACED_STATE" fm_remote_job_wait "$DISPLACED_HOME" "$DISPLACED_PROBE_ID" \
+  || fail "$FM_REMOTE_JOB_ERROR"
+[ "$FM_REMOTE_JOB_EXIT" -eq 0 ] || fail "the surviving replacement did not complete a probe job"
+FM_REMOTE_JOB_STATE_ROOT="$DISPLACED_STATE" fm_remote_job_reap "$DISPLACED_HOME" "$DISPLACED_PROBE_ID" \
+  || fail "the surviving replacement's probe job could not be reaped"
+kill -TERM "$DISPLACED_REPLACEMENT_PID" 2>/dev/null || true
+wait "$DISPLACED_REPLACEMENT_PID" 2>/dev/null || true
+DISPLACED_REPLACEMENT_PID=
+pass "a displaced generation never quarantines the replacement's lock"
 
 # The Linux restart supervisor must not start or restart a generation beside a
 # live owner: the owner's claim is the whole queue's authority.

@@ -165,6 +165,17 @@ worker_lock_recent() {
   [ $((now - mtime)) -le 10 ]
 }
 
+# A lock directory whose pid was never published is not an owner: the
+# publisher died between mkdir and the pid move. It looks the same while a
+# live publisher is still writing, so it counts as abandoned only once the
+# publish window has passed.
+worker_lock_publish_abandoned() {
+  [ -d "$WORKER_LOCK" ] && [ ! -L "$WORKER_LOCK" ] || return 1
+  [ ! -e "$WORKER_LOCK/pid" ] && [ ! -L "$WORKER_LOCK/pid" ] || return 1
+  worker_lock_recent && return 1
+  return 0
+}
+
 worker_quarantined_execution_stopped() { # <account-home>
   local account_home=$1 job state kind file pid
   fm_remote_job_regular_bounded "$WORKER_LOCK/quarantine" 256 || return 1
@@ -207,14 +218,18 @@ worker_acquire_lock() {
     if [ "$status" -eq 0 ]; then return 2; fi
     # An indeterminate record may still name a live owner that this process
     # cannot verify yet, so it is waited out rather than stolen. The heartbeat
-    # is a readiness signal, never an ownership lease.
-    if [ "$status" -eq 2 ] || fm_remote_job_probe "$account_home" || worker_lock_recent; then
+    # is a readiness signal, never an ownership lease. A directory whose pid
+    # was never published has no owner to wait for once its publish window has
+    # passed, so it is reclaimed below.
+    if { [ "$status" -eq 2 ] && ! worker_lock_publish_abandoned; } \
+      || fm_remote_job_probe "$account_home" || worker_lock_recent; then
       attempt=$((attempt + 1))
       sleep 0.1
       continue
     fi
     [ ! -L "$WORKER_LOCK/pid" ] && [ ! -L "$WORKER_LOCK/start" ] && [ ! -L "$WORKER_LOCK/command" ] || return 1
     rm -f -- "$WORKER_LOCK/pid" "$WORKER_LOCK/start" "$WORKER_LOCK/command" || return 1
+    rm -f -- "$WORKER_LOCK"/.pid.* "$WORKER_LOCK"/.start.* "$WORKER_LOCK"/.command.* || return 1
     # A concurrent release may win the rmdir; the next iteration either claims
     # the freed lock or observes the new owner.
     rmdir "$WORKER_LOCK" 2>/dev/null || true
@@ -224,7 +239,7 @@ worker_acquire_lock() {
 
 worker_publish_quarantine() {
   local tmp
-  [ "$WORKER_LOCK_HELD" -eq 1 ] || return 1
+  worker_lock_records_self || return 1
   tmp=$(umask 077; mktemp "$WORKER_LOCK/.quarantine.XXXXXX") || return 1
   printf 'active execution could not be confirmed stopped\n' > "$tmp" || { rm -f -- "$tmp"; return 1; }
   chmod 600 "$tmp" || { rm -f -- "$tmp"; return 1; }
