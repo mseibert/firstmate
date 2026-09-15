@@ -3556,10 +3556,8 @@ const synthetic = entries.find((entry) => entry.type === "custom_message" && ent
 if (!synthetic || synthetic.display) process.exit(1);
 JS
   chrome=$(find_chrome) || fail "Chrome or Chromium is required for rendered export DOM assertions"
-  # A cold headless Chrome start on a loaded CI runner can exceed 10 seconds
-  # even though the render itself is synchronous, so wait on the complete
-  # document with real headroom instead of failing a healthy export.
-  # --disable-dev-shm-usage keeps the renderer off a constrained /dev/shm.
+  # --disable-dev-shm-usage keeps the renderer off a constrained /dev/shm, where
+  # a cold headless Chrome start on a loaded CI runner can otherwise stall.
   "$chrome" \
     --headless=new \
     --disable-gpu \
@@ -3570,6 +3568,12 @@ JS
     --dump-dom \
     "file://$export_file" >"$export_dom" 2>"$chrome_stderr" &
   chrome_pid=$!
+  # A healthy Chrome breaks this poll as soon as the complete DOM is on disk, so
+  # the bound only decides how long a busy runner may take before the test gives
+  # up. Ten seconds was too short: on a loaded CI runner this step was observed
+  # consuming the whole bound and still failing with an incomplete DOM while
+  # every assertion before it had passed. Sixty seconds keeps the wait bounded
+  # while leaving real headroom over a cold Chrome start.
   chrome_wait=0
   while kill -0 "$chrome_pid" 2>/dev/null && [ "$chrome_wait" -lt 600 ]; do
     grep -Fq '</html>' "$export_dom" 2>/dev/null && break
