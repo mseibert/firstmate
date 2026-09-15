@@ -19,8 +19,8 @@
 # contracts. This serving loop implements each active lane as a tracked,
 # top-level --lane process that claims one job, records itself as the claim's
 # supervisor, and runs it to publication. Shutdown stops every tracked lane and
-# its recorded command group, leaving interrupted records for the replacement
-# worker's orphan recovery.
+# the recorded command group that lane still owns, leaving interrupted records
+# for the replacement worker's orphan recovery.
 #
 # The worker is abandoned when its configured FM_ROOT stops being a genuine
 # Firstmate checkout - the state a pruned no-mistakes gate worktree, a returned
@@ -40,13 +40,11 @@
 # that dies just past the healthy threshold cannot restart without bound
 # either. fm-on's ensure path restarts a worker that gave up.
 #
-# Ownership is the worker.lock record naming the serving child's pid, start,
-# and command. The readiness heartbeat is a readiness signal, never an
-# ownership lease: a live recorded owner keeps its claim even when its
-# heartbeat is stale, an acquirer reclaims only an owner it can prove gone, and
-# a serving loop that no longer finds its own record stops its lanes and exits
-# instead of racing the replacement. The Linux supervisor checks the same
-# record and stops instead of starting a generation beside a live owner.
+# The shared library header owns the worker ownership record, the heartbeat's
+# readiness-only role, and which records an acquirer may reclaim. This serving
+# loop stops its lanes and exits when its own record is gone, and the Linux
+# supervisor checks the same record and stops instead of starting a generation
+# beside a live owner.
 set -u
 
 # A non-numeric override falls back to the default rather than crashing the
@@ -454,10 +452,9 @@ worker_stop_active_execution() {
 # isolated group, and the supervisor in that group forwards a second stop signal
 # to this same serving child, so a repeat is the normal case and not an
 # exception. Restoring the default let that second signal kill the shutdown part
-# way through, which left the ownership lock behind holding a half-written temp
-# file that no later worker could clear, so every replacement then failed to
-# report ready. A shutdown that hangs is still stopped: the caller escalates to
-# KILL, which no disposition can block.
+# way through, leaving the ownership lock half-cleaned for a later acquirer to
+# reclaim. A shutdown that hangs is still stopped: the caller escalates to KILL,
+# which no disposition can block.
 worker_shutdown() {
   trap '' HUP INT TERM
   worker_publish_quarantine || {

@@ -74,9 +74,10 @@
 # Worker ownership is the account-wide worker.lock directory whose pid, start,
 # and command record names the serving child. The readiness heartbeat is never
 # an ownership lease: fm_remote_job_lock_owner_status keeps a live recorded
-# owner's claim across heartbeat staleness, an acquirer reclaims only an owner
-# it can prove gone, and a serving loop that no longer finds its own record
-# stops instead of racing the replacement (bin/fm-remote-job-worker.sh).
+# owner's claim across heartbeat staleness, an acquirer reclaims only a
+# provably ownerless record, and a serving loop that no longer finds its
+# own record stops instead of racing the replacement
+# (bin/fm-remote-job-worker.sh).
 #
 # The Linux start path puts the worker tree in its own process group, so
 # stopping a worker signals its restart supervisor, its serving child, and any
@@ -1013,9 +1014,11 @@ fm_remote_job_read_single_line() {
 # process's recorded start and command match the lock (FM_REMOTE_JOB_OWNER_PID
 # names it), 1 when the record provably has no live owner - the process is gone
 # or its identity proves the recorded pid was reused - and 2 when the record is
-# incomplete or ps cannot report the process. Only 1 may be reclaimed: an
-# indeterminate record can still name a live owner, and the heartbeat is a
-# readiness signal, never an ownership lease.
+# incomplete or ps cannot report the process. An acquirer reclaims only a record
+# it can prove has no live owner: a status-1 record, or a status-2 directory
+# whose pid was never published once its publish window has passed. A status-2
+# record that does carry a pid may still name a live owner, and the heartbeat is
+# a readiness signal, never an ownership lease.
 # shellcheck disable=SC2034 # FM_REMOTE_JOB_OWNER_PID is a sourceable output consumed by callers.
 fm_remote_job_lock_owner_status() {
   local account_home=$1 lock pid recorded actual
