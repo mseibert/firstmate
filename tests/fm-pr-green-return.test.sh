@@ -1539,6 +1539,36 @@ Result: 2 findings fixed, 0 remain
   out=$(report_case "$dir" "$NOW_LATE")
   assert_contains "$out" $'t1\tdue\tready' "a fixed-summary count was held as an open finding"
 
+  # A clause boundary between the count and its qualifier keeps the same clean
+  # read: `2 findings, fixed` is the fixed summary, not an open finding.
+  dir=$(make_case gate-table-fixed-summary-comma)
+  write_policy "$dir" programmieren-community
+  write_meta "$dir" t1 "https://forgejo.example/seibert.group/programmieren-community/pulls/365" programmieren-community
+  tea_green "$dir"
+  tea_set_body "$dir" "## Five-Lens-Block
+
+$(write_gate_table)
+
+Result: 2 findings, fixed
+"
+  out=$(report_case "$dir" "$NOW_LATE")
+  assert_contains "$out" $'t1\tdue\tready' "a comma-qualified fixed summary was held as an open finding"
+
+  # A clause boundary before a remainder count still holds: the count is not
+  # qualified as fixed, so the open finding stands.
+  dir=$(make_case gate-table-fixed-then-remain)
+  write_policy "$dir" programmieren-community
+  write_meta "$dir" t1 "https://forgejo.example/seibert.group/programmieren-community/pulls/365" programmieren-community
+  tea_green "$dir"
+  tea_set_body "$dir" "## Five-Lens-Block
+
+$(write_gate_table)
+
+Result: 2 findings, 1 remaining
+"
+  out=$(report_case "$dir" "$NOW_LATE")
+  assert_contains "$out" "hard-stop-1" "a comma-separated remaining count was accepted"
+
   dir=$(make_case gate-table-behoben-summary)
   write_policy "$dir" programmieren-community
   write_meta "$dir" t1 "https://forgejo.example/seibert.group/programmieren-community/pulls/365" programmieren-community
@@ -1618,10 +1648,10 @@ $(write_gate_table 6 '2 (1 widerlegt)')
 test_no_mistakes_gate_reads_the_designated_comment() {
   local dir out clean_comment open_comment
 
-  # The captain-approved comment format: exact title, per-lens table, and a
-  # Result line whose trailing explanation says no finding remains open. A
-  # no-mistakes task's pipeline-opened body carries no gate block, so the
-  # comment alone must clear hard stop 1 and reach the bound-merge wake.
+  # The designated comment format: exact title, per-lens table, and a Result
+  # line whose trailing explanation says no finding remains open. A no-mistakes
+  # task's pipeline-opened body carries no gate block, so the comment alone
+  # must clear hard stop 1 and reach the bound-merge wake.
   clean_comment=$(printf '%s\n\nResult: clean - all five lenses ran and no finding remains open.' "$(write_gate_table)")
   open_comment=$(printf '%s\n\nResult: 1 finding open - see code-review' "$(write_gate_table 3 0)")
 
@@ -1669,6 +1699,15 @@ test_no_mistakes_gate_reads_the_designated_comment() {
   tea_set_five_lens_comment "$dir" none
   out=$(report_case "$dir" "$NOW_LATE")
   assert_contains "$out" "hard-stop-1" "a no-mistakes task without a designated comment was accepted"
+
+  dir=$(make_case nm-comment-github-missing)
+  write_policy "$dir" project
+  write_meta "$dir" t1 "https://github.com/op/project/pull/7" project no-mistakes
+  gh_green "$dir"
+  gh_set_body "$dir" "Pipeline-opened body without a gate block."
+  gh_set_five_lens_comment "$dir" none
+  out=$(report_case "$dir" "$NOW_LATE")
+  assert_contains "$out" "hard-stop-1" "a GitHub no-mistakes task without a designated comment was accepted"
 
   dir=$(make_case nm-comment-wrong-title)
   write_policy "$dir" programmieren-community

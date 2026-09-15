@@ -453,13 +453,15 @@ names_open_finding() {
         gsub(/[,;.!?:]/, " __clause__ ", line)
         count = split(line, words, /[^a-z0-9_]+/)
         for (i = 1; i <= count; i++) {
+          qualifier = words[i + 2]
+          if (qualifier == "__clause__") qualifier = words[i + 3]
           if (words[i] ~ /^[1-9][0-9]*$/ \
             && (words[i + 1] == "remain" || words[i + 1] == "remains" \
               || words[i + 1] == "remaining" || words[i + 1] == "left" \
               || words[i + 1] == "unresolved" || words[i + 1] == "outstanding" \
               || ((words[i + 1] == "finding" || words[i + 1] == "findings") \
-                && words[i + 2] != "fixed" && words[i + 2] != "closed" \
-                && words[i + 2] != "resolved" && words[i + 2] != "behoben"))) {
+                && qualifier != "fixed" && qualifier != "closed" \
+                && qualifier != "resolved" && qualifier != "behoben"))) {
             found = 1
             exit
           }
