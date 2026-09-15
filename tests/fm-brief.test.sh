@@ -467,14 +467,18 @@ test_five_lens_gate_in_direct_pr_dod() {
     "direct-PR DOD must state why a missing or unreported gate is a hard stop"
   assert_grep "each in its own fresh context (a subagent or a fresh session)" "$brief" \
     "direct-PR DOD must require a fresh-context pass per lens without assuming one dispatch mechanism"
-  assert_grep "\`code-review\` (correctness), \`maintainability-review\` (rot, bandaids, speculative scaffolding), \`architecture-system-design-reviewer\` (structural fit and defended choices), \`design-decision-questioner\` (challenge the decisions), \`self-containment-review\` (context a repo reader cannot resolve)" "$brief" \
+  assert_grep "\`code-review\` (correctness), \`maintainability-review\` (rot, bandaids, speculative scaffolding), \`structural-fit-review\` (structural fit and defended choices), \`design-decision-questioner\` (challenge the decisions), \`self-containment-review\` (context a repo reader cannot resolve)" "$brief" \
     "direct-PR DOD must define all five lens foci in the emitted block"
+  assert_grep "The captain's list calls the \`structural-fit-review\` lens \`architecture-system-design-reviewer\`" "$brief" \
+    "direct-PR DOD must keep the captain's lens name resolvable as a mapping to the installed skill"
   assert_grep "| Lens | Ran | Findings | Fixed |" "$brief" \
     "direct-PR DOD must carry the per-lens table header"
-  for lens in code-review maintainability-review architecture-system-design-reviewer design-decision-questioner self-containment-review; do
+  for lens in code-review maintainability-review structural-fit-review design-decision-questioner self-containment-review; do
     assert_grep "| $lens | <yes or no> | <n> | <n> |" "$brief" \
       "direct-PR DOD must carry the $lens placeholder row"
   done
+  assert_no_grep "| architecture-system-design-reviewer |" "$brief" \
+    "direct-PR DOD must name the installed lens, not the captain's alias, in the result table"
   assert_grep "replacing every placeholder with the real result" "$brief" \
     "direct-PR DOD must say the placeholder rows are not the result"
   assert_grep "\`Result: clean\` only when every \`Ran\` cell says \`yes\` and no finding remains open" "$brief" \
