@@ -979,6 +979,11 @@ forgejo_verdict_read() {
   esac
 }
 
+# forgejo_five_lens_comment_read: accumulate the comment pages, deduplicated by
+# id, and read the designated five-lens comment from them. A page that adds no
+# new comment id also ends the list: a Forgejo endpoint that ignores
+# `limit`/`page` returns the same full list on every request, so the short-page
+# test alone would exhaust the page cap and read no comment at all (hard stop 1).
 forgejo_five_lens_comment_read() {
   local page=1 page_json page_count comments='[]' merged merged_count comment_count=0
   while [ "$page" -le "$FILE_PAGE_MAX" ]; do
