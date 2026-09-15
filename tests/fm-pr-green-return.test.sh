@@ -1487,6 +1487,66 @@ Result: no blocker, 2 findings open
   out=$(report_case "$dir" "$NOW_LATE")
   assert_contains "$out" "hard-stop-1" "a zero in Findings negated an open in Fixed"
 
+  # An inflected German open finding and a count-bearing remain phrase must
+  # hold even when the table itself is clean.
+  dir=$(make_case gate-table-inflected-open)
+  write_policy "$dir" programmieren-community
+  write_meta "$dir" t1 "https://forgejo.example/seibert.group/programmieren-community/pulls/365" programmieren-community
+  tea_green "$dir"
+  tea_set_body "$dir" '## Five-Lens-Block
+
+| Lens | Ran | Findings | Fixed |
+|---|---|---|---|
+| code-review | yes | 0 | 0 |
+| maintainability-review | yes | 0 | 0 |
+| architecture-system-design-reviewer | yes | 0 | 0 |
+| design-decision-questioner | yes | 0 | 0 |
+| self-containment-review | yes | 0 | 0 |
+
+Ergebnis: 2 offene Findings
+'
+  out=$(report_case "$dir" "$NOW_LATE")
+  assert_contains "$out" "hard-stop-1" "an inflected offene Findings result was accepted"
+
+  dir=$(make_case gate-table-findings-remain)
+  write_policy "$dir" programmieren-community
+  write_meta "$dir" t1 "https://forgejo.example/seibert.group/programmieren-community/pulls/365" programmieren-community
+  tea_green "$dir"
+  tea_set_body "$dir" '## Five-Lens-Block
+
+| Lens | Ran | Findings | Fixed |
+|---|---|---|---|
+| code-review | yes | 0 | 0 |
+| maintainability-review | yes | 0 | 0 |
+| architecture-system-design-reviewer | yes | 0 | 0 |
+| design-decision-questioner | yes | 0 | 0 |
+| self-containment-review | yes | 0 | 0 |
+
+Result: 2 findings remain
+'
+  out=$(report_case "$dir" "$NOW_LATE")
+  assert_contains "$out" "hard-stop-1" "a count-bearing findings remain result was accepted"
+
+  # A zero count and a negation keep their clean reads.
+  dir=$(make_case gate-table-zero-open)
+  write_policy "$dir" programmieren-community
+  write_meta "$dir" t1 "https://forgejo.example/seibert.group/programmieren-community/pulls/365" programmieren-community
+  tea_green "$dir"
+  tea_set_body "$dir" '## Five-Lens-Block
+
+| Lens | Ran | Findings | Fixed |
+|---|---|---|---|
+| code-review | yes | 0 | 0 |
+| maintainability-review | yes | 0 | 0 |
+| architecture-system-design-reviewer | yes | 0 | 0 |
+| design-decision-questioner | yes | 0 | 0 |
+| self-containment-review | yes | 0 | 0 |
+
+Result: 0 open findings
+'
+  out=$(report_case "$dir" "$NOW_LATE")
+  assert_contains "$out" $'t1\tdue\tready' "a zero-count open findings result was rejected"
+
   # A non-numeric cell whose leading counts cover the findings stays clean.
   dir=$(make_case gate-table-refuted)
   write_policy "$dir" programmieren-community

@@ -61,9 +61,10 @@
 # `Result: clean`, as a table whose every row ran and closed its findings, or as
 # at least five per-lens result entries, each positively naming a clean result
 # (`clean`, `passed`/`pass`, or a `kein`/`no blocker` entry); any other wording,
-# or a line naming an open finding, trips the stop, while an `open`/`offen`
-# negated within its own clause or result cell is a clean verdict, not a
-# finding. The evidence is read from the PR body and, when the task's mode is
+# or a line naming an open finding, trips the stop; an `open`/`offen` word (or
+# its German inflections) is a finding unless negated within its own clause or
+# result cell, and a positive count before `finding(s)`/`remain(s)` is a
+# finding too. The evidence is read from the PR body and, when the task's mode
 # no-mistakes or the body carries no gate block, from the newest exact-titled
 # comment of the authenticated operator; a clean read from either source
 # passes, and an unreadable, untitled, or foreign-authored comment is never
@@ -437,11 +438,13 @@ PATHS
 FIVE_LENS_COMMENT_TITLE='Findings and fixes from 5-lenses-review'
 
 # names_open_finding <text>: the open-finding wording the gate check treats as
-# a stop, shared by the table rows and the per-lens result lines. A bare
-# `open`/`offen` word counts only when no negation in the same clause or result
-# cell reaches it across punctuation or a positive count: `no finding remains
+# a stop, shared by the table rows and the per-lens result lines. An
+# `open`/`offen` word, including the German inflections `offene`/`offenen`/
+# `offener`/`offenes`, counts only when no negation in the same clause or
+# result cell reaches it across punctuation or a positive count, and a positive
+# count before `finding(s)`/`remain(s)` counts as well. So `no finding remains
 # open` and `0 open findings` are clean verdicts, while `1 open finding`,
-# `2 offen`, and `no blocker, 2 findings open` name one.
+# `2 offen`, `2 findings remain`, and `2 offene Findings` name one.
 names_open_finding() {
   printf '%s\n' "$1" \
     | grep -Eiq 'nicht[ -]?clean|not[[:space:]]+clean|findings?[[:space:]]*:[[:space:]]*[1-9][0-9]*' \
@@ -452,7 +455,15 @@ names_open_finding() {
         gsub(/[,;.!?:]/, " __clause__ ", line)
         count = split(line, words, /[^a-z0-9_]+/)
         for (i = 1; i <= count; i++) {
-          if (words[i] != "open" && words[i] != "offen") continue
+          if (words[i] ~ /^[1-9][0-9]*$/ \
+            && (words[i + 1] == "finding" || words[i + 1] == "findings" \
+              || words[i + 1] == "remain" || words[i + 1] == "remains")) {
+            found = 1
+            exit
+          }
+          if (words[i] != "open" && words[i] != "offen" && words[i] != "offene" \
+            && words[i] != "offenen" && words[i] != "offener" \
+            && words[i] != "offenes") continue
           negated = 0
           for (j = i - 1; j >= 1 && j >= i - 4; j--) {
             word = words[j]
