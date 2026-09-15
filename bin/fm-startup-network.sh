@@ -15,9 +15,9 @@
 # time, or as a durable wake when it does not. The locked startup's bounded
 # inactive-outcome scan also runs here because its local current-state reads can
 # be just as slow; that scan publishes its own findings to the durable wake queue,
-# and the bounded park sweep (bin/fm-park.sh sweep) releases eligible waiting
-# tasks in the same locked child, printing only a release it could not complete
-# so a clean sweep stays silent.
+# and the bounded park sweep (bin/fm-park.sh sweep) runs in the same locked child
+# after the network sweeps, printing only a release it could not complete so a
+# clean sweep stays silent and bootstrap keeps its place in the child.
 #
 # WHAT IS PRESERVED. Nothing is dropped. bin/fm-bootstrap.sh remains the single
 # owner of every network sweep and still runs all of them, unchanged, via its
@@ -500,8 +500,10 @@ EOF
       bash -c '
         script_dir=$1
         "$script_dir/fm-inactive-reconcile.sh" scan --startup >/dev/null 2>&1 || true
+        "$script_dir/fm-bootstrap.sh"
+        rc=$?
         "$script_dir/fm-park.sh" sweep || true
-        exec "$script_dir/fm-bootstrap.sh"
+        exit "$rc"
       ' _ "$SCRIPT_DIR" >"$out" 2>&1 || rc=$?
   else
     fm_run_timed "$budget" env FM_BOOTSTRAP_NETWORK=only FM_BOOTSTRAP_DETECT_ONLY=1 \
