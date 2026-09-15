@@ -10,7 +10,10 @@
 #     skipped and reported, never forced or stashed, so unlanded work survives.
 #   - The update is a single-parent fast-forward (never a merge commit) and a
 #     fast-forward of one worktree never disturbs another worktree's checkout
-#     or the shared default branch.
+#     or the shared default branch. On the durable seibert/main fork line the
+#     line itself fast-forwards onto origin/seibert/main when it has no own
+#     commits, and a missing `main` mirror is created REF-ONLY for the upstream
+#     reconciliation merge, so no local mirror is required to advance.
 #   - The caller-action summary is correct: reread-firstmate flips to yes only
 #     when the instruction surface (AGENTS.md / bin / .agents/skills) changed, and
 #     the two secondmate action sets are disjoint and correctly gated -
@@ -524,6 +527,213 @@ test_update_on_seibert_main_merges_mirror() {
   pass "T12 a primary on the seibert/main fork line advances the mirror then merges it into the line"
 }
 
+# new_seibert_world_nomirror <name>: new_seibert_world, then publish the line to
+# origin and drop the local `main` mirror, leaving the primary on seibert/main
+# with no refs/heads/main at all. Echoes the world dir.
+new_seibert_world_nomirror() {
+  local name=$1 w
+  w=$(new_seibert_world "$name")
+  git -C "$w/main" push -q origin seibert/main
+  git -C "$w/main" branch -D main >/dev/null
+  printf '%s\n' "$w"
+}
+
+# Advance origin/seibert/main by one commit from a dedicated clone, so the local
+# primary is left behind the remote fork line with no own commits of its own.
+bump_seibert_origin() {
+  local w=$1 clone
+  clone="$w/line-seed"
+  [ -d "$clone" ] || git clone -q "$w/origin.git" "$clone"
+  git -C "$clone" checkout -q -B seibert/main origin/seibert/main
+  printf 'line-remote\n' >> "$clone/LINE-REMOTE.md"
+  git -C "$clone" add -A
+  git -C "$clone" commit -qm line-remote
+  git -C "$clone" push -q origin seibert/main
+}
+
+# --- T13: a mirror-less fork line with no own commits fast-forwards ----------
+# The home stood behind origin/seibert/main with no local `main` mirror at all;
+# the update skipped with "cannot read main" even though the line carried no own
+# commits. A line that is an ancestor of the remote line is now fast-forwarded
+# directly onto origin/seibert/main, so the advance needs no mirror at all.
+test_update_on_seibert_main_without_mirror_fast_forwards() {
+  local w out line_tip before
+  w=$(new_seibert_world_nomirror t13)
+  bump_seibert_origin "$w"
+  before=$(git -C "$w/main" rev-parse HEAD)
+  line_tip=$(git -C "$w/line-seed" rev-parse HEAD)
+
+  out=$(run_update "$w")
+
+  assert_contains "$out" "firstmate: updated " "the mirror-less fork line advanced"
+  assert_contains "$out" "fast-forwarded origin/seibert/main" \
+    "the advance reports the direct line fast-forward"
+  assert_not_contains "$out" "cannot read main" "a missing main mirror no longer refuses the advance"
+  [ "$(git -C "$w/main" rev-parse HEAD)" = "$line_tip" ] \
+    || fail "the fork line did not advance to origin/seibert/main"
+  [ "$(git -C "$w/main" rev-list --parents -n1 HEAD | wc -w | tr -d ' ')" -eq 2 ] \
+    || fail "the line advance is not a single-parent fast-forward"
+  git -C "$w/main" merge-base --is-ancestor "$before" HEAD \
+    || fail "the line's previous tip was lost"
+  [ "$(git -C "$w/main" symbolic-ref --short HEAD)" = "seibert/main" ] \
+    || fail "firstmate left the seibert/main fork line"
+  pass "T13 a mirror-less fork line with no own commits fast-forwards onto origin/seibert/main"
+}
+
+# --- T14: a mirror-less fork line with own commits still updates -------------
+# With own (unpushed) commits a direct fast-forward is impossible, so the update
+# creates the missing `main` mirror REF-ONLY at origin/main and merges it into
+# the line, exactly as it does when the mirror already exists. The own commit
+# survives and the run no longer skips with "cannot read main".
+test_update_on_seibert_main_without_mirror_with_own_commits() {
+  local w out own_tip
+  w=$(new_seibert_world_nomirror t14)
+  printf 'line-own-2\n' > "$w/main/LINE2.md"
+  git -C "$w/main" add LINE2.md
+  git -C "$w/main" commit -qm line-own-2
+  own_tip=$(git -C "$w/main" rev-parse HEAD)
+  bump_origin "$w" instr
+
+  out=$(run_update "$w")
+
+  assert_contains "$out" "firstmate: updated " "the mirror-less fork line with own commits advanced"
+  assert_contains "$out" "merged main" "the missing mirror was merged into the line"
+  assert_not_contains "$out" "cannot read main" "a missing main mirror no longer refuses the advance"
+  # The mirror was created REF-ONLY at origin/main (single parent, never checked out).
+  [ "$(git -C "$w/main" rev-parse main)" = "$(git -C "$w/main" rev-parse origin/main)" ] \
+    || fail "the created main mirror is not at origin/main"
+  [ "$(git -C "$w/main" rev-list --parents -n1 main | wc -w | tr -d ' ')" -eq 2 ] \
+    || fail "the created main mirror is not a single-parent ref"
+  # The line's own commit survived and origin/main was reconciled into the line.
+  git -C "$w/main" merge-base --is-ancestor "$own_tip" HEAD \
+    || fail "the line's own commit was lost"
+  git -C "$w/main" merge-base --is-ancestor origin/main HEAD \
+    || fail "origin/main was not merged into the line"
+  [ "$(git -C "$w/main" symbolic-ref --short HEAD)" = "seibert/main" ] \
+    || fail "firstmate left the seibert/main fork line"
+  pass "T14 a mirror-less fork line with own commits creates the mirror ref-only and merges it"
+}
+
+# --- T15: a mirror-less line fast-forwards, then still reconciles upstream ---
+# The line fell behind origin/seibert/main while upstream origin/main also moved.
+# The update fast-forwards the line onto the remote line first and still merges
+# the fresh upstream into it, so both sides land without a local mirror.
+test_update_on_seibert_main_without_mirror_fast_forwards_then_merges() {
+  local w out line_tip before
+  w=$(new_seibert_world_nomirror t15)
+  bump_seibert_origin "$w"
+  before=$(git -C "$w/main" rev-parse HEAD)
+  line_tip=$(git -C "$w/line-seed" rev-parse HEAD)
+  bump_origin "$w" instr
+
+  out=$(run_update "$w")
+
+  assert_contains "$out" "firstmate: updated " "the mirror-less fork line advanced"
+  assert_contains "$out" "merged main" "the upstream reconciliation still ran"
+  assert_not_contains "$out" "cannot read main" "a missing main mirror no longer refuses the advance"
+  git -C "$w/main" merge-base --is-ancestor "$line_tip" HEAD \
+    || fail "the remote fork line tip was not integrated"
+  git -C "$w/main" merge-base --is-ancestor "$before" HEAD \
+    || fail "the line's previous tip was lost"
+  git -C "$w/main" merge-base --is-ancestor origin/main HEAD \
+    || fail "origin/main was not merged into the line"
+  [ "$(git -C "$w/main" rev-list --parents -n1 HEAD | wc -w | tr -d ' ')" -eq 3 ] \
+    || fail "the combined advance is not a merge of the line and upstream"
+  [ "$(git -C "$w/main" symbolic-ref --short HEAD)" = "seibert/main" ] \
+    || fail "firstmate left the seibert/main fork line"
+  pass "T15 a mirror-less line fast-forwards onto origin/seibert/main and still merges upstream"
+}
+
+# --- T16: the ordinary mirror case still fast-forwards the line ------------
+# Once the update has created (or the home already had) the `main` mirror, the
+# steady state is a clean mirror plus a remote line that moved ahead. The line
+# must still fast-forward directly onto origin/seibert/main; the mirror only
+# serves the upstream reconciliation.
+test_update_on_seibert_main_with_mirror_fast_forwards_line() {
+  local w out line_tip before
+  w=$(new_seibert_world t16)
+  git -C "$w/main" push -q origin seibert/main
+  bump_seibert_origin "$w"
+  before=$(git -C "$w/main" rev-parse HEAD)
+  line_tip=$(git -C "$w/line-seed" rev-parse HEAD)
+
+  out=$(run_update "$w")
+
+  assert_contains "$out" "firstmate: updated " "the fork line advanced with the mirror present"
+  assert_contains "$out" "fast-forwarded origin/seibert/main" \
+    "the advance reports the direct line fast-forward"
+  [ "$(git -C "$w/main" rev-parse HEAD)" = "$line_tip" ] \
+    || fail "the fork line did not advance to origin/seibert/main"
+  [ "$(git -C "$w/main" rev-list --parents -n1 HEAD | wc -w | tr -d ' ')" -eq 2 ] \
+    || fail "the line advance is not a single-parent fast-forward"
+  git -C "$w/main" merge-base --is-ancestor "$before" HEAD \
+    || fail "the line's previous tip was lost"
+  [ "$(git -C "$w/main" symbolic-ref --short HEAD)" = "seibert/main" ] \
+    || fail "firstmate left the seibert/main fork line"
+  pass "T16 a mirror-present fork line fast-forwards onto origin/seibert/main"
+}
+
+# --- T17: a diverged mirror still skips before the line fast-forwards -------
+# The mirror guard must run before the line fast-forward, so a self-modified
+# `main` (own commits, no longer an ancestor of origin/main) skips the whole
+# update with the line untouched - the new fast-forward must never run past a
+# guard that used to stop the pass.
+test_seibert_main_diverged_mirror_skips() {
+  local w out before mirror_before
+  w=$(new_seibert_world t17)
+  git -C "$w/main" checkout -q main
+  printf 'mirror-own\n' > "$w/main/MIRROR.md"
+  git -C "$w/main" add MIRROR.md
+  git -C "$w/main" commit -qm mirror-own
+  git -C "$w/main" checkout -q seibert/main
+  git -C "$w/main" push -q origin seibert/main
+  bump_seibert_origin "$w"
+  before=$(git -C "$w/main" rev-parse HEAD)
+  mirror_before=$(git -C "$w/main" rev-parse main)
+
+  out=$(run_update "$w")
+
+  assert_contains "$out" "firstmate: skipped: main diverged from origin/main" \
+    "a self-modified mirror still skips"
+  [ "$(git -C "$w/main" rev-parse HEAD)" = "$before" ] \
+    || fail "the line moved past a diverged mirror"
+  [ "$(git -C "$w/main" rev-parse main)" = "$mirror_before" ] \
+    || fail "the diverged mirror was moved"
+  pass "T17 a diverged main mirror skips before the line fast-forwards"
+}
+
+# --- T18: a failed upstream merge after a line fast-forward keeps the advance --
+# The line's fast-forward is safe and independent of the upstream reconciliation,
+# so when the mirror merge then conflicts the run must still report the line as
+# updated - a skipped status would hide the advance and suppress the reread -
+# while aborting the merge untouched and naming the failure.
+test_seibert_main_fast_forward_keeps_advance_when_merge_conflicts() {
+  local w out clone line_tip
+  w=$(new_seibert_world_nomirror t18)
+  clone="$w/line-seed"
+  git clone -q "$w/origin.git" "$clone"
+  git -C "$clone" checkout -q -B seibert/main origin/seibert/main
+  printf 'line-conflict\n' > "$clone/README.md"
+  git -C "$clone" add README.md
+  git -C "$clone" commit -qm line-conflict
+  git -C "$clone" push -q origin seibert/main
+  line_tip=$(git -C "$clone" rev-parse HEAD)
+  bump_origin "$w" readme
+
+  out=$(run_update "$w")
+
+  assert_contains "$out" "firstmate: updated " "the safe line advance is still reported"
+  assert_contains "$out" "fast-forwarded origin/seibert/main" \
+    "the advance reports the direct line fast-forward"
+  assert_contains "$out" "merge of main failed" "the unmergeable upstream merge is named"
+  assert_not_contains "$out" "cannot read main" "a missing main mirror no longer refuses the advance"
+  [ "$(git -C "$w/main" rev-parse HEAD)" = "$line_tip" ] \
+    || fail "the line did not stay on origin/seibert/main after the failed merge"
+  [ ! -e "$w/main/.git/MERGE_HEAD" ] \
+    || fail "the failed merge was not aborted"
+  pass "T18 a line fast-forward survives an unmergeable upstream merge"
+}
+
 test_updates_main_and_secondmate
 test_reread_gate_is_instruction_only
 test_bin_only_advance_restarts
@@ -539,5 +749,11 @@ test_firstmate_wrong_branch_skipped
 test_firstmate_detached_head_skipped
 test_unsafe_secondmate_home_skipped_before_git_update
 test_update_on_seibert_main_merges_mirror
+test_update_on_seibert_main_without_mirror_fast_forwards
+test_update_on_seibert_main_without_mirror_with_own_commits
+test_update_on_seibert_main_without_mirror_fast_forwards_then_merges
+test_update_on_seibert_main_with_mirror_fast_forwards_line
+test_seibert_main_diverged_mirror_skips
+test_seibert_main_fast_forward_keeps_advance_when_merge_conflicts
 
 echo "# all fm-update tests passed"

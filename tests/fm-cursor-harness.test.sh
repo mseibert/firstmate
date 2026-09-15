@@ -31,6 +31,10 @@ set -u
 . "$ROOT/bin/fm-busy-lib.sh"
 
 HARNESS="$ROOT/bin/fm-harness.sh"
+# Every detection case below states the markers it means to test, so drop the
+# ambient foreign markers first and keep the verdict independent of the harness
+# that launched the suite.
+fm_test_clear_harness_markers
 TMP_ROOT=$(fm_test_tmproot fm-cursor-harness)
 trap 'rm -rf "$TMP_ROOT"' EXIT
 

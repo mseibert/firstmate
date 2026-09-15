@@ -20,7 +20,10 @@
 #     exact disclosed remainder
 #   - orphan status logs whose task meta has already disappeared
 #   - per-task endpoint-liveness lines for a live and a dead recorded target,
-#     tmux and herdr both
+#     tmux and herdr both, plus a remotely placed record reported by placement
+#     with no local probe
+#   - the bounded read-only backlog read-check section, including a stale
+#     In-flight row with a gone endpoint
 #   - composition: the script invokes the real fm-lock.sh/fm-bootstrap.sh/
 #     fm-wake-drain.sh (their real, distinctive output appears verbatim), it
 #     does not reimplement their logic
@@ -290,24 +293,41 @@ SH
   chmod +x "$fakebin/ps"
 }
 
-# make_fake_tmux <fakebin> <live-target>: display-message succeeds only for
-# the given "session:window" target - the exact primitive
-# fm_backend_target_exists uses for a tmux endpoint liveness read.
+# make_fake_tmux <fakebin> <live-target>: `list-panes -t` - the exact-existence
+# primitive fm_backend_target_exists uses for a tmux endpoint liveness read -
+# succeeds only for the given "session:window" target. `display-message`
+# deliberately answers ANY target, modeling real tmux's active-window fallback
+# for an absent window, so this fixture pins that only the exact read may
+# license "alive". `list-windows` reports the live target's window name so the
+# recovery-grade classifier (fm_backend_agent_state) can tell a live window
+# from a gone one.
 make_fake_tmux() {
-  local fakebin=$1 live=$2
+  local fakebin=$1 live=$2 window=${2#*:}
   cat > "$fakebin/tmux" <<SH
 #!/usr/bin/env bash
 set -u
 case "\${1:-}" in
-  display-message)
+  list-panes)
     target=""
     prev=""
     for a in "\$@"; do
       [ "\$prev" = "-t" ] && target="\$a"
       prev="\$a"
     done
-    [ "\$target" = "$live" ] && { printf '%%1\n'; exit 0; }
-    exit 1
+    session=\${target%%:*}
+    window=\${target#*:}
+    [ "\${session#=}:\${window#=}" = "$live" ] || exit 1
+    printf '%%1\n'
+    exit 0
+    ;;
+  display-message)
+    printf '%%1\n'
+    exit 0
+    ;;
+  list-windows)
+    printf 'main\n'
+    [ -n "$window" ] && printf '%s\n' "$window"
+    exit 0
     ;;
 esac
 exit 1
@@ -383,6 +403,19 @@ case "${1:-}" in
     else
       printf '%s\n' main
     fi
+    exit 0
+    ;;
+  list-panes)
+    # The exact-existence probe fm_backend_target_exists uses: real tmux fails
+    # for an absent window or an unreadable server, and succeeds while the
+    # window is present (including the recreated one after a relaunch).
+    if [ "$mode" = unreadable ] && [ ! -e "$spawned" ] && [ ! -e "$killed" ]; then
+      exit 1
+    fi
+    if [ -e "$spawned" ]; then printf '%%1\n'; exit 0; fi
+    if [ -e "$killed" ]; then exit 1; fi
+    [ "$mode" = missing ] && exit 1
+    printf '%%1\n'
     exit 0
     ;;
   has-session) exit 0 ;;
@@ -1360,6 +1393,77 @@ EOF
   assert_contains "$out" "endpoint: dead (backend=herdr window=sess:p-dead)" "dead herdr endpoint not reported dead"
 
   pass "herdr endpoint liveness is reported per task: alive for a live pane, dead for a gone one"
+}
+
+test_endpoint_liveness_remote() {
+  local rec root home fakebin out tmuxlog
+  rec=$(new_world liveness-remote)
+  IFS='|' read -r root home fakebin <<EOF
+$rec
+EOF
+  make_fake_toolchain "$fakebin"
+  make_fake_ps_claude "$fakebin"
+  tmuxlog="$home/../tmux-remote.log"
+  cat > "$fakebin/tmux" <<SH
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$tmuxlog"
+case "\${1:-}" in
+  list-panes)
+    target="\${3:-}"
+    session=\${target%%:*}
+    window=\${target#*:}
+    [ "\${session#=}:\${window#=}" = "fm-sess:live-window" ] && { printf '%%1\n'; exit 0; }
+    exit 1
+    ;;
+esac
+exit 0
+SH
+  chmod +x "$fakebin/tmux"
+
+  printf 'window=remote:task-remote\nkind=secondmate\nremote_host=build-host\nremote_root=/srv/mate\nremote_backend=herdr\nremote_target=fm-remote:ws1:p2\n' > "$home/state/task-remote.meta"
+  printf 'window=fm-sess:live-window\nkind=ship\n' > "$home/state/task-live.meta"
+
+  out=$(run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+  assert_contains "$out" "endpoint: remote (host=build-host)" \
+    "a remote record was not reported by its remote placement"
+  assert_not_contains "$out" "endpoint: dead (backend=tmux window=remote:task-remote)" \
+    "a remotely placed mate was reported dead by a local probe"
+  assert_contains "$out" "endpoint: alive (backend=tmux window=fm-sess:live-window)" \
+    "the local tmux liveness read regressed"
+  assert_not_contains "$(cat "$tmuxlog")" "remote:task-remote" \
+    "the digest probed a remote endpoint locally"
+
+  pass "a remote record reports its placement and is never probed or reported dead locally"
+}
+
+# The digest must surface a terminal In-flight row whose endpoint is gone, so a
+# stale row is visible at session start instead of only when a human re-reads
+# the backlog.
+test_backlog_readcheck_digest_section() {
+  local rec root home fakebin out
+  rec=$(new_world readcheck)
+  IFS='|' read -r root home fakebin <<EOF
+$rec
+EOF
+  make_fake_toolchain "$fakebin"
+  make_fake_ps_claude "$fakebin"
+  make_fake_tmux "$fakebin" "fm-sess:live-window"
+
+  {
+    printf '# Backlog\n\n## In flight\n'
+    printf -- '- [ ] stale-1 - test item\n'
+    printf '\n## Queued\n'
+  } > "$home/data/backlog.md"
+  printf 'window=fm-sess:dead-window\nkind=ship\n' > "$home/state/stale-1.meta"
+  printf 'done: PR https://example.invalid/x\n' > "$home/state/stale-1.status"
+
+  out=$(run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+  assert_contains "$out" "Backlog read-check (terminal In-flight rows and shared worktree slots)" \
+    "the fleet-state digest lost the backlog read-check section"
+  assert_contains "$out" "STALE_INFLIGHT: stale-1 (done)" \
+    "the digest did not surface the stale In-flight row"
+
+  pass "the session-start digest surfaces the read-only backlog read-check findings"
 }
 
 # --- composition: real scripts run, not reimplemented ------------------------
@@ -2650,6 +2754,8 @@ test_status_tail_line_cap
 test_orphan_status_logs_are_printed
 test_endpoint_liveness_tmux
 test_endpoint_liveness_herdr
+test_endpoint_liveness_remote
+test_backlog_readcheck_digest_section
 test_composition_invokes_real_scripts
 test_branch_outcome_replay_respects_captain_barrier_and_lease_sweep
 test_non_pi_session_start_leaves_branch_state_untouched

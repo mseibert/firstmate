@@ -1,20 +1,24 @@
 #!/usr/bin/env bash
 # Self-update a running firstmate and its secondmates to the latest origin.
 #
-# Mechanical half of the /updatefirstmate skill. Fast-forwards the running
-# firstmate repo's default branch from origin, then fast-forwards every
-# registered secondmate home. Local homes are treehouse worktrees or standalone
-# clones; remote routes update their configured code root on that host and then
-# fast-forward the persistent home to that root. FAST-FORWARD ONLY, exactly like
-# fm-fleet-sync.sh: never force, never create a merge commit, never stash;
-# advance a target only when it is a clean fast-forward, otherwise skip and
-# report. A tracked-files fast-forward never touches the gitignored operational
-# dirs (data/, state/, config/, projects/, .no-mistakes/), so a secondmate's
-# in-flight work is never disrupted. Worktrees of this repo share one object
-# store, so a single fetch refreshes them all; standalone-clone homes are
-# fetched on their own. Secondmate homes are leased at a detached HEAD on the
-# default branch, so a fast-forward there advances HEAD only and never touches
-# any other worktree's checkout or the shared `main` branch.
+# Mechanical half of the /updatefirstmate skill. Advances the running
+# firstmate repo's default branch or durable seibert/main fork line from origin,
+# then fast-forwards every registered secondmate home. Local homes are treehouse
+# worktrees or standalone clones; remote routes update their configured code root
+# on that host and then fast-forward the persistent home to that root.
+# FAST-FORWARD ONLY for ordinary targets, exactly like fm-fleet-sync.sh: never
+# force, never stash; advance a target only when it is a clean fast-forward,
+# otherwise skip and report. The one exception is a primary checkout on the
+# durable seibert/main fork line, whose upstream reconciliation can merge the
+# clean `main` mirror into the line (bin/fm-ff-lib.sh owns that guarded path);
+# the line's own commits are never rebased or force-moved. A tracked-files
+# fast-forward never touches the gitignored operational dirs (data/, state/,
+# config/, projects/, .no-mistakes/), so a secondmate's in-flight work is never
+# disrupted. Worktrees of this repo share one object store, so a single fetch
+# refreshes them all; standalone-clone homes are fetched on their own. Secondmate
+# homes are leased at a detached HEAD on the default branch, so a fast-forward
+# there advances HEAD only and never touches any other worktree's checkout or
+# the shared `main` branch.
 #
 # The fast-forward mechanics live in bin/fm-ff-lib.sh (base_mode "origin" here);
 # the same library drives local and remote parent-targeted secondmate sync, so

@@ -11,9 +11,10 @@
 # retry, destination-present classification makes this operation idempotent.
 #
 # If tasks-axi reports a lock failure, this host may remove and retry once only
-# for its own backlog or delivered lock whose pid is dead and whose mtime is at
-# least 30 seconds old. No live or uncertain lock is touched. On confirmed
-# receipt the delivered scratch file is removed; no other path is deletable.
+# for its own backlog or delivered lock whose recorded pid is dead or provably
+# not a tasks-axi process and whose mtime is at least 30 seconds old. No live
+# tasks-axi or uncertain lock is touched. On confirmed receipt the delivered
+# scratch file is removed; no other path is deletable.
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -67,12 +68,21 @@ lock_age() {
 }
 
 remove_dead_stale_lock() { # <lock-path>
-  local lock=$1 token pid age
+  local lock=$1 token pid age cmdline
   [ -f "$lock" ] && [ ! -L "$lock" ] || return 1
   IFS= read -r token < "$lock" || return 1
   pid=${token%%:*}
   case "$pid" in ''|*[!0-9]*) return 1 ;; esac
-  kill -0 "$pid" 2>/dev/null && return 1
+  if fm_pid_alive "$pid"; then
+    # tasks-axi records only its own pid in this lock, so no start-time pair
+    # exists to compare and a pid-space wrap can leave the recorded number with
+    # an unrelated live process, which used to keep the stale lock forever and
+    # block every later receipt. The lock is written only by a tasks-axi
+    # invocation, so a live pid whose command line is not tasks-axi cannot be
+    # its owner. An unreadable command line stays conservative and keeps it.
+    cmdline=$(fm_pid_cmdline "$pid") || return 1
+    case "$cmdline" in *tasks-axi*) return 1 ;; esac
+  fi
   age=$(lock_age "$lock") || return 1
   [ "$age" -ge "$LOCK_STALE_SECS" ] || return 1
   rm -f -- "$lock"

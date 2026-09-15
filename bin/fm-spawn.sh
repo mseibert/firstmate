@@ -37,7 +37,11 @@
 #   validated state/<id>.meta, so --backend, --scout, --secondmate, a project
 #   positional, and batch pairs are all refused alongside it; only harness,
 #   model, and effort may change, which is what makes a harness switch one
-#   ordinary relaunch. It refuses unless the recorded endpoint is positively
+#   ordinary relaunch. An endpoint that is authoritatively missing because the
+#   session's death took its window or pane is recreated through that backend's
+#   own create primitive in the recorded worktree - never a duplicate, never
+#   outside the copy holding the work - and re-proven agent-free before the
+#   replacement starts. It refuses unless the recorded endpoint is positively
 #   agent-free on a backend with a recovery-grade agent-state classifier (tmux
 #   or herdr), refuses unless the endpoint's shell is sitting in the recorded
 #   worktree, and clears the previous harness's per-task wiring before arming
@@ -1228,6 +1232,10 @@ RAW_LAUNCH=0
 # validation teardown uses, so a malformed, ambiguous, or foreign record
 # refuses here exactly as it refuses there.
 RELAUNCH_PRIOR_HARNESS=
+# Set only when a relaunch had to recreate an authoritatively missing endpoint:
+# it carries the recreated window id so the adoption below targets the stable
+# id rather than a name that a captain's tmux could rename away.
+RELAUNCH_WT_TARGET=
 if [ "$RELAUNCH" -eq 1 ]; then
   [ "${#POS[@]}" -eq 1 ] || {
     echo "error: --relaunch takes the task id only; its project or home comes from the task's own record" >&2
@@ -1262,10 +1270,14 @@ if [ "$RELAUNCH" -eq 1 ]; then
     exit 1
   }
   RELAUNCH_STATE=$(fm_backend_agent_state "$BACKEND" "$RELAUNCH_TARGET")
-  [ "$RELAUNCH_STATE" = dead ] || {
-    echo "error: task $ID's endpoint reads '$RELAUNCH_STATE'; a relaunch requires a positively agent-free endpoint (stop the agent first with bin/fm-control.sh $ID exit)" >&2
-    exit 1
-  }
+  case "$RELAUNCH_STATE" in
+    dead) ;;
+    missing) ;;
+    *)
+      echo "error: task $ID's endpoint reads '$RELAUNCH_STATE'; a relaunch requires a positively agent-free endpoint (stop the agent first with bin/fm-control.sh $ID exit)" >&2
+      exit 1
+      ;;
+  esac
   RELAUNCH_PRIOR_HARNESS=$(fm_meta_get "$RELAUNCH_META" harness)
   KIND=$(fm_meta_get "$RELAUNCH_META" kind)
   [ -n "$KIND" ] || KIND=ship
@@ -1291,6 +1303,74 @@ if [ "$RELAUNCH" -eq 1 ]; then
     HERDR_WORKSPACE_ID=$(fm_meta_get "$RELAUNCH_META" herdr_workspace_id)
     HERDR_TAB_ID=$(fm_meta_get "$RELAUNCH_META" herdr_tab_id)
     HERDR_PANE_ID=$(fm_meta_get "$RELAUNCH_META" herdr_pane_id)
+  fi
+  # An authoritatively missing endpoint is a regular recovery case, not a
+  # refusal: the session's death can take a task's window while its worktree
+  # and unlanded work survive (2026-09-12 session-death incident). Recreate the
+  # endpoint through the backend's own create primitive, in the RECORDED
+  # worktree, and then re-prove it is agent-free before adopting it - so a
+  # replacement can never start outside the copy holding the work and never
+  # joins a live agent. The primitive refuses a duplicate window by name, and
+  # the control plane's transaction (bin/fm-control.sh) wraps this launch half.
+  if [ "$RELAUNCH_STATE" = missing ]; then
+    case "$BACKEND" in
+      tmux)
+        RELAUNCH_SES=${RELAUNCH_TARGET%%:*}
+        if fm_backend_tmux_session_live_agent_in "$RELAUNCH_SES" "$RELAUNCH_WT"; then
+          echo "error: task $ID's recorded window $RELAUNCH_TARGET is gone from tmux session '$RELAUNCH_SES', but that session still hosts a live agent or an unattributable process in the recorded worktree $RELAUNCH_WT; refusing to launch a second agent onto the same work - reconcile the renamed or moved window first" >&2
+          exit 1
+        fi
+        fm_backend_tmux_session_ensure "$RELAUNCH_SES" || {
+          echo "error: task $ID's recorded tmux session '$RELAUNCH_SES' is gone and could not be restored; no agent was launched" >&2
+          exit 1
+        }
+        RELAUNCH_WT_TARGET=$(fm_backend_tmux_create_task "$RELAUNCH_SES" "fm-$ID" "$RELAUNCH_WT") || {
+          echo "error: task $ID's recorded tmux endpoint $RELAUNCH_TARGET is gone and could not be recreated in its recorded worktree $RELAUNCH_WT; no agent was launched" >&2
+          exit 1
+        }
+        ;;
+      herdr)
+        # The pane (and, with it, its tab) is gone; recreate the task tab in
+        # the recorded workspace. The new tab and pane ids are carried into the
+        # replacement record by this launch's own publication below, so the
+        # recorded endpoint identity follows the recreated endpoint.
+        RELAUNCH_HERDR_IDS=$(fm_backend_herdr_create_task "$HERDR_SES:$HERDR_WORKSPACE_ID" "fm-$ID" "$RELAUNCH_WT" "") || {
+          echo "error: task $ID's recorded herdr endpoint $RELAUNCH_TARGET is gone and its task tab could not be recreated in recorded workspace $HERDR_WORKSPACE_ID; no agent was launched" >&2
+          exit 1
+        }
+        read -r HERDR_TAB_ID HERDR_PANE_ID <<EOF
+$RELAUNCH_HERDR_IDS
+EOF
+        if [ -z "$HERDR_TAB_ID" ] || [ -z "$HERDR_PANE_ID" ]; then
+          echo "error: task $ID's herdr endpoint was recreated but returned no tab/pane ids; refusing to launch a replacement" >&2
+          exit 1
+        fi
+        RELAUNCH_TARGET="$HERDR_SES:$HERDR_PANE_ID"
+        RELAUNCH_WT_TARGET=$RELAUNCH_TARGET
+        ;;
+      *)
+        echo "error: task $ID's recorded endpoint is gone and backend '$BACKEND' has no verified endpoint-recreation primitive; refusing to relaunch" >&2
+        exit 1
+        ;;
+    esac
+    # A freshly created window's login shell runs its startup files (uptime,
+    # last, ...) in the foreground for a moment, which the classifier correctly
+    # reports as `ambiguous`. Requiring the very next read to be `dead` would
+    # abort the relaunch after the old agent is already stopped and the window
+    # already recreated. Let the endpoint settle instead: poll it for a bounded
+    # wait until it reads `dead`, and refuse only if it never does. The safety
+    # contract is unchanged - a replacement still launches only onto a
+    # positively agent-free endpoint.
+    RELAUNCH_STATE=
+    for _ in $(seq 1 60); do
+      RELAUNCH_STATE=$(fm_backend_agent_state "$BACKEND" "$RELAUNCH_TARGET")
+      [ "$RELAUNCH_STATE" != dead ] || break
+      sleep 1
+    done
+    [ "$RELAUNCH_STATE" = dead ] || {
+      echo "error: task $ID's recreated endpoint reads '$RELAUNCH_STATE' rather than a positively agent-free endpoint; refusing to launch a replacement into it" >&2
+      exit 1
+    }
   fi
   # With no explicit harness, a relaunch reuses the harness already recorded
   # for this task. It must NOT fall through to the fresh-spawn config
@@ -1408,7 +1488,12 @@ launch_template() {
     # alone disables the feature; keep both so a managed override of one still
     # leaves the other in force. Both are per-launch, scoped to this invocation only,
     # and never touch the captain's global ~/.claude/settings.json.
-    claude) printf '%s' 'CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false CLAUDE_CODE_SEND_FEEDBACK=0 claude --dangerously-skip-permissions --settings '\''{"feedbackDrafts":"off"}'\'' __MODELFLAG____EFFORTFLAG__"$(__OPINPUT__ encode launch-brief < __BRIEF__)"' ;;
+    # PI_CODING_AGENT is cleared here for the same reason the pi launch clears
+    # CLAUDECODE: a claude worker spawned under a Pi primary would otherwise
+    # inherit PI_CODING_AGENT=true and carry both markers, and bin/fm-harness.sh
+    # could then read the worker as pi if the ancestry walk cannot reach its
+    # claude process. CLAUDECODE is claude's own and stays.
+    claude) printf '%s' 'env -u PI_CODING_AGENT CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false CLAUDE_CODE_SEND_FEEDBACK=0 claude --dangerously-skip-permissions --settings '\''{"feedbackDrafts":"off"}'\'' __MODELFLAG____EFFORTFLAG__"$(__OPINPUT__ encode launch-brief < __BRIEF__)"' ;;
     codex)
       if [ "$kind" = secondmate ]; then
         printf '%s' 'codex __MODELFLAG____EFFORTFLAG__--dangerously-bypass-approvals-and-sandbox "$(__OPINPUT__ encode launch-brief < __BRIEF__)"'
@@ -1417,8 +1502,15 @@ launch_template() {
       fi
       ;;
     opencode) printf '%s' 'OPENCODE_CONFIG_CONTENT='\''{"permission":{"*":"allow"}}'\'' opencode __MODELFLAG__--prompt "$(__OPINPUT__ encode launch-brief < __BRIEF__)"' ;;
+    # Pi is marker-ful (its launcher sets PI_CODING_AGENT=true), but its
+    # detection arm sits after CLAUDECODE, and a hand-started primary can
+    # export CLAUDECODE=1 from a shell profile that this launch would inherit
+    # into the worker. Clear that foreign marker here so a spawned worker's
+    # environment names its real harness even when the ancestry walk cannot
+    # reach the Pi process; bin/fm-harness.sh's both-marker branch is what
+    # covers a session a human started by hand.
     pi|pi-signed)
-      printf '%s' '__PIBIN____PITUIMODE__'
+      printf '%s' 'env -u CLAUDECODE __PIBIN____PITUIMODE__'
       if [ "$kind" = secondmate ]; then
         printf '%s' ' __MODELFLAG____EFFORTFLAG__-e __PITURNEND__ -e __PIWATCH__ "$(__OPINPUT__ encode launch-brief < __BRIEF__)"'
       else
@@ -2564,7 +2656,7 @@ if [ "$RELAUNCH" -eq 1 ]; then
   # A secondmate's home already resolved WT above through the same validation a
   # fresh secondmate spawn uses; every other kind takes the recorded worktree.
   [ "$KIND" = secondmate ] || WT=$RELAUNCH_WT
-  WT_TARGET=$T
+  WT_TARGET=${RELAUNCH_WT_TARGET:-$T}
   SES=${T%%:*}
 else
 case "$BACKEND" in

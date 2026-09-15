@@ -216,10 +216,10 @@ Portable regressions live in [`tests/fm-spawn-pool-base-freshen.test.sh`](../tes
 
 The firstmate repo has one extra exposure because it can dispatch crewmates to work on itself.
 Its operating checkout (`FM_ROOT`) and the disposable crewmate worktrees are all linked git worktrees of the same repository, so the valid discriminator is branch state, not whether the checkout is linked.
-The primary checkout is healthy on its default branch, and linked worktrees or secondmate homes are healthy at detached HEAD.
-Only a named non-default branch checked out in `FM_ROOT` is a worktree tangle.
+The primary checkout is healthy on its default branch or on the durable `seibert/main` fork line, and linked worktrees or secondmate homes are healthy at detached HEAD.
+Only a named non-default branch other than the fork line checked out in `FM_ROOT` is a worktree tangle.
 
-`fm-tangle-lib.sh` resolves the default branch from `origin/HEAD`, then local `main` or `master`, and classifies that named non-default primary branch as the tangle.
+`fm-tangle-lib.sh` resolves the default branch from `origin/HEAD`, then local `main` or `master`, and classifies that named non-default primary branch as the tangle, except the durable `seibert/main` fork line that `fm-ff-lib.sh` already allows the primary to sit on.
 `fm-guard.sh` prints the repair command on the next mutable fleet action, while `bin/fm-session-start.sh` reports the same condition through bootstrap as a `TANGLE:` line at session start.
 If another live session holds the fleet lock, both surfaces keep the alarm but switch to read-only wording with no repair command.
 Ship briefs also tell the crewmate to verify `pwd -P` and `git rev-parse --show-toplevel` before creating `fm/<id>`, then stop with a blocked status if it landed in the primary checkout.
@@ -300,6 +300,7 @@ A ship brief records its mode as a fixed machine-readable line and the spawn ref
 `bin/fm-dod-lib.sh` is the one owner of that mode's definition of done, rendered both into a generated ship brief and into the ship instructions a promoted scout receives, so a promoted worker cannot be handed a weaker contract than a briefed one.
 It is also the one owner of the no-mistakes `--intent` contract those workers follow.
 The direct-PR and no-mistakes definitions of done anchor the verdict-head ordering: the last code step before a verdict request is a rebase onto the current main, the branch stays frozen until the verdict covers the head, and every verdict request is preceded by a target-base check (the intended integration branch, never the default) and a mergeable check.
+The direct-PR and no-mistakes definitions of done both make the five-lens gate mandatory: direct-PR records each lens's result in the PR body it opens, while no-mistakes posts the same per-lens result as one designated PR comment after the pipeline opens the PR, and either mode writes `Result: clean` only when every lens ran and no finding remains open.
 `data/projects.md` records each project's standing posture and optional `+yolo` merge flag as the captain's default and as context for that decision, including the conditional `no-mistakes-prod-only` policy; a ship spawn that drops below the registered rigor prints a deviation notice and continues.
 `bin/fm-project-mode.sh` remains the one registry parser for the mechanical consumers that have no task in hand: fleet sync's `local-only` skip and home seeding's refusal and no-mistakes initialization.
 When a selected delivery path calls for a diff, `bin/fm-review-diff.sh` refreshes the authoritative base and, when task meta records `pr=`, always fetches and compares against `refs/pull/<n>/head` by default (recorded `pr_head=` is only an offline fallback) before falling back to the local branch with a warning.
@@ -374,6 +375,7 @@ Durable project-intrinsic agent knowledge lives in each project's committed `AGE
 Ship briefs prompt crewmates to create or update those files through the normal delivery path; `data/projects.md` stays a thin private registry.
 Each project `AGENTS.md` carries self-governance guidance; [`bin/fm-ensure-agents-md.sh`](../bin/fm-ensure-agents-md.sh) owns the canonical wording and idempotent insertion, while its header and help document the explicit mark for equivalent project-owned guidance.
 It refuses a case-variant real memory file such as a lowercase `agents.md`, so the pointer's `@AGENTS.md` import resolves to a real `AGENTS.md` on a case-sensitive filesystem, and surfaces the mismatch for manual reconciliation.
+It also reuses an existing case variant of `CLAUDE.md`, such as `Claude.md`, as the pointer path instead of adding a second spelling beside it, and refuses two distinct variants so the pointer is not split across spellings.
 The full ownership rule - what is project-intrinsic versus fleet-private, and how firstmate keeps the two apart without writing into project clones - is owned by [`AGENTS.md`](../AGENTS.md) (project and knowledge management).
 
 ## Operational memory routing
@@ -402,7 +404,7 @@ The refresh also prunes local branches whose remote is gone and that no worktree
 `/updatefirstmate` fast-forwards the running firstmate repo and registered secondmate homes from `origin` without touching project clones.
 It restarts every live second mate whose home the pass left on the target commit through a persist-gated replacement, including a home that needed no advance, because a restart is also the only thing that re-resolves launch-time harness wiring; the re-read nudge is retained only as the fallback for live agents whose runtime cannot prove a restart.
 For a remote route, the configured code root updates from its own origin on that host before the persistent home fast-forwards to the code-root commit.
-The update is fast-forward only: dirty, diverged, offline, and off-default targets are reported and left untouched.
+The update is fast-forward only except for the durable `seibert/main` fork line's upstream reconciliation, which can merge the clean `main` mirror: dirty, diverged, offline, and wrong-branch targets are reported and left untouched, and the line's own commits are never rebased or force-moved.
 Local homes share the guarded fast-forward helper, while remote updates delegate the same safety decision to the configured host through the generic transport.
 The procedure and outcome vocabulary are owned by the [`/updatefirstmate` skill](../.agents/skills/updatefirstmate/SKILL.md); the relevant script headers own the mechanics.
 

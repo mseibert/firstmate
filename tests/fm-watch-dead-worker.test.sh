@@ -55,7 +55,8 @@ reset_state() {
   rm -f "$STATE_DIR"/*.meta "$STATE_DIR"/*.status \
     "$STATE_DIR"/.dead-worker-* "$STATE_DIR"/.paused-* \
     "$STATE_DIR"/.paused-rechecked-* "$STATE_DIR"/.wake-queue \
-    "$STATE_DIR"/.wake-queue.seq "$STATE_DIR"/.watch-triage.log 2>/dev/null || true
+    "$STATE_DIR"/.wake-queue.seq "$STATE_DIR"/.watch-triage.log \
+    "$STATE_DIR"/.watcher-down "$STATE_DIR"/.watcher-down.lock 2>/dev/null || true
   : > "$WAKE_LOG"
 }
 
@@ -363,6 +364,63 @@ printf 'paused: waiting for the upstream release\n' > "$STATE_DIR/dw-recover.sta
 [ ! -e "$STATE_DIR/.dead-worker-tmux_win-recover" ] || fail "recovery must clear the dead-worker marker"
 [ "$(wake_count)" = 1 ] || fail "recovery must not add a second wake"
 pass "dead-worker: recovery clears the marker and ends the dead stretch"
+
+# Recovery through the POLL PATH: the reality check clears the marker only where
+# it runs - an unreadable pane or a declared wait - so a recovered worker whose
+# window is back and whose pane reads again keeps its marker, and that marker
+# then suppresses the NEXT dead-worker escalation for the same task: a silent
+# dead worker (the 2026-09 recovery incident). The pane-readable stale backbone
+# must clear it on a live agent. This drives the real watcher subprocess through
+# that exact path with a fake tmux whose window exists, whose pane reads, and
+# whose current command the real classifier resolves as a live harness agent.
+reset_state
+mk_meta dw-poll-live "test:win-poll-live"
+backdate dw-poll-live
+printf 'dw-poll-live' > "$STATE_DIR/.dead-worker-test_win-poll-live"
+[ -e "$STATE_DIR/.dead-worker-test_win-poll-live" ] \
+  || fail "the dead-worker marker must exist before the poll path runs"
+FAKEBIN="$TMP/fakebin-deadworker-poll"
+mkdir -p "$FAKEBIN"
+cat > "$FAKEBIN/tmux" <<'SH'
+#!/usr/bin/env bash
+set -u
+case "${1:-}" in
+  list-windows)
+    printf '%s\n' "${FM_FAKE_TMUX_WINDOW#*:}"
+    exit 0 ;;
+  capture-pane)
+    printf 'working...\n'
+    exit 0 ;;
+  display-message)
+    case "$*" in
+      *pane_current_command*) printf 'pi\n'; exit 0 ;;
+    esac ;;
+esac
+exit 1
+SH
+chmod +x "$FAKEBIN/tmux"
+PATH="$FAKEBIN:$PATH" FM_FAKE_TMUX_WINDOW="test:win-poll-live" \
+  FM_STATE_OVERRIDE="$STATE_DIR" FM_ROOT_OVERRIDE="$ROOT" \
+  FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 \
+  FM_HOME_SUMMARY_INTERVAL=999999 \
+  "$ROOT/bin/fm-watch.sh" > "$TMP/poll-watch.out" 2>&1 &
+poll_pid=$!
+poll_cleared=0
+poll_ticks=0
+while [ "$poll_ticks" -lt 100 ]; do
+  if [ ! -e "$STATE_DIR/.dead-worker-test_win-poll-live" ]; then
+    poll_cleared=1
+    break
+  fi
+  kill -0 "$poll_pid" 2>/dev/null || break
+  sleep 0.1
+  poll_ticks=$((poll_ticks + 1))
+done
+kill "$poll_pid" 2>/dev/null || true
+wait "$poll_pid" 2>/dev/null || true
+[ "$poll_cleared" = 1 ] \
+  || fail "the pane-readable poll path did not clear the dead-worker marker: $(cat "$TMP/poll-watch.out" 2>/dev/null || true)"
+pass "dead-worker: recovery via readable live pane clears the marker"
 
 # A done: task clears a stale dead-worker marker too.
 reset_state

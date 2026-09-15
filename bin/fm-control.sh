@@ -48,7 +48,11 @@
 #              standing charter is never rewritten.
 #              Records a durable checkpoint and that note, exits the old agent,
 #              then delegates the launch to its single owner,
-#              bin/fm-spawn.sh --relaunch. A failure before publication keeps
+#              bin/fm-spawn.sh --relaunch. A recorded endpoint the session's
+#              death removed is a regular case, not a refusal: there is no
+#              agent left to stop, and the launch owner recreates the endpoint
+#              in the recorded worktree and proves it agent-free before
+#              starting the replacement. A failure before publication keeps
 #              the prior durable record in place and reports the concrete
 #              state; it never leaves a half-transitioned task claiming to be
 #              running.
@@ -445,9 +449,15 @@ retire_busy_incarnation() {
 }
 
 # do_exit: stop the running agent, preserving endpoint and worktree. Prints
-# `already-stopped` or `stopped`.
-do_exit() {
-  local state cmd verdict cancel interrupt_result=not-needed
+# `already-stopped`, `endpoint-missing`, or `stopped`. `--allow-missing` is the
+# relaunch transaction's mode: a task whose recorded endpoint is authoritatively
+# gone has no agent left to stop, and the launch owner recreates the endpoint
+# before it starts the replacement. The plain `exit` verb never gets that mode:
+# its postcondition is a stopped agent on a PRESERVED endpoint, so reporting a
+# missing endpoint as stopped would claim a preservation it cannot prove.
+do_exit() {  # [--allow-missing]
+  local allow_missing=0 state cmd verdict cancel interrupt_result=not-needed
+  [ "${1:-}" != --allow-missing ] || allow_missing=1
   require_state_verified_backend exit
   state=$(agent_state)
   case "$state" in
@@ -455,8 +465,14 @@ do_exit() {
       printf 'already-stopped'
       return 0
       ;;
+    missing)
+      if [ "$allow_missing" = 1 ]; then
+        printf 'endpoint-missing'
+        return 0
+      fi
+      die "task $ID's recorded endpoint is gone, so there is no agent to stop; reconcile the task before any further control action"
+      ;;
     alive) ;;
-    missing) die "task $ID's recorded endpoint is gone, so there is no agent to stop; reconcile the task before any further control action" ;;
     *) die "task $ID's endpoint reads '$state' rather than a positively classified state; refusing to send a lifecycle command into an unattributed endpoint" ;;
   esac
   # A busy agent is interrupted first before the exit command is submitted.
@@ -582,6 +598,10 @@ relaunch_rollback() {
           journal_write "failed:$RELAUNCH_PHASE" "rollback=prior-record-kept-agent-dead" || true
           echo "error: $ID's agent stopped but relaunch did not reach replacement launch; no agent is running, and its work plus progress note are preserved at $WT" >&2
           ;;
+        missing)
+          journal_write "failed:$RELAUNCH_PHASE" "rollback=none-endpoint-missing" || true
+          echo "error: relaunch of $ID was interrupted while stopping the old agent, whose recorded endpoint is already gone; no agent is running, and its durable record plus progress note were retained for recovery" >&2
+          ;;
         *)
           journal_write "failed:$RELAUNCH_PHASE" "rollback=none-agent-state-$state" || true
           echo "error: relaunch of $ID failed while stopping the old agent and its state is '$state'; the durable record and progress note were retained for recovery" >&2
@@ -604,7 +624,11 @@ relaunch_rollback() {
         echo "error: $ID was relaunched on $TARGET_HARNESS but no running agent could be confirmed; its work is preserved at $WT" >&2
       else
         journal_write "failed:$RELAUNCH_PHASE" "rollback=prior-record-kept" || true
-        echo "error: $ID's agent was stopped but the replacement did not launch; no agent is running, and its work plus the recorded progress note are preserved at $WT" >&2
+        if [ "${exit_result:-}" = endpoint-missing ]; then
+          echo "error: $ID's recorded endpoint was already gone, so no agent was stopped and a live agent may still own the recorded worktree; the replacement did not launch, and its durable record plus the recorded progress note are preserved at $WT" >&2
+        else
+          echo "error: $ID's agent was stopped but the replacement did not launch; no agent is running, and its work plus the recorded progress note are preserved at $WT" >&2
+        fi
       fi
       ;;
   esac
@@ -822,7 +846,12 @@ do_relaunch() {
   journal_write noted "${CHECKPOINT_LINES[@]}" "$note_line"
 
   journal_write stopping "${CHECKPOINT_LINES[@]}" "$note_line"
-  exit_result=$(do_exit)
+  # --allow-missing: a task whose endpoint the session's death removed has no
+  # agent left to stop. The launch owner (fm-spawn --relaunch) recreates the
+  # endpoint in the recorded worktree and proves it agent-free before starting
+  # the replacement, so this transaction still spans a positively agent-free
+  # endpoint at launch time.
+  exit_result=$(do_exit --allow-missing)
   journal_write exited "${CHECKPOINT_LINES[@]}" "$note_line" "exit_result=$exit_result"
 
   # The launch owner (fm-spawn --relaunch) clears the previous incarnation's
@@ -835,6 +864,12 @@ do_relaunch() {
   if FM_CONTROL_RELAUNCH_TX="$RELAUNCH_TX" \
       "$SCRIPT_DIR/fm-spawn.sh" "${spawn_args[@]}" >/dev/null; then
     RELAUNCH_META_PUBLISHED=1
+    # The launch owner may have recreated an endpoint the session's death
+    # removed, which moves a herdr pane id; the postcondition below must be read
+    # from the record the launch just published, never from the pre-relaunch
+    # target.
+    RELAUNCH_PUBLISHED_TARGET=$(fm_backend_target_of_meta "$META")
+    [ -z "$RELAUNCH_PUBLISHED_TARGET" ] || T=$RELAUNCH_PUBLISHED_TARGET
   else
     [ "$(fm_meta_get "$META" control_relaunch_tx)" != "$RELAUNCH_TX" ] \
       || RELAUNCH_META_PUBLISHED=1

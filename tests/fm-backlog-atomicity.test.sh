@@ -1388,6 +1388,54 @@ test_completion_closes_a_scout_with_its_report() {
   pass "completion closes a scout item against its report"
 }
 
+# tasks-axi's typed --pr link accepts the GitHub /pull/<n> form only, so a
+# finished change on any other forge records its URL on the task body instead
+# and closes without that flag. The URL must not be lost either way.
+test_completion_records_a_forgejo_pull_request_in_the_body() {
+  local case_dir id out show
+  id=atomic-close-forgejo-b6
+  case_dir=$(make_home close-forgejo)
+  add_item "$case_dir" "$id"
+  start_item "$case_dir" "$id"
+  write_task_meta "$case_dir" "$id" ship no-mistakes "spawn_gen=spawn-close-forgejo" \
+    "pr=https://forgejo.seibert.tools/seibert.group/customer-journey-contract/pulls/12"
+
+  out=$(run_teardown "$case_dir" "$id") || fail "forgejo teardown failed: $out"
+  [ "$(row_state "$case_dir" "$id")" = "done" ] \
+    || fail "forgejo teardown left the item $(row_state "$case_dir" "$id")"
+  show=$(tasks-axi show "$id" --full --file "$(backlog_of "$case_dir")")
+  assert_contains "$show" \
+    "Deliverable of the finished work: PR https://forgejo.seibert.tools/seibert.group/customer-journey-contract/pulls/12" \
+    "the Forgejo pull request URL was not recorded on the finished work's body"
+  assert_contains "$show" "links: none" \
+    "the Forgejo pull request was sent through tasks-axi's typed PR link"
+  assert_absent "$(home_of "$case_dir")/state/$id.backlog-close" \
+    "the forgejo close left its pending record behind"
+  pass "completion records a Forgejo pull request on the body and closes without a typed link"
+}
+
+# The provider split must leave GitHub exactly as it was: a typed link on the
+# row, and no duplicated body line.
+test_completion_keeps_a_github_pull_request_as_a_typed_link() {
+  local case_dir id out show
+  id=atomic-close-github-typed-b6
+  case_dir=$(make_home close-github-typed)
+  add_item "$case_dir" "$id"
+  start_item "$case_dir" "$id"
+  write_task_meta "$case_dir" "$id" ship no-mistakes "spawn_gen=spawn-close-github" \
+    "pr=https://github.com/example/repo/pull/7"
+
+  out=$(run_teardown "$case_dir" "$id") || fail "github teardown failed: $out"
+  [ "$(row_state "$case_dir" "$id")" = "done" ] \
+    || fail "github teardown left the item $(row_state "$case_dir" "$id")"
+  show=$(tasks-axi show "$id" --full --file "$(backlog_of "$case_dir")")
+  assert_contains "$show" 'links: "pr:https://github.com/example/repo/pull/7"' \
+    "the GitHub pull request lost its typed completion link"
+  assert_not_contains "$show" "Deliverable of the finished work" \
+    "a GitHub pull request was duplicated onto the body"
+  pass "completion keeps a GitHub pull request as tasks-axi's typed link"
+}
+
 test_completion_refuses_a_legacy_record_without_an_incarnation() {
   local case_dir id meta out rc=0
   id=atomic-close-legacy-no-incarnation-b7
@@ -1819,6 +1867,33 @@ test_recovery_replays_a_close_an_interrupted_cleanup_left_open() {
   assert_not_contains "$out" "endpoint or local copy may remain" \
     "recovery claimed incomplete cleanup without task metadata"
   pass "session start finishes a close an interrupted cleanup recorded but never landed"
+}
+
+# The recorded close is authoritative for a URL tasks-axi's typed link cannot
+# carry: replay records the Forgejo pull request on the body and closes without
+# --pr, so a home already carrying such a marker heals with no hand edit.
+test_recovery_replays_a_forgejo_close_into_the_body() {
+  local case_dir id out show
+  id=atomic-heal-forgejo-b9
+  case_dir=$(make_home heal-forgejo-close)
+  add_item "$case_dir" "$id"
+  start_item "$case_dir" "$id"
+  printf 'id=%s\ndata=%s\nspawn_gen=spawn-heal-forgejo\narg=--pr\narg=https://forgejo.seibert.tools/seibert.group/customer-journeys/pulls/404\n' \
+    "$id" "$(home_of "$case_dir")/data" \
+    > "$(home_of "$case_dir")/state/$id.backlog-close"
+
+  out=$(run_bootstrap "$case_dir")
+  [ "$(row_state "$case_dir" "$id")" = "done" ] \
+    || fail "session start left a recorded Forgejo close at $(row_state "$case_dir" "$id"): $out"
+  show=$(tasks-axi show "$id" --full --file "$(backlog_of "$case_dir")")
+  assert_contains "$show" \
+    "Deliverable of the finished work: PR https://forgejo.seibert.tools/seibert.group/customer-journeys/pulls/404" \
+    "the replayed Forgejo close lost its pull request URL"
+  assert_contains "$show" "links: none" \
+    "the replayed Forgejo close still went through tasks-axi's typed PR link"
+  assert_absent "$(home_of "$case_dir")/state/$id.backlog-close" \
+    "a replayed Forgejo close left its record behind"
+  pass "session start replays a recorded Forgejo close onto the body without a typed link"
 }
 
 test_recovery_backfills_a_recorded_link_on_an_already_done_item() {
@@ -2647,6 +2722,8 @@ test_dispatch_does_not_resurrect_a_row_closed_after_preflight
 test_dispatch_fails_when_its_row_vanishes_after_preflight
 test_completion_closes_a_local_only_ship_before_reporting_success
 test_completion_closes_a_scout_with_its_report
+test_completion_records_a_forgejo_pull_request_in_the_body
+test_completion_keeps_a_github_pull_request_as_a_typed_link
 test_completion_refuses_a_legacy_record_without_an_incarnation
 test_completion_refuses_ambiguous_incarnation_metadata
 test_completion_records_a_relative_report_for_relocated_data
@@ -2665,6 +2742,7 @@ test_recovery_marks_an_owned_record_in_flight
 test_recovery_rejects_an_internal_worker_record_symlink
 test_recovery_ignores_a_symlinked_worker_record
 test_recovery_replays_a_close_an_interrupted_cleanup_left_open
+test_recovery_replays_a_forgejo_close_into_the_body
 test_recovery_backfills_a_recorded_link_on_an_already_done_item
 test_recovery_preserves_a_close_when_the_backlog_cannot_be_read
 test_recovery_retry_preserves_incomplete_cleanup_warning

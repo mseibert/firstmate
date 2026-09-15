@@ -40,9 +40,10 @@ Muse and Gemini are verified only for crewmate and scout work, never a secondmat
 ## Detection
 
 `../../../bin/fm-harness.sh` prints firstmate's own harness from verified environment markers, then process ancestry.
+A hand-started session can inherit a foreign marker and carry `CLAUDECODE=1` and `PI_CODING_AGENT=true` together; that collision is resolved by the nearest harness ancestor, so a real Pi ancestor resolves the Pi identity while any other or unreadable chain stays Claude, never relabelling a real Claude process Pi.
 Only `FM_PI_HARNESS=pi-signed` at the launch boundary together with `PI_CODING_AGENT=true` selects Pi-signed; shared unmarked launcher ancestry remains Pi.
 omp publishes no marker of its own; `FM_OMP_HARNESS=omp` is Firstmate's launch marker and the anchored process name `omp` is its ancestry evidence, as `references/harness/omp.md` records.
-`../../../bin/fm-spawn.sh` owns worker marker establishment, while the README launch command owns the signed-primary boundary.
+`../../../bin/fm-spawn.sh` owns worker marker establishment, clearing `CLAUDECODE` at the Pi launch boundary and `PI_CODING_AGENT` at the Claude one, while the README launch command owns the signed-primary boundary.
 `../../../bin/fm-harness.sh crew` resolves `config/crew-harness`, where absent or `default` means firstmate's own harness.
 `../../../bin/fm-harness.sh secondmate` resolves `config/secondmate-harness` -> `config/crew-harness` -> firstmate's own harness.
 `../../../bin/fm-spawn.sh` re-resolves on every spawn, and an explicit per-spawn argument wins for that spawn.

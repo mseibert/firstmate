@@ -3,7 +3,7 @@ name: updatefirstmate
 description: >-
   Self-update a running firstmate and its secondmates to the latest from origin.
   Use when the captain invokes /updatefirstmate (e.g. "/updatefirstmate", "update firstmate", "pull the latest firstmate").
-  Fast-forwards this firstmate repo's default branch and every local or remote secondmate through its guarded update path (never forced, never disruptive), then re-reads AGENTS.md and restarts every live second mate through the persist-gated restart, with a fallback re-read nudge only where a restart cannot be proven.
+  Advances this firstmate repo's default branch or durable `seibert/main` fork line and every local or remote secondmate through its guarded update path (never forced, never disruptive), then re-reads AGENTS.md and restarts every live second mate through the persist-gated restart, with a fallback re-read nudge only where a restart cannot be proven.
 user-invocable: true
 metadata:
   internal: true
@@ -27,9 +27,10 @@ The only live mates that do not restart are the ones whose home the update pass 
 
 **One-time rollout note:** the update that carries this change is still executed by the previous release, which restarts only the mates whose `AGENTS.md` or `.agents/skills/` moved on that pass. After it completes, run `bin/fm-secondmate-restart.sh <fm-id>...` once with every live second mate ID, not only the ones that release named; later updates follow the normal flow below.
 
-The update is **fast-forward only** - the same sanctioned self-write as the fleet sync firstmate already runs.
+The update is **fast-forward only** for every ordinary target - the same sanctioned self-write as the fleet sync firstmate already runs.
 For a remote route, it updates the configured Firstmate code root on that host from its own origin, then guardedly fast-forwards the persistent home to that code-root commit.
-It never forces, never creates a merge commit, never stashes, and advances a target only on a clean fast-forward; anything dirty, diverged, offline, or on the wrong branch is skipped and reported.
+It never forces, never stashes, and advances an ordinary target only on a clean fast-forward; anything dirty, diverged, offline, or on the wrong branch is skipped and reported.
+The one exception is a primary checkout on the durable `seibert/main` fork line, whose upstream reconciliation can merge the clean `main` mirror into the line; [`bin/fm-ff-lib.sh`](../../../bin/fm-ff-lib.sh) owns that guarded path, and the line's own commits are never rebased or force-moved.
 A tracked-files fast-forward leaves the gitignored operational dirs (data/, state/, config/, projects/, .no-mistakes/) untouched, so a secondmate's in-flight work is never disrupted.
 This touches only the firstmate repo and its own worktrees, never anything under `projects/`.
 
@@ -39,7 +40,7 @@ This touches only the firstmate repo and its own worktrees, never anything under
    ```sh
    bin/fm-update.sh
    ```
-   It fast-forwards this firstmate repo's default branch from origin, then updates every registered local or remote secondmate home through its placement-specific guarded path.
+   It advances this firstmate repo's default branch or durable `seibert/main` fork line from origin, then updates every registered local or remote secondmate home through its placement-specific guarded path.
    It prints one status line per target (`updated <old>..<new>` / `already current` / `skipped: <reason>`), followed by three action lines that tell you exactly what to do next:
    - `reread-firstmate: yes|no`
    - `restart-secondmates: fm-<id>...|none`
@@ -91,8 +92,8 @@ This touches only the firstmate repo and its own worktrees, never anything under
 
 ## Safety
 
-- **Fast-forward only.**
-  A target that has diverged, is dirty, is offline, or is on a non-default branch is skipped and reported, never forced or stashed.
+- **Fast-forward only for ordinary targets.**
+  A target that has diverged, is dirty, is offline, or is on a branch other than the default branch or the durable `seibert/main` fork line is skipped and reported, never forced or stashed.
   Nothing with unlanded work is ever discarded - this is prime directive #3.
 - **Only the firstmate repo and its worktrees** are touched, never `projects/`.
   It is the same sanctioned self-write as the fleet sync.

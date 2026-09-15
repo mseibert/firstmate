@@ -226,6 +226,33 @@ test_arm_refuses_to_kill_a_non_brake_lock_pid() {
   pass "arm fails closed on a lock pid that is not the capacity brake"
 }
 
+test_arm_refuses_a_lock_pid_it_cannot_identify() {
+  local home out pid psdir
+  home=$(make_home unreadable)
+  make_brake "$home"
+  SYSTEMCTL=$(make_systemctl "$home")
+  out="$home/arm.out"
+  psdir="$home/unreadable-ps"
+  mkdir -p "$psdir" "$home/empty-proc"
+  printf '#!/usr/bin/env bash\nexit 1\n' > "$psdir/ps"
+  chmod 0755 "$psdir/ps"
+
+  sleep 1000 &
+  pid=$!
+  printf '%s\n' "$pid" > "$home/state/.capacity-brake.lock"
+
+  # No readable /proc entry and no usable ps: the command line cannot be read,
+  # so the pid must not be trusted as the brake even though it is alive.
+  run_arm "$home" "$out" FM_PROC_ROOT_OVERRIDE="$home/empty-proc" "PATH=$psdir:$PATH"
+  expect_code 1 "$?" "arm should refuse a lock pid whose command line cannot be read"
+  kill -0 "$pid" 2>/dev/null \
+    || fail "arm signalled a process whose command line it could not read"
+  kill "$pid" 2>/dev/null || true
+  wait "$pid" 2>/dev/null || true
+  assert_absent "$home/unit-dir/$UNIT_NAME" "arm installed the unit after failing to identify the lock pid"
+  pass "arm fails closed when the lock pid's command line is unreadable"
+}
+
 test_arm_fails_closed_when_the_template_is_missing() {
   local home out
   home=$(make_home notemplate)
@@ -351,6 +378,7 @@ test_arm_installs_the_unit_with_restart_always
 test_rearm_is_idempotent_and_never_starts_a_second_brake
 test_arm_replaces_the_naked_loop
 test_arm_refuses_to_kill_a_non_brake_lock_pid
+test_arm_refuses_a_lock_pid_it_cannot_identify
 test_arm_fails_closed_when_the_template_is_missing
 test_check_is_silent_while_the_beat_is_fresh
 test_check_alarms_when_the_beat_is_stale_or_absent
