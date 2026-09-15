@@ -101,6 +101,8 @@ It starts the same workers directly on Linux, recreates the `~/.local/bin/fm-rem
 It never installs packages or overwrites a non-Firstmate file at a reserved wrapper path.
 The dedicated Herdr launch agent owns only the remote-secondmate `fm-remote` server and does not inspect, rewrite, start, stop, or require the user's interactive `default` session or its `dev.firstmate.herdr` launch agent.
 It re-derives every check from the host afterwards, so what it prints is the state after the repair rather than the intent of one.
+A worker ownership lock whose recorded owner cannot be verified is never reclaimed automatically: the worker waits out its bounded acquisition budget and fails rather than risk displacing a live owner, and its log names the lock directory it could not acquire.
+Recover that host by stopping its remote-job worker processes and removing that `worker.lock` directory, then rerunning `--fix`.
 
 These steps are never automated and are always reported rather than silently attempted, because SSH cannot create a GUI session from nothing:
 

@@ -19,8 +19,8 @@
 # contracts. This serving loop implements each active lane as a tracked,
 # top-level --lane process that claims one job, records itself as the claim's
 # supervisor, and runs it to publication. Shutdown stops every tracked lane and
-# its recorded command group, leaving interrupted records for the replacement
-# worker's orphan recovery.
+# the recorded command group that lane still owns, leaving interrupted records
+# for the replacement worker's orphan recovery.
 #
 # The worker is abandoned when its configured FM_ROOT stops being a genuine
 # Firstmate checkout - the state a pruned no-mistakes gate worktree, a returned
@@ -39,6 +39,12 @@
 # consecutive-failure backoff, but not that total restart guard, so a child
 # that dies just past the healthy threshold cannot restart without bound
 # either. fm-on's ensure path restarts a worker that gave up.
+#
+# The shared library header owns the worker ownership record, the heartbeat's
+# readiness-only role, and which records an acquirer may reclaim. This serving
+# loop stops its lanes and exits when its own record is gone, and the Linux
+# supervisor checks the same record and stops instead of starting a generation
+# beside a live owner.
 set -u
 
 # A non-numeric override falls back to the default rather than crashing the
@@ -59,6 +65,8 @@ FM_ROOT=${FM_ROOT_OVERRIDE:-$(CDPATH='' cd "$SCRIPT_DIR/.." && pwd -P)}
 
 WORKER_LOCK=
 WORKER_LOCK_HELD=0
+WORKER_LOCK_START=
+WORKER_LOCK_COMMAND=
 WORKER_RELEASE_OWNERSHIP=1
 WORKER_SUPERVISED_PID=
 WORKER_PREEMPTIBLE=0
@@ -123,6 +131,29 @@ worker_publish_lock_owner() {
   mv -f -- "$command_tmp" "$WORKER_LOCK/command" || { rm -f -- "$pid_tmp" "$start_tmp" "$command_tmp"; return 1; }
   mv -f -- "$start_tmp" "$WORKER_LOCK/start" || { rm -f -- "$pid_tmp" "$start_tmp" "$WORKER_LOCK/command"; return 1; }
   mv -f -- "$pid_tmp" "$WORKER_LOCK/pid" || { rm -f -- "$pid_tmp" "$WORKER_LOCK/start" "$WORKER_LOCK/command"; return 1; }
+  # The recorded values are cached for the serving loop's cheap self-check.
+  WORKER_LOCK_START=$start
+  WORKER_LOCK_COMMAND=$command
+}
+
+# The lock still records this exact process, checked without process inspection
+# because the directory is exclusively ours until a replacement removes or
+# rewrites it. The quarantine check is defensive: a marker means an earlier
+# shutdown could not confirm its command tree stopped, and serving must not
+# continue over that even though every marker writer also exits.
+worker_lock_records_self() {
+  local pid start command
+  [ "$WORKER_LOCK_HELD" -eq 1 ] || return 1
+  [ -n "$WORKER_LOCK_START" ] && [ -n "$WORKER_LOCK_COMMAND" ] || return 1
+  [ -d "$WORKER_LOCK" ] && [ ! -L "$WORKER_LOCK" ] || return 1
+  [ ! -e "$WORKER_LOCK/quarantine" ] && [ ! -L "$WORKER_LOCK/quarantine" ] || return 1
+  [ ! -L "$WORKER_LOCK/pid" ] && [ ! -L "$WORKER_LOCK/start" ] && [ ! -L "$WORKER_LOCK/command" ] || return 1
+  IFS= read -r pid < "$WORKER_LOCK/pid" 2>/dev/null || return 1
+  [ "$pid" = "${BASHPID:-$$}" ] || return 1
+  IFS= read -r start < "$WORKER_LOCK/start" 2>/dev/null || return 1
+  [ "$start" = "$WORKER_LOCK_START" ] || return 1
+  IFS= read -r command < "$WORKER_LOCK/command" 2>/dev/null || return 1
+  [ "$command" = "$WORKER_LOCK_COMMAND" ] || return 1
 }
 
 worker_lock_recent() {
@@ -133,10 +164,21 @@ worker_lock_recent() {
   [ $((now - mtime)) -le 10 ]
 }
 
+# A lock directory whose pid was never published is not an owner: the
+# publisher died between mkdir and the pid move. It looks the same while a
+# live publisher is still writing, so it counts as abandoned only once the
+# publish window has passed.
+worker_lock_publish_abandoned() {
+  [ -d "$WORKER_LOCK" ] && [ ! -L "$WORKER_LOCK" ] || return 1
+  [ ! -e "$WORKER_LOCK/pid" ] && [ ! -L "$WORKER_LOCK/pid" ] || return 1
+  worker_lock_recent && return 1
+  return 0
+}
+
 worker_quarantined_execution_stopped() { # <account-home>
   local account_home=$1 job state kind file pid
   fm_remote_job_regular_bounded "$WORKER_LOCK/quarantine" 256 || return 1
-  fm_remote_job_lock_owner_matches_process "$account_home" && return 1
+  fm_remote_job_lock_owner_status "$account_home" && return 1
   for job in "$FM_REMOTE_JOB_JOBS"/job-*; do
     [ -d "$job" ] && [ ! -L "$job" ] || continue
     state=$(fm_remote_job_read_state "$job" 2>/dev/null || true)
@@ -158,7 +200,7 @@ worker_recover_quarantine() { # <account-home>
 }
 
 worker_acquire_lock() {
-  local account_home=$1 attempt=0
+  local account_home=$1 attempt=0 status
   while [ "$attempt" -lt 150 ]; do
     if (umask 077; mkdir "$WORKER_LOCK") 2>/dev/null; then
       WORKER_LOCK_HELD=1
@@ -170,22 +212,32 @@ worker_acquire_lock() {
       worker_recover_quarantine "$account_home" || return 3
       continue
     fi
-    if fm_remote_job_lock_owner_matches_process "$account_home"; then return 2; fi
-    if fm_remote_job_probe "$account_home" || worker_lock_recent; then
+    fm_remote_job_lock_owner_status "$account_home"
+    status=$?
+    if [ "$status" -eq 0 ]; then return 2; fi
+    # Wait out anything that could still be a live owner; only a directory with
+    # no published pid past its publish window has nobody left to wait for, and
+    # that falls through to the reclaim below.
+    if { [ "$status" -eq 2 ] && ! worker_lock_publish_abandoned; } \
+      || fm_remote_job_probe "$account_home" || worker_lock_recent; then
       attempt=$((attempt + 1))
       sleep 0.1
       continue
     fi
     [ ! -L "$WORKER_LOCK/pid" ] && [ ! -L "$WORKER_LOCK/start" ] && [ ! -L "$WORKER_LOCK/command" ] || return 1
     rm -f -- "$WORKER_LOCK/pid" "$WORKER_LOCK/start" "$WORKER_LOCK/command" || return 1
-    rmdir "$WORKER_LOCK" || return 1
+    rm -f -- "$WORKER_LOCK"/.pid.* "$WORKER_LOCK"/.start.* "$WORKER_LOCK"/.command.* \
+      "$WORKER_LOCK"/.quarantine.* || return 1
+    # A concurrent release may win the rmdir; the next iteration either claims
+    # the freed lock or observes the new owner.
+    rmdir "$WORKER_LOCK" 2>/dev/null || true
   done
   return 1
 }
 
 worker_publish_quarantine() {
   local tmp
-  [ "$WORKER_LOCK_HELD" -eq 1 ] || return 1
+  worker_lock_records_self || return 1
   tmp=$(umask 077; mktemp "$WORKER_LOCK/.quarantine.XXXXXX") || return 1
   printf 'active execution could not be confirmed stopped\n' > "$tmp" || { rm -f -- "$tmp"; return 1; }
   chmod 600 "$tmp" || { rm -f -- "$tmp"; return 1; }
@@ -368,7 +420,7 @@ worker_lane_identity_matches() { # <pid> <start>
 }
 
 worker_stop_active_execution() {
-  local i=0 count=${#WORKER_LANE_PIDS[@]} job pid start failed=0
+  local i=0 count=${#WORKER_LANE_PIDS[@]} job pid start failed=0 recorded
   while [ "$i" -lt "$count" ]; do
     pid=${WORKER_LANE_PIDS[$i]}
     start=${WORKER_LANE_STARTS[$i]}
@@ -377,7 +429,13 @@ worker_stop_active_execution() {
     if worker_lane_identity_matches "$pid" "$start"; then kill -KILL "$pid" 2>/dev/null || true; fi
     wait "$pid" 2>/dev/null || true
     if [ -d "$job" ] && [ ! -L "$job" ]; then
-      worker_stop_recorded_execution "$job" || failed=1
+      # Only a record this lane still owns may be signalled: a replacement
+      # worker may have reclaimed it and published its own claim, and stopping
+      # that claim would destroy the new owner's job.
+      recorded=$(worker_read_process_id "$job/.claim/supervisor" 2>/dev/null || true)
+      if [ -n "$recorded" ] && [ "$recorded" = "$pid" ]; then
+        worker_stop_recorded_execution "$job" || failed=1
+      fi
     fi
     i=$((i + 1))
   done
@@ -393,13 +451,15 @@ worker_stop_active_execution() {
 # isolated group, and the supervisor in that group forwards a second stop signal
 # to this same serving child, so a repeat is the normal case and not an
 # exception. Restoring the default let that second signal kill the shutdown part
-# way through, which left the ownership lock behind holding a half-written temp
-# file that no later worker could clear, so every replacement then failed to
-# report ready. A shutdown that hangs is still stopped: the caller escalates to
-# KILL, which no disposition can block.
+# way through, leaving the ownership lock half-cleaned for a later acquirer to
+# reclaim. A shutdown that hangs is still stopped: the caller escalates to KILL,
+# which no disposition can block.
 worker_shutdown() {
   trap '' HUP INT TERM
   worker_publish_quarantine || {
+    # The lock no longer names this process, so this generation cannot guard
+    # it; the serving loop's ownership check stops its lanes on the next poll,
+    # and a caller that needs immediacy escalates to KILL.
     worker_error "cannot guard worker ownership for shutdown"
     trap worker_shutdown HUP INT TERM
     return 0
@@ -424,6 +484,25 @@ worker_exit_cleanup() {
     WORKER_RELEASE_OWNERSHIP=0
   fi
   worker_cleanup
+}
+
+# The lock record no longer names this process, so another generation owns the
+# queue. Stop this generation's lanes and leave the lock alone: the record now
+# belongs to the new owner and must never be released or removed from here.
+worker_exit_lock_lost() {
+  WORKER_RELEASE_OWNERSHIP=0
+  worker_stop_active_execution || worker_error "could not stop the active command tree after losing worker ownership"
+}
+
+# Exit 0 so the Linux supervisor stops instead of restarting this generation
+# beside the owner that just took the queue. macOS launchd's KeepAlive restarts
+# the process regardless of status; the restarted worker runs the same check and
+# exits again, which launchd throttles, so the re-check cycle is the pre-existing
+# shape for a foreign owner there.
+worker_stop_after_lock_loss() {
+  worker_error "worker ownership moved to another generation; stopping instead of serving without it"
+  worker_exit_lock_lost
+  exit 0
 }
 
 worker_claim() { # <job-dir>
@@ -1011,12 +1090,13 @@ main() {
     0) ;;
     2) exit 0 ;;
     3) worker_error "worker ownership is quarantined after an unconfirmed shutdown"; exit 75 ;;
-    *) worker_error "cannot acquire or safely reclaim worker ownership"; exit 1 ;;
+    *) worker_error "cannot acquire or safely reclaim worker ownership at $WORKER_LOCK"; exit 1 ;;
   esac
   trap worker_shutdown HUP INT TERM
   worker_publish_identity "$account_home" || { worker_error "cannot publish worker code identity"; exit 1; }
   worker_publish_pid || { worker_error "cannot publish worker pid"; exit 1; }
   while :; do
+    worker_lock_records_self || worker_stop_after_lock_loss
     worker_write_heartbeat || { worker_error "cannot update worker heartbeat"; exit 1; }
     # Checked right after a fresh heartbeat, so the grace window cannot make a
     # still-healthy worker read as unready to a concurrent probe.
@@ -1029,6 +1109,9 @@ main() {
       fm_remote_job_reap_stale "$account_home" || true
       worker_reap=1
     fi
+    # Re-checked immediately before dispatch so a takeover during the
+    # heartbeat or sweep cannot let this generation claim a new job.
+    worker_lock_records_self || worker_stop_after_lock_loss
     worker_process_once "$account_home"
     sleep "$FM_REMOTE_JOB_POLL_SECONDS"
   done
@@ -1075,6 +1158,13 @@ worker_supervise_linux() {
       worker_error "configured FM_ROOT $FM_ROOT no longer exists; stopping the abandoned worker supervisor"
       return 0
     fi
+    # A live owner elsewhere means this supervisor has nothing to serve; never
+    # start (or restart) a generation beside the owner that already holds the
+    # queue.
+    if fm_remote_job_lock_owner_status "$account_home"; then
+      worker_error "another remote job worker owns the queue; stopping the supervisor"
+      return 0
+    fi
     started=$SECONDS
     "$SCRIPT_DIR/fm-remote-job-worker.sh" --serve &
     WORKER_SUPERVISED_PID=$!
@@ -1090,6 +1180,10 @@ worker_supervise_linux() {
     fi
     worker_supervisor_cleanup_dead_child "$account_home" "$WORKER_SUPERVISED_PID" || true
     WORKER_SUPERVISED_PID=
+    if fm_remote_job_lock_owner_status "$account_home"; then
+      worker_error "another remote job worker owns the queue; stopping the supervisor"
+      return 0
+    fi
     restarts=$((restarts + 1))
     if [ "$restarts" -ge "$FM_REMOTE_JOB_SUPERVISOR_MAX_RESTARTS" ]; then
       worker_error "remote job worker exited $restarts times; stopping the supervisor"
