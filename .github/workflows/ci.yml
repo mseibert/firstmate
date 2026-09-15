@@ -137,12 +137,15 @@ jobs:
     runs-on: ubuntu-latest
     # Cap is a hang tripwire, not the expected healthy end of the lane, so it
     # must sit well clear of the slowest shard a loaded runner really produces.
-    # The refreshed hints give every shard 16m25s of conservative assignment
-    # weight, and the slowest shard measured green before that refresh ran 19m41s
-    # of test time in a job that then used its entire 20-minute budget, which is
-    # how this lane kept getting cancelled instead of reporting a verdict.
-    # 30 minutes restores the documented margin over the worst measured shard.
-    timeout-minutes: 30
+    # The refreshed hints give every shard 16.43 minutes of conservative
+    # assignment weight, but a loaded runner can stretch one script far past its
+    # hint: on 2026-09-15 shard 1 ran all 30 tests green in 29m44s while
+    # fm-watch-triage alone took 22m17s against its 6m36s hint, and the
+    # 30-minute cap cancelled the job before its timing artifact finished
+    # uploading even though every test had passed.
+    # 45 minutes keeps the bound a hang tripwire with roughly 1.5x margin over
+    # that worst measured shard instead of the routine end of the lane.
+    timeout-minutes: 45
     strategy:
       # Every shard reports so one failure never hides another shard's result.
       fail-fast: false
