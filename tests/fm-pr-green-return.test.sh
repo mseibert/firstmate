@@ -472,7 +472,6 @@ test_moved_head_queues_its_own_mandate() {
   assert_contains "$out" "head $HEAD" "the verified head did not queue its mandate"
   assert_grep "head=$HEAD" "$marker" "the record did not name the verified head"
   assert_grep "notified=due:$HEAD" "$marker" "the verified head was not marked notified"
-  assert_grep "queued_head=$HEAD" "$marker" "the verified head was not marked queued"
   [ "$(queue_keys "$dir" | grep -c 'pr-green-return:t1')" = 1 ] || fail "the verified head was not queued exactly once"
 
   # The branch moves to a new head: the old mandate must not be counted for it.
@@ -481,7 +480,6 @@ test_moved_head_queues_its_own_mandate() {
   assert_not_contains "$out" "head $head2" "the moved head queued a mandate before its wait"
   assert_grep "head=$head2" "$marker" "the record did not name the moved head"
   assert_no_grep "notified=due:$head2" "$marker" "the moved head was claimed notified before its wait"
-  assert_grep "queued_head=$HEAD" "$marker" "the moved head did not mark the old mandate stale"
   [ "$(queue_keys "$dir" | grep -c 'pr-green-return:t1')" = 1 ] || fail "the moved head was queued before its wait"
 
   # When its own wait elapses, the moved head queues its own mandate under the
@@ -490,7 +488,6 @@ test_moved_head_queues_its_own_mandate() {
   out=$(scan_case "$dir" "$((h2_epoch + 600))")
   assert_contains "$out" "head $head2" "the moved head did not queue its own mandate"
   assert_grep "notified=due:$head2" "$marker" "the moved head was not marked notified"
-  assert_grep "queued_head=$head2" "$marker" "the moved head was not marked queued"
   [ "$(queue_keys "$dir" | grep -c 'pr-green-return:t1')" = 2 ] || fail "the moved head did not queue its own mandate beside the stale row"
   rows=$(queue_rows "$dir")
   newest=$(printf '%s\n' "$rows" | awk -F'\t' '$4 == "pr-green-return:t1" { row = $0 } END { print row }')
@@ -527,7 +524,6 @@ test_cross_class_verdict_supersedes_the_stale_mandate() {
   scan_case "$dir" "$h2_epoch" >/dev/null
   scan_case "$dir" "$((h2_epoch + 600))" >/dev/null
   assert_grep "notified=held:$head2:hard-stop-5" "$marker" "the moved head's hold was not recorded"
-  assert_grep "queued_head=$head2" "$marker" "the moved head's queued row was not recorded"
 
   presented=$(presented_rows "$dir")
   [ "$(printf '%s\n' "$presented" | grep -c .)" = 1 ] || fail "the drain presentation offered the stale mandate beside the hold"

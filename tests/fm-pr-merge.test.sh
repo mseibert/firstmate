@@ -86,6 +86,9 @@
 #   (bi) an expected head equal to the live head merges, a mismatch or malformed
 #       or explicitly empty value refuses before any merge, and GitHub refuses
 #       the flag it cannot compare
+#   (bj) a bound-merge mandate re-reads the live return-path verdict: an
+#       unchanged clean verdict still merges, while a policy hold at the same
+#       head refuses and names the holding hard stop
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -104,6 +107,7 @@ MR_PROJECT_URL="https://$MR_HOST/$MR_PATH"
 MR_URL="$MR_PROJECT_URL/-/merge_requests/7"
 MR_HEAD=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 MR_STALE_HEAD=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+MR_BASE=eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee
 
 JQ_BIN=$(command -v jq) || fail "these tests read glab's JSON with the real jq, which was not found"
 REAL_MV=$(command -v mv) || fail "these tests need mv to simulate a failed poll publish"
@@ -133,6 +137,41 @@ make_case() {
   # one that resolves for cases that want pr_head recorded.
   printf '%s\n' "$case_dir"
 }
+
+# The merge-policy fixture the return-path re-verification reads. It mirrors the
+# shape bin/fm-pr-green-return.sh parses: the autonomous allowlist table and
+# Section 5's sensitive-glob block.
+write_merge_policy() { # <dir> <allowlisted repo name...>
+  local dir=$1 repo
+  shift
+  mkdir -p "$dir/fix"
+  {
+    printf '# PR-Merge-Policy\n\n## The rule\n\nDefault is ask.\n\n'
+    printf '| Repo | [Autonomous | Ask] | Why |\n|---|---|---|\n'
+    for repo in "$@"; do
+      printf '| %s | Autonomous | fixture |\n' "$repo"
+    done
+    cat <<'EOF'
+## Hard-stops
+
+### 5. Diff touches sensitive ground
+
+against:
+
+```
+.github/workflows/**  **/*.sql  **/auth/**
+```
+
+### 6. Not the operator PR
+EOF
+  } > "$dir/fix/policy.md"
+}
+
+# The five-lens bodies the return path's gate check reads: one clean result and
+# one table whose sixth row names an open finding. The fixtures inject them with
+# jq, so real newlines are safe.
+GATE_CLEAN=$'## Five-lens gate\n\nResult: clean\n'
+GATE_HELD=$'## Five-lens gate\n\n| Lens | Ran | Findings | Fixed |\n|---|---|---|---|\n| code-review | yes | 0 | 0 |\n| maintainability-review | yes | 0 | 0 |\n| architecture-system-design-reviewer | yes | 0 | 0 |\n| design-decision-questioner | yes | 0 | 0 |\n| self-containment-review | yes | 0 | 0 |\n| security-review (zusaetzlich) | yes | 1 offen | 0 |\n\nResult: 1 finding open - see security-review\n'
 
 # gh-axi mock recording every invocation to a log file, and gh mock answering
 # headRefOid for fm-pr-check.sh's pr_head lookup. Args: case_dir head_sha
@@ -282,6 +321,14 @@ case "${1:-} ${2:-}" in
     : > "$case_dir/glab-merge-called"
     exit 0
     ;;
+  "api user") cat "$case_dir/glab-user.json" ;;
+  "api "*)
+    case "$2" in
+      */merge_requests/*/changes) cat "$case_dir/glab-changes.json" ;;
+      */repository/commits/*) cat "$case_dir/glab-commit.json" ;;
+      *) exit 1 ;;
+    esac
+    ;;
 esac
 exit 0
 SH
@@ -338,6 +385,24 @@ make_gitlab_case() {
   printf '%s\n' "$case_dir"
 }
 
+# make_green_gitlab_case <name> [<gate body>]: a GitLab case whose live reads
+# also satisfy bin/fm-pr-green-return.sh's own report, so a mandate's
+# re-verification classifies the merge request as due, or as held with a held
+# gate body. Echoes the case dir.
+make_green_gitlab_case() {
+  local name=$1 body=${2:-$GATE_CLEAN} case_dir tmp
+  case_dir=$(make_gitlab_case "$name")
+  write_merge_policy "$case_dir" project
+  printf '{"username":"op"}\n' > "$case_dir/glab-user.json"
+  printf '{"committed_date":"2026-01-01T00:00:00Z"}\n' > "$case_dir/glab-commit.json"
+  printf '{"changes":[{"new_path":"src/app.ts"}],"overflow":false}\n' > "$case_dir/glab-changes.json"
+  tmp=$(mktemp)
+  jq --arg body "$body" --arg base "$MR_BASE" \
+    '. + {description: $body, author: {username: "op"}, diff_refs: {base_sha: $base}}' \
+    "$case_dir/mr.json" > "$tmp" && mv "$tmp" "$case_dir/mr.json"
+  printf '%s\n' "$case_dir"
+}
+
 # mirror_path_without <dir> <tool> [<bindir> ...]: the whole search path
 # re-exposed by symlink except one tool, because a real copy anywhere on PATH
 # would prove nothing. The named bindirs are mirrored ahead of the search path,
@@ -374,6 +439,7 @@ run_pr_merge() {
   FM_ROOT_OVERRIDE="$ROOT" \
   FM_HOME="${FM_TEST_HOME:-$ROOT}" \
   FM_STATE_OVERRIDE="$case_dir/state" \
+  FM_PR_GREEN_RETURN_POLICY="$case_dir/fix/policy.md" \
   FM_TEST_GH_AXI_LOG="$case_dir/gh-axi.log" \
   FM_TEST_GH_LOG="$case_dir/gh.log" \
   FM_TEST_GH_OUTCOME="$case_dir/github-outcome" \
@@ -1694,7 +1760,7 @@ test_gitlab_stale_recorded_head_is_reported() {
 
 test_expected_head_matching_the_live_head_merges() {
   local case_dir rc merge_line body
-  case_dir=$(make_gitlab_case expected-head-match)
+  case_dir=$(make_green_gitlab_case expected-head-match)
 
   set +e
   run_pr_merge "$case_dir" task-x1 "$MR_URL" --expected-head "$MR_HEAD" \
@@ -1710,7 +1776,7 @@ test_expected_head_matching_the_live_head_merges() {
     *--expected-head*) fail "expected-head-match: the expected head was forwarded to glab" ;;
   esac
 
-  case_dir=$(make_forgejo_case expected-head-forgejo-match)
+  case_dir=$(make_green_forgejo_case expected-head-forgejo-match)
   set +e
   run_pr_merge "$case_dir" task-x1 "$FJ_URL" --expected-head "$FJ_HEAD" \
     > "$case_dir/stdout" 2> "$case_dir/stderr"
@@ -1757,9 +1823,51 @@ test_expected_head_mismatch_refuses_before_any_merge() {
   pass "an expected head that differs from the live head refuses before any merge on both forges"
 }
 
+test_stale_mandate_refuses_when_the_same_head_is_held() {
+  local case_dir rc
+  case_dir=$(make_green_gitlab_case stale-mandate-gitlab-held "$GATE_HELD")
+  set +e
+  run_pr_merge "$case_dir" task-x1 "$MR_URL" --expected-head "$MR_HEAD" \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+  expect_code 1 "$rc" "stale-mandate-gitlab-held: a same-head policy hold must refuse the mandate"
+  assert_grep 'held - hard-stop-1' "$case_dir/stderr" \
+    "stale-mandate-gitlab-held: the refusal did not name the holding hard stop"
+  [ -z "$(glab_merge_line "$case_dir/glab.log")" ] \
+    || fail "stale-mandate-gitlab-held: a stale mandate merged a held merge request"
+
+  case_dir=$(make_green_forgejo_case stale-mandate-forgejo-held "$GATE_HELD")
+  set +e
+  run_pr_merge "$case_dir" task-x1 "$FJ_URL" --expected-head "$FJ_HEAD" \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+  expect_code 1 "$rc" "stale-mandate-forgejo-held: a same-head policy hold must refuse the mandate"
+  assert_grep 'held - hard-stop-1' "$case_dir/stderr" \
+    "stale-mandate-forgejo-held: the refusal did not name the holding hard stop"
+  assert_absent "$case_dir/tea-merge-called" \
+    "stale-mandate-forgejo-held: a stale mandate merged a pull request the scan holds"
+
+  # A policy the return path cannot read is a hold of its own, and the refusal
+  # must name it rather than mask it behind the head comparison.
+  case_dir=$(make_forgejo_case stale-mandate-policy-unreadable)
+  set +e
+  run_pr_merge "$case_dir" task-x1 "$FJ_URL" --expected-head "$FJ_HEAD" \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+  expect_code 1 "$rc" "stale-mandate-policy-unreadable: an unreadable policy must refuse the mandate"
+  assert_grep 'held - hard-stop-7' "$case_dir/stderr" \
+    "stale-mandate-policy-unreadable: the refusal did not name the unreadable policy"
+  assert_absent "$case_dir/tea-merge-called" \
+    "stale-mandate-policy-unreadable: a mandate merged without a readable policy"
+  pass "a same-head policy hold refuses an already-queued bound-merge mandate on both forges"
+}
+
 test_expected_head_is_stripped_before_extra_args() {
   local case_dir rc merge_line
-  case_dir=$(make_gitlab_case expected-head-extra-args)
+  case_dir=$(make_green_gitlab_case expected-head-extra-args)
 
   set +e
   run_pr_merge "$case_dir" task-x1 "$MR_URL" --expected-head "$MR_HEAD" -- --remove-source-branch \
@@ -2292,6 +2400,7 @@ FJ_PATH=owner/repository
 FJ_URL="https://$FJ_HOST/$FJ_PATH/pulls/7"
 FJ_HEAD=cccccccccccccccccccccccccccccccccccccccc
 FJ_STALE_HEAD=dddddddddddddddddddddddddddddddddddddddd
+FJ_BASE=ffffffffffffffffffffffffffffffffffffffff
 FJ_BODY='a body that mentions \"merged\":true in prose'
 # tea mock recording every invocation, and the JSON body of a merge request
 # separately so a test can assert the exact binding that was sent. Marker files
@@ -2318,6 +2427,16 @@ case "$method $endpoint" in
   "GET /repos/"*"/commits/"*"/status")
     [ ! -e "$FM_TEST_TEA_CASE/tea-status-fails" ] || exit 1
     cat "$FM_TEST_TEA_STATUS_JSON" ;;
+  "GET /user") cat "$FM_TEST_TEA_CASE/tea-user.json" ;;
+  "GET /repos/"*"/pulls/"*"/files"*)
+    [ ! -e "$FM_TEST_TEA_CASE/tea-files-fails" ] || exit 1
+    cat "$FM_TEST_TEA_CASE/tea-files.json" ;;
+  "GET /repos/"*"/issues/"*"/comments")
+    [ ! -e "$FM_TEST_TEA_CASE/tea-comments-fails" ] || exit 1
+    cat "$FM_TEST_TEA_CASE/tea-comments.json" ;;
+  "GET /repos/"*"/git/commits/"*)
+    [ ! -e "$FM_TEST_TEA_CASE/tea-commit-fails" ] || exit 1
+    cat "$FM_TEST_TEA_CASE/tea-commit.json" ;;
   "GET /repos/"*"/pulls/"*)
     [ ! -e "$FM_TEST_TEA_CASE/tea-view-fails" ] || exit 1
     if [ -e "$FM_TEST_TEA_CASE/tea-merge-called" ] && [ ! -e "$FM_TEST_TEA_CASE/tea-stays-open" ]; then
@@ -2385,7 +2504,7 @@ write_forgejo_status_json() {
       *) fail "write_forgejo_status_json: unknown field '$key'" ;;
     esac
   done
-  printf '{"sha":"%s","state":"%s","statuses":[{"context":"CI / ci","status":"%s"}]}\n' \
+  printf '{"sha":"%s","state":"%s","total_count":1,"statuses":[{"context":"CI / ci","status":"%s"}]}\n' \
     "$sha" "$state" "$state" > "$file"
 }
 write_forgejo_repo_json() {
@@ -2406,6 +2525,25 @@ make_forgejo_case() {
   write_forgejo_status_json "$case_dir/status.json" "$@"
   write_forgejo_repo_json "$case_dir/repo.json"
   write_forgejo_pr_json "$case_dir/pr-post.json" merged=true state=closed
+  printf '%s\n' "$case_dir"
+}
+
+# make_green_forgejo_case <name> [<gate body>]: a Forgejo case whose live reads
+# also satisfy bin/fm-pr-green-return.sh's own report, so a mandate's
+# re-verification classifies the pull request as due, or as held with a held
+# gate body. Echoes the case dir.
+make_green_forgejo_case() {
+  local name=$1 body=${2:-$GATE_CLEAN} case_dir tmp
+  case_dir=$(make_forgejo_case "$name")
+  write_merge_policy "$case_dir" repository
+  printf '{"created":"2026-01-01T00:00:00Z"}\n' > "$case_dir/tea-commit.json"
+  printf '{"login":"op"}\n' > "$case_dir/tea-user.json"
+  printf '[{"filename":"src/app.ts"}]\n' > "$case_dir/tea-files.json"
+  printf '[]\n' > "$case_dir/tea-comments.json"
+  tmp=$(mktemp)
+  jq --arg body "$body" --arg base "$FJ_BASE" \
+    '. + {body: $body, user: {login: "op"}, base: {sha: $base}}' \
+    "$case_dir/pr.json" > "$tmp" && mv "$tmp" "$case_dir/pr.json"
   printf '%s\n' "$case_dir"
 }
 tea_merge_body() {
@@ -2839,6 +2977,7 @@ test_gitlab_reports_every_failing_condition
 test_gitlab_stale_recorded_head_is_reported
 test_expected_head_matching_the_live_head_merges
 test_expected_head_mismatch_refuses_before_any_merge
+test_stale_mandate_refuses_when_the_same_head_is_held
 test_expected_head_is_stripped_before_extra_args
 test_expected_head_invalid_refuses_before_recording
 test_expected_head_empty_value_refuses_before_recording

@@ -39,11 +39,8 @@
 # reason, wait start, and notification, so a restart never resets the wait and
 # one (head, class, reason) is reported once. Both classes share one task wake
 # key, so a fresh verdict always supersedes the queued row it replaces under the
-# drain's newest-row-per-key view. A queued mandate is tied to the head it
-# names: the record also holds the head whose row is queued, an older head's
-# queued row is never read as a moved head's notification, and a notification is
-# suppressed only by the record's own (head, class, reason) value, never by a key
-# merely being present.
+# drain's newest-row-per-key view. A notification is suppressed only by the
+# record's own (head, class, reason) value, never by a key merely being present.
 #
 # EDGE SEMANTICS. A repo with no checks at all trips hard stop 4 (an empty
 # combined status is never green), and a check set that is pending or unreadable
@@ -1202,21 +1199,19 @@ REC_REASON=
 REC_SINCE=
 REC_NOTIFIED=
 REC_HEAD=
-REC_QUEUED_HEAD=
 
 record_read() { # <id>
   local file="$RECORD_DIR/$1"
-  REC_CLASS=; REC_REASON=; REC_SINCE=; REC_NOTIFIED=; REC_HEAD=; REC_QUEUED_HEAD=
+  REC_CLASS=; REC_REASON=; REC_SINCE=; REC_NOTIFIED=; REC_HEAD=
   [ -f "$file" ] && [ ! -L "$file" ] || return 0
   REC_CLASS=$(field_of "$file" class)
   REC_REASON=$(field_of "$file" reason)
   REC_SINCE=$(field_of "$file" since)
   REC_NOTIFIED=$(field_of "$file" notified)
   REC_HEAD=$(field_of "$file" head)
-  REC_QUEUED_HEAD=$(field_of "$file" queued_head)
 }
 
-record_write() { # <id> <class> <reason> <since> <observed> <notified> <queued-head>
+record_write() { # <id> <class> <reason> <since> <observed> <notified>
   local id=$1 tmp
   mkdir -p "$RECORD_DIR" 2>/dev/null || return 1
   [ -d "$RECORD_DIR" ] && [ ! -L "$RECORD_DIR" ] || return 1
@@ -1232,7 +1227,6 @@ record_write() { # <id> <class> <reason> <since> <observed> <notified> <queued-h
     printf 'since=%s\n' "$4"
     printf 'observed=%s\n' "$5"
     printf 'notified=%s\n' "$6"
-    printf 'queued_head=%s\n' "$7"
   } > "$tmp" || { rm -f -- "$tmp"; return 1; }
   chmod 600 "$tmp" 2>/dev/null || true
   mv -f -- "$tmp" "$RECORD_DIR/$id" || { rm -f -- "$tmp"; return 1; }
@@ -1279,7 +1273,7 @@ label_for_reason() { # <reason>
 # wait record, and queue exactly one check wake per (head, class, reason) once
 # the wait has elapsed. Prints only the actionable lines for queued wakes.
 process_task() {
-  local id=$1 meta=$2 now=$3 wait=$4 since notified queued key payload age
+  local id=$1 meta=$2 now=$3 wait=$4 since notified key payload age
   evaluate_task "$id" "$meta"
   case "$EV_CLASS" in
     merged|closed|waiting)
@@ -1312,7 +1306,6 @@ process_task() {
   if [ "$REC_HEAD" = "$PR_HEAD" ] && [ "$REC_CLASS" = "$EV_CLASS" ] && [ "$REC_REASON" = "$EV_REASON" ]; then
     notified=$REC_NOTIFIED
   fi
-  queued=$REC_QUEUED_HEAD
 
   age=$((now - since))
   if [ "$age" -ge "$wait" ] && [ -z "$notified" ]; then
@@ -1321,18 +1314,16 @@ process_task() {
       payload=$(wake_payload_due "$id" "$age")
       if queue_wake "$key" "$payload"; then
         notified="due:$PR_HEAD"
-        queued=$PR_HEAD
       fi
     else
       payload=$(wake_payload_held "$id" "$age" "$(label_for_reason "$EV_REASON")")
       if queue_wake "$key" "$payload"; then
         notified="held:$PR_HEAD:$EV_REASON"
-        queued=$PR_HEAD
       fi
     fi
   fi
 
-  record_write "$id" "$EV_CLASS" "$EV_REASON" "$since" "$now" "$notified" "$queued"
+  record_write "$id" "$EV_CLASS" "$EV_REASON" "$since" "$now" "$notified"
 }
 
 # list_candidates: every task meta that records a parseable pr= line, sorted for
