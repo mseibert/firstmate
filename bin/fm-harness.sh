@@ -143,15 +143,18 @@ detect_own() {
   detect_ancestry
 }
 
-# Walk up to eight parents and report the nearest harness this process tree
+# Walk up to sixteen parents and report the nearest harness this process tree
 # runs on, or `unknown` when no ancestor is a recognized harness. The FIRST
 # match wins, so a claude worker whose backend chain was originally started
 # from a Pi session reports claude rather than the Pi process further up; the
 # both-marker branch in detect_own depends on exactly that nearest-ancestor
-# semantics.
+# semantics. Sixteen is the session-lock identity owner's bound, and it is
+# load-bearing here: the automatic Pi session-open path runs the digest through
+# the extension supervisor, a runner, a timed wrapper, and the session start,
+# so the real pi process sits at the ninth hop, beyond any eight-hop walk.
 detect_ancestry() {
   local pid=$$ comm args argv0 base
-  for _ in 1 2 3 4 5 6 7 8; do
+  for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16; do
     comm=$(ps -o comm= -p "$pid" 2>/dev/null) || break
     argv0=$(fm_cursor_argv0_for_pid "$pid" "$comm" 2>/dev/null || true)
     if fm_cursor_process_matches "$comm" '' "$argv0"; then

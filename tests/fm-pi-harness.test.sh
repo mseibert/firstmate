@@ -14,7 +14,10 @@
 #      the conservative claude verdict instead of flipping to pi. Claude's
 #      native installer names the per-session executable by its version, so
 #      the nested claude fixture is the version-named install-path shape, not
-#      a binary named claude.
+#      a binary named claude. The pi ancestor may sit deeper than a shallow
+#      walk reaches: the automatic Pi session-open path buries the real pi
+#      process below an extension supervisor, a runner, a timed wrapper, and
+#      the session start, so a deep pi chain must still resolve pi.
 #   2. A lone marker keeps its existing meaning: CLAUDECODE alone is claude,
 #      PI_CODING_AGENT alone is pi, and pi-signed still comes only from
 #      FM_PI_HARNESS together with Pi's own marker.
@@ -62,6 +65,28 @@ make_versioned_claude() {  # <dir> -> echoes the version-named executable path
   printf '%s' "$dir/share/claude/versions/2.1.220"
 }
 
+# Spawn <depth> nested shell layers and run the target beneath them, so a
+# named harness ancestor sits deeper than any fixed shallow walk bound. Every
+# layer waits for its child (the trailing no-op blocks bash's exec
+# optimization), so each one stays alive as a real parent.
+make_deep_layers() {  # <dir> -> echoes the layer-runner path
+  local dir=$1
+  mkdir -p "$dir"
+  cat > "$dir/deep-layers.sh" <<'SH'
+#!/usr/bin/env bash
+set -u
+depth=$1; shift
+if [ "$depth" -gt 0 ]; then
+  bash "$0" $((depth - 1)) "$@"
+else
+  "$@"
+  :
+fi
+SH
+  chmod +x "$dir/deep-layers.sh"
+  printf '%s' "$dir/deep-layers.sh"
+}
+
 # A `ps` that reports no harness anywhere in the chain, so the conservative
 # both-marker verdict is deterministic no matter what launched this suite.
 make_fake_ps_no_harness() {  # <fakebin>
@@ -86,15 +111,26 @@ SH
 }
 
 test_both_markers_defer_to_the_nearest_harness_ancestor() {
-  local bin out versioned_claude
+  local bin out versioned_claude layers
   bin=$(make_named_shells "$TMP_ROOT/named")
   versioned_claude=$(make_versioned_claude "$TMP_ROOT/claude-install")
+  layers=$(make_deep_layers "$TMP_ROOT/layers")
 
   # Case 1: a hand-started Pi primary whose shell exported CLAUDECODE=1.
   # shellcheck disable=SC2016 # the quoted body expands inside the named shell
   out=$("${CLEAN_MARKERS[@]}" CLAUDECODE=1 PI_CODING_AGENT=true \
     "$bin/pi" -c '"$1"; :' _ "$HARNESS")
   [ "$out" = pi ] || fail "a real pi process with an inherited CLAUDECODE must resolve pi, got '$out'"
+
+  # The automatic Pi session-open path runs the digest through an extension
+  # supervisor, a runner, a timed wrapper, and the session start, so the real
+  # pi process sits beyond a shallow walk. Seven layers place the pi ancestor
+  # ten hops up, deeper than any eight-hop walk, and the verdict must still be
+  # pi rather than the conservative claude fallback.
+  # shellcheck disable=SC2016 # the quoted body expands inside the named shell
+  out=$("${CLEAN_MARKERS[@]}" CLAUDECODE=1 PI_CODING_AGENT=true \
+    "$bin/pi" -c '"$1" 7 "$2"; :' _ "$layers" "$HARNESS")
+  [ "$out" = pi ] || fail "a pi ancestor deeper than eight parents must resolve pi, got '$out'"
 
   # Case 2: a claude worker under a Pi primary inherits PI_CODING_AGENT.
   # shellcheck disable=SC2016 # the quoted body expands inside the named shell
