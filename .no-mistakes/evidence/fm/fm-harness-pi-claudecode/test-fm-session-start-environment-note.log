@@ -1,0 +1,12 @@
+== Environment note ==
+The default run of tests/fm-session-start.test.sh fails one unrelated case on this host:
+  'not ok - MISSING diagnostic did not appear at all'
+because this host ships /usr/bin/node inside the suite's default BASE_PATH
+(/usr/bin:/bin:/usr/sbin:/sbin), so the test's removed fake 'node' is still found.
+This is independent of the fm-harness change (tests/fm-session-start.test.sh, bin/fm-bootstrap.sh,
+and bin/fm-startup-network.sh are unchanged by it).
+
+== Same suite with the host node excluded from FM_TEST_BASE_PATH ==
+ok - --reemit re-verifies lock ownership and keeps repair ownership with whoever holds it
+# fm-session-start.test.sh: all assertions passed
+ok count: 53

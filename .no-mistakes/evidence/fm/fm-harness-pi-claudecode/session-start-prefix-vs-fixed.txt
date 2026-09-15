@@ -1,0 +1,9 @@
+== PRE-FIX (parent commit eccdfbd) session start, real pi ancestry, both markers ==
+pre-fix grep:
+18:SUPERVISION OPERATING INSTRUCTIONS - primary harness: claude
+26:Mode: Claude Stop-hook-owned supervision.
+
+== FIXED (target 8ac0c5b) session start, same live pi ancestry, both markers ==
+fixed grep:
+19:SUPERVISION OPERATING INSTRUCTIONS - primary harness: pi
+27:Mode: Pi extension background wake.

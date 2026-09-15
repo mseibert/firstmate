@@ -1,0 +1,9 @@
+# Nested version-named claude under pi, both markers set: original collision fix (f0b1e07, basename-only) vs target
+chain: pi -> version-named claude (/tmp/fm-shape-check/share/claude/versions/2.1.220, comm=2.1.220 on Linux) -> fm-harness.sh
+f0b1e07-basename-only      -> pi
+target                     -> claude
+
+# ps shape of the version-named claude ancestor (comm names nothing; argv0 carries the install path)
+  hop 1 pid=1573294 comm=[bash] args=[bash /tmp/shape-probe.sh]
+  hop 2 pid=1573293 comm=[2.1.220] args=[/tmp/fm-shape-check/share/claude/versions/2.1.220 -c "$1"; : _ /tmp/shape-probe.sh]
+  hop 3 pid=1573291 comm=[pi] args=[/tmp/fm-deep-layers/pi -c "$1" -c '"$1"; :' _ "$2"; : _ /tmp/fm-shape-check/share/claude/versions/2.1.220 /tmp/shape-probe.sh]

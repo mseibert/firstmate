@@ -1,0 +1,20 @@
+== Live firstmate session process state (this test run) ==
+
+$ env | grep -E '^(CLAUDECODE|PI_CODING_AGENT)='
+PI_CODING_AGENT=true
+CLAUDECODE=1
+
+Process ancestry of this shell (nearest harness ancestor is the real pi process):
+  pid=751800 comm=bash args=/bin/bash -c cd /home/martin_seibert/.no-mistakes/worktrees/e36b903ea8
+  pid=593351 comm=pi args=pi
+  pid=1377455 comm=no-mistakes args=/home/martin_seibert/.no-mistakes/bin/no-mistakes daemon run --root /h
+  pid=1377443 comm=systemd args=/usr/lib/systemd/systemd --user
+
+== bin/fm-harness.sh verdicts with both markers present ==
+
+PRE-FIX (parent commit eccdfbd, extracted to /tmp): claude
+FIXED  (target commit 8ac0c5b):                          pi
+
+== Single-marker controls (fixed) ==
+CLAUDECODE alone        -> claude
+PI_CODING_AGENT alone   -> pi

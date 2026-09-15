@@ -1,0 +1,8 @@
+== Same direct session start, one extra shell layer (bash 'time ( ... )' subshell) ==
+The fixed detection sits exactly at the 8-hop walk bound: one extra shell layer puts the pi
+ancestor at hop 9 and the both-marker branch falls back to claude.
+
+18:SUPERVISION OPERATING INSTRUCTIONS - primary harness: claude
+26:Mode: Claude Stop-hook-owned supervision.
+
+(full transcript is the same digest as session-start-agent-path-fixed.txt)

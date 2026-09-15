@@ -1,0 +1,3 @@
+ok - fm-harness: both markers defer to the nearest real harness ancestor
+ok - fm-harness: an unreadable chain keeps the conservative claude verdict
+ok - fm-harness: the single-marker verdicts are unchanged

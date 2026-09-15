@@ -1,0 +1,10 @@
+$ bash tests/fm-pi-harness.test.sh
+ok - fm-harness: both markers defer to the nearest real harness ancestor
+ok - fm-harness: an unreadable chain keeps the conservative claude verdict
+ok - fm-harness: the single-marker verdicts are unchanged
+rc=0
+
+$ bash tests/fm-spawn-dispatch-profile.test.sh  (launch-boundary cases only)
+ok - pi launch clears an inherited CLAUDECODE before the worker starts
+ok - claude launch clears an inherited PI_CODING_AGENT before the worker starts
+# all fm-spawn-dispatch-profile tests passed

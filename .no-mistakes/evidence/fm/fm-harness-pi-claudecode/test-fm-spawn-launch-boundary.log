@@ -1,0 +1,4 @@
+== Target-specific assertions from tests/fm-spawn-dispatch-profile.test.sh (full run exit 0, 46 ok) ==
+ok - pi launch clears an inherited CLAUDECODE before the worker starts
+ok - claude launch clears an inherited PI_CODING_AGENT before the worker starts
+# all fm-spawn-dispatch-profile tests passed

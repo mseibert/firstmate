@@ -1,0 +1,17 @@
+$ env | grep -E 'CLAUDECODE|PI_CODING_AGENT'
+PI_CODING_AGENT=true
+CLAUDECODE=1
+
+$ ps -o pid,ppid,comm,args -p 1400562 -p $(ps -o ppid= -p 1400562 | tr -d ' ')
+    PID    PPID COMMAND         COMMAND
+1237633 1377455 pi              pi
+1400562 1237633 bash            /bin/bash -c cd /home/martin_seibert/.no-mistakes/worktrees/e36b903ea8f4/01M2HFZD17NA45BZ5TFDG1RCW3 && EVID=/home/martin_seibert/.no-mistakes/evidence/01M2HFZD17NA45BZ5TFDG1RCW3 && { echo "\$ env | grep -E 'CLAUDECODE|PI_CODING_AGENT'"; env | grep -E 'CLAUDECODE|PI_CODING_AGENT'; echo; echo "\$ ps -o pid,ppid,comm,args -p $$ -p \$(ps -o ppid= -p $$ | tr -d ' ')"; ps -o pid,ppid,comm,args -p $$ -p "$(ps -o ppid= -p $$ | tr -d ' ')"; echo; echo "\$ bin/fm-harness.sh"; bin/fm-harness.sh; echo; echo "\$ env -u CLAUDECODE bin/fm-harness.sh   # pi marker alone"; env -u CLAUDECODE bin/fm-harness.sh; echo; echo "\$ env -u PI_CODING_AGENT bin/fm-harness.sh   # claude marker alone"; env -u PI_CODING_AGENT bin/fm-harness.sh; } > "$EVID/live-pi-both-markers.txt" 2>&1; cat "$EVID/live-pi-both-markers.txt"
+
+$ bin/fm-harness.sh
+pi
+
+$ env -u CLAUDECODE bin/fm-harness.sh   # pi marker alone
+pi
+
+$ env -u PI_CODING_AGENT bin/fm-harness.sh   # claude marker alone
+claude

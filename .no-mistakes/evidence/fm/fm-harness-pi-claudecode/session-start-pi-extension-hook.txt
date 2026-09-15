@@ -1,0 +1,44 @@
+== Reproduced automatic Pi session-open path (target commit 8ac0c5b) ==
+
+The real Pi extension (pi.on('session_start') in .pi/extensions/fm-primary-turnend-guard.ts)
+runs the digest natively at session open:
+  pi process -> node .pi/extensions/lib/fm-sessionstart-supervisor.mjs
+             -> bin/fm-sessionstart-run.sh --source startup --pi-prerequisite
+             -> bin/fm-session-start.sh (parent) -> fm_run_timed -> bin/fm-session-start.sh (child digest)
+             -> bin/fm-harness.sh
+
+Process chain measured with a supervisor child script (pi-named shell stand-in for the pi process):
+hop 1: pid=757110 comm=bash args=bash /tmp/fm-chain.sh --source startup
+hop 2: pid=757103 comm=node args=node /home/martin_seibert/.no-mistakes/worktrees/e
+hop 3: pid=757101 comm=pi args=/tmp/fm-pi-hook.Bm8cV3/named/pi -c node /home/mart
+
+== bin/fm-harness.sh ancestry walk (8 hops max) during the digest ==
+  hop: pid=744330 comm=bash
+  hop: pid=744329 comm=bash
+  hop: pid=744321 comm=bash
+  hop: pid=744319 comm=bash
+  hop: pid=744317 comm=timeout
+  hop: pid=744303 comm=bash
+  hop: pid=744283 comm=bash
+  hop: pid=744263 comm=node
+  hop 9: pid=744262 = the pi process (parent of the node supervisor) - beyond the walk bound
+
+== Self-contradiction inside the same digest ==
+The session-lock owner (16-hop walk) correctly names the pi process:
+8:lock acquired: harness pid 744262
+But the harness verdict (8-hop walk) falls back to claude:
+18:SUPERVISION OPERATING INSTRUCTIONS - primary harness: claude
+26:Mode: Claude Stop-hook-owned supervision.
+
+== First lines of the delivered supervision block ==
+SUPERVISION OPERATING INSTRUCTIONS - primary harness: claude
+================================================================================
+Current state:
+- Lock: held by this session; this session owns normal supervision unless away mode says otherwise.
+- Away mode: inactive.
+- X mode: inactive; use the default watcher cadence.
+- Ordinary wake: the Stop-owned auto-arm (bin/fm-claude-stop-autoarm.sh) already owns watcher continuity; drain and handle the wake, and do not arm another cycle yourself.
+
+Mode: Claude Stop-hook-owned supervision.
+
+When this session owns supervision and away mode is not active:

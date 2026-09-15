@@ -1,0 +1,19 @@
+# Pi/claude marker collision: base vs pre-deep-fix (8 hops) vs target, both markers set
+
+## 1. Shallow: real pi process is the direct parent (the captain's hand-started case)
+chain: pi(bash symlink) -> fm-harness.sh
+base               -> claude
+pre-deep-fix-8hop  -> pi
+target             -> pi
+
+## 2. Deep: pi ancestor ten hops up (automatic Pi session-open depth, beyond the old 8-hop walk)
+chain: pi -> 8 nested shell layers -> fm-harness.sh
+base               -> claude
+pre-deep-fix-8hop  -> claude
+target             -> pi
+
+## 3. Claude must not break: a version-named native claude process nested inside pi
+chain: pi -> version-named claude (/tmp/fm-shape-check/share/claude/versions/2.1.220, comm=2.1.220 on Linux) -> fm-harness.sh
+base                   -> claude
+pre-review-fix-f0b1e07 -> pi
+target                 -> claude
