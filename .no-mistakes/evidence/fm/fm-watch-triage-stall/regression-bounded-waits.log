@@ -1,0 +1,4 @@
+tests/wake-helpers.sh: line 304: 3087660 Killed                  ( trap '' TERM; exec sleep 300 )
+tests/wake-helpers.sh: line 304: 3088736 Killed                  ( trap '' TERM; exec sleep 300 )
+tests/.fm-triage-single.tmp.sh: line 1921: 3094877 Killed                  ( trap '' TERM; exec sleep 300 )
+ok - a hung wait is bounded and named instead of blocking the shard into a cancellation

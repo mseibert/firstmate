@@ -1,0 +1,6 @@
+== OLD helper: 15s external tripwire on a SIGTERM-ignoring process ==
+old probe exit=124 (124 = external tripwire killed it: the unbounded wait hung)
+== NEW helper: same process ==
+environment: line 1: 3215464 Killed                  ( trap '' TERM; exec sleep 300 ) > /dev/null 2>&1
+NEW wait_for_exit returned rc=124 after 8s
+new probe exit=0

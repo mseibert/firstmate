@@ -1,0 +1,14 @@
+WAKE_ACK_REQUIRED: after handling completes run bin/fm-wake-drain.sh --ack-through 1 --recovery-generation 3239467.1789440199.wC5iUG
+ok - queue revalidation, proactive output, and marker commit serialize with drain
+### test_procevent_surface_crash_boundaries
+/home/martin_seibert/.no-mistakes/worktrees/e36b903ea8f4/01M2HEJMYG9HYD3Z8H2YQ77FAZ/bin/fm-push-transition-lib.sh: line 96: echo: write error: Broken pipe
+tests/wake-helpers.sh: line 332: 3250586 Killed                  PATH="$dir/fakebin:$PATH" FM_HOME="$dir" FM_PROCEVENT_CLAIM_ROOT="$dir/claims" FM_CREW_STATE_BIN="$dir/fakebin/fm-crew-state.sh" FM_POLL=0.2 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out"
+tests/wake-helpers.sh: line 332: 3254037 Killed                  PATH="$dir/fakebin:$PATH" FM_HOME="$dir" FM_PROCEVENT_CLAIM_ROOT="$dir/claims" FM_CREW_STATE_BIN="$dir/fakebin/fm-crew-state.sh" FM_POLL=0.2 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out"
+ok - surfacing failures replay until post-handling acknowledgement
+### exit=0
+### test_procevent_unacknowledged_result_redrains_until_handled
+ok - an unacknowledged process-event result re-drains until handling is acknowledged
+### exit=0
+### test_procevent_marker_keys_are_injective
+ok - complete process-event queue keys map to distinct seen markers
+### exit=0
