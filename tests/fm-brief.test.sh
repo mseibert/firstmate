@@ -512,8 +512,8 @@ test_five_lens_gate_in_direct_pr_dod() {
 # into one designated PR comment with the exact title `Findings and fixes from
 # 5-lenses-review` instead of the PR body. The comment-based contract pins the
 # same lenses, the final-head and CI-state rule, the strict
-# lens-fix-push-comment order, the honest statement that the captain's merge
-# policy does not yet accept the comment, and the done lines that distinguish a
+# lens-fix-push-comment order, the statement that the captain's merge policy
+# accepts the exact-titled comment, and the done lines that distinguish a
 # green final head from an unclean comment and from a red CI result. direct-PR
 # keeps its body-based block and local-only carries neither.
 test_five_lens_comment_in_no_mistakes_dod() {
@@ -558,12 +558,10 @@ test_five_lens_comment_in_no_mistakes_dod() {
     "no-mistakes DOD must pin the lens-fix-push-comment order"
   assert_grep "Never merge the PR; the configured merge authority decides." "$brief" \
     "no-mistakes DOD must leave the merge to the configured authority"
-  assert_grep "The captain's merge policy still requires the \`## Five-lens gate\` body block on every PR (its Hard-Stop 1)" "$brief" \
-    "no-mistakes DOD must state the merge policy still requires the body block"
-  assert_grep "until the captain's policy recognizes this comment, the comment does NOT count as evidence for that stop" "$brief" \
-    "no-mistakes DOD must state the comment is not yet accepted as the stop's evidence"
-  assert_grep "Do not treat the comment as having satisfied that stop." "$brief" \
-    "no-mistakes DOD must stop the worker from believing the stop is served"
+  assert_grep "The captain's merge policy accepts this exact-titled comment as the five-lens evidence on a no-mistakes PR" "$brief" \
+    "no-mistakes DOD must state the merge policy accepts the titled comment"
+  assert_grep "a comment with any other title does not count" "$brief" \
+    "no-mistakes DOD must state that only the exact title counts"
   assert_grep "The freeze in step 4 covers the pipeline head the run validates" "$brief" \
     "no-mistakes DOD must reconcile the freeze with the post-verdict lens pass"
   assert_grep "The five-lens pass below is then the designated post-verdict step" "$brief" \

@@ -336,7 +336,7 @@ Never hold work outside no-mistakes for a manual clean verdict, stack serial man
 A separate review or audit is allowed only when the captain explicitly requests that deliverable or the authorized task is a knowledge-only review; one named question remains scoped to that question.
 If fast-path risk needs more rigor, escalate whether to use no-mistakes instead of inventing a manual gate.
 The direct-PR and no-mistakes definitions of done both carry a mandatory five-lens gate - the PR body for direct-PR, one designated PR comment for no-mistakes - as part of each path's contract rather than an independently stacked reviewer.
-Until the captain's merge policy recognizes that comment, it does not satisfy the policy's `## Five-lens gate` body-block requirement.
+The captain's merge policy accepts a PR comment titled exactly `Findings and fixes from 5-lenses-review` as that evidence on a no-mistakes PR.
 The path's worker, automated gates, and captain approval remain authoritative:
 
 - **no-mistakes** runs the full pipeline through a PR, then waits for the configured merge authority.

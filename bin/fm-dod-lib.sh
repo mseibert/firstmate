@@ -294,9 +294,9 @@ EOF
 # pipeline, so the worker cannot write the PR body; the gate evidence goes into
 # one designated PR comment instead. The block calls the shared
 # fm_five_lens_rules_block for the lens list, per-lens result rows, and Result
-# rule, adds the final-head and CI-state rule, and states plainly that the
-# captain's merge policy does not yet accept the comment as its Hard-Stop 1 body
-# block. Emitted with a trailing blank line so callers can chain it into their
+# rule, adds the final-head and CI-state rule, and states that the captain's
+# merge policy accepts the exact-titled comment as the five-lens evidence.
+# Emitted with a trailing blank line so callers can chain it into their
 # definition-of-done heredocs.
 fm_five_lens_comment_block() {
   cat <<'EOF'
@@ -310,8 +310,7 @@ EOF
 The comment must name the FINAL head SHA and the CI state on that head; after a fix commit the gate covers the head after that commit, not the pipeline head.
 Keep the order strict: lenses, then fixes, then push, then the comment.
 Never merge the PR; the configured merge authority decides.
-The captain's merge policy still requires the `## Five-lens gate` body block on every PR (its Hard-Stop 1), and until the captain's policy recognizes this comment, the comment does NOT count as evidence for that stop.
-Do not treat the comment as having satisfied that stop.
+The captain's merge policy accepts this exact-titled comment as the five-lens evidence on a no-mistakes PR, so it satisfies the merge gate; a comment with any other title does not count.
 
 EOF
 }
