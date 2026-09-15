@@ -462,14 +462,18 @@ assert_five_lens_rules() {  # <brief> <label>
   local brief=$1 label=$2 lens
   assert_grep "each in its own fresh context (a subagent or a fresh session)" "$brief" \
     "$label DOD must require a fresh-context pass per lens without assuming one dispatch mechanism"
-  assert_grep "\`code-review\` (correctness), \`maintainability-review\` (rot, bandaids, speculative scaffolding), \`architecture-system-design-reviewer\` (structural fit and defended choices), \`design-decision-questioner\` (challenge the decisions), \`self-containment-review\` (context a repo reader cannot resolve)" "$brief" \
+  assert_grep "\`code-review\` (correctness), \`maintainability-review\` (rot, bandaids, speculative scaffolding), \`structural-fit-review\` (structural fit and defended choices), \`design-decision-questioner\` (challenge the decisions), \`self-containment-review\` (context a repo reader cannot resolve)" "$brief" \
     "$label DOD must define all five lens foci in the emitted block"
+  assert_grep "The \`structural-fit-review\` lens is also called \`architecture-system-design-reviewer\`" "$brief" \
+    "$label DOD must map the architecture-system-design-reviewer alias to the installed skill"
   assert_grep "| Lens | Ran | Findings | Fixed |" "$brief" \
     "$label DOD must carry the per-lens table header"
-  for lens in code-review maintainability-review architecture-system-design-reviewer design-decision-questioner self-containment-review; do
+  for lens in code-review maintainability-review structural-fit-review design-decision-questioner self-containment-review; do
     assert_grep "| $lens | <yes or no> | <n> | <n> |" "$brief" \
       "$label DOD must carry the $lens placeholder row"
   done
+  assert_no_grep "| architecture-system-design-reviewer |" "$brief" \
+    "$label DOD must name the installed lens, not the captain's alias, in the result table"
   assert_grep "\`Result: clean\` only when every \`Ran\` cell says \`yes\` and no finding remains open" "$brief" \
     "$label DOD must define clean as every lens ran and nothing is open"
   assert_grep "\`Result: 1 finding open - see <lens>\`" "$brief" \

@@ -242,7 +242,8 @@ EOF
 fm_five_lens_rules_block() {  # <lens-intro> <table-intro> [<between>] [<heading>]
   local lens_intro=$1 table_intro=$2 between=${3:-} heading=${4:-}
   cat <<EOF
-$lens_intro \`code-review\` (correctness), \`maintainability-review\` (rot, bandaids, speculative scaffolding), \`architecture-system-design-reviewer\` (structural fit and defended choices), \`design-decision-questioner\` (challenge the decisions), \`self-containment-review\` (context a repo reader cannot resolve).
+$lens_intro \`code-review\` (correctness), \`maintainability-review\` (rot, bandaids, speculative scaffolding), \`structural-fit-review\` (structural fit and defended choices), \`design-decision-questioner\` (challenge the decisions), \`self-containment-review\` (context a repo reader cannot resolve).
+The \`structural-fit-review\` lens is also called \`architecture-system-design-reviewer\`.
 EOF
   if [ -n "$between" ]; then
     printf '%s\n' "$between"
@@ -257,7 +258,7 @@ EOF
 |---|---|---|---|
 | code-review | <yes or no> | <n> | <n> |
 | maintainability-review | <yes or no> | <n> | <n> |
-| architecture-system-design-reviewer | <yes or no> | <n> | <n> |
+| structural-fit-review | <yes or no> | <n> | <n> |
 | design-decision-questioner | <yes or no> | <n> | <n> |
 | self-containment-review | <yes or no> | <n> | <n> |
 EOF
