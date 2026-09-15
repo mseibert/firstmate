@@ -231,6 +231,13 @@ write_meta() { # <dir> <id> <url> [project-name] [mode]
     "pr_head=$HEAD"
 }
 
+# write_gate_table [<code-review findings> [<code-review fixed>]]: the five-lens
+# result table the gate fixtures share, with the first row's cells as optional
+# parameters; every other lens row stays clean.
+write_gate_table() { # [<findings> [<fixed>]]
+  printf '| Lens | Ran | Findings | Fixed |\n|---|---|---|---|\n| code-review | yes | %s | %s |\n| maintainability-review | yes | 0 | 0 |\n| architecture-system-design-reviewer | yes | 0 | 0 |\n| design-decision-questioner | yes | 0 | 0 |\n| self-containment-review | yes | 0 | 0 |' "${1:-0}" "${2:-0}"
+}
+
 gh_green() { # <dir>
   local dir=$1
   jq -n --arg head "$HEAD" --arg base "$BASE" --arg time "$HEAD_TIME" '{
@@ -1344,16 +1351,10 @@ test_gate_prose_does_not_accept_open_findings() {
   write_policy "$dir" programmieren-community
   write_meta "$dir" t1 "https://forgejo.example/seibert.group/programmieren-community/pulls/365" programmieren-community
   tea_green "$dir"
-  tea_set_body "$dir" '## Five-Lens-Block
+  tea_set_body "$dir" "## Five-Lens-Block
 
-| Lens | Ran | Findings | Fixed |
-|---|---|---|---|
-| code-review | yes | 0 | 0 |
-| maintainability-review | yes | 0 | 0 |
-| architecture-system-design-reviewer | yes | 0 | 0 |
-| design-decision-questioner | yes | 0 | 0 |
-| self-containment-review | yes | 0 | 0 |
-'
+$(write_gate_table)
+"
   out=$(report_case "$dir" "$NOW_LATE")
   assert_contains "$out" $'t1\tdue\tready' "a clean five-lens table without the literal Result line was rejected"
 
@@ -1444,18 +1445,12 @@ Result: 1 finding open - see security-review
   write_policy "$dir" programmieren-community
   write_meta "$dir" t1 "https://forgejo.example/seibert.group/programmieren-community/pulls/365" programmieren-community
   tea_green "$dir"
-  tea_set_body "$dir" '## Five-Lens-Block
+  tea_set_body "$dir" "## Five-Lens-Block
 
-| Lens | Ran | Findings | Fixed |
-|---|---|---|---|
-| code-review | yes | 0 | 0 |
-| maintainability-review | yes | 0 | 0 |
-| architecture-system-design-reviewer | yes | 0 | 0 |
-| design-decision-questioner | yes | 0 | 0 |
-| self-containment-review | yes | 0 | 0 |
+$(write_gate_table)
 
 Result: 1 finding open - see security-review
-'
+"
   out=$(report_case "$dir" "$NOW_LATE")
   assert_contains "$out" "hard-stop-1" "a clean table hid an open Result line"
 
@@ -1465,18 +1460,12 @@ Result: 1 finding open - see security-review
   write_policy "$dir" programmieren-community
   write_meta "$dir" t1 "https://forgejo.example/seibert.group/programmieren-community/pulls/365" programmieren-community
   tea_green "$dir"
-  tea_set_body "$dir" '## Five-Lens-Block
+  tea_set_body "$dir" "## Five-Lens-Block
 
-| Lens | Ran | Findings | Fixed |
-|---|---|---|---|
-| code-review | yes | 0 | 0 |
-| maintainability-review | yes | 0 | 0 |
-| architecture-system-design-reviewer | yes | 0 | 0 |
-| design-decision-questioner | yes | 0 | 0 |
-| self-containment-review | yes | 0 | 0 |
+$(write_gate_table)
 
 Result: no blocker, 2 findings open
-'
+"
   out=$(report_case "$dir" "$NOW_LATE")
   assert_contains "$out" "hard-stop-1" "a negator in an earlier clause hid an open Result line"
 
@@ -1486,16 +1475,10 @@ Result: no blocker, 2 findings open
   write_policy "$dir" programmieren-community
   write_meta "$dir" t1 "https://forgejo.example/seibert.group/programmieren-community/pulls/365" programmieren-community
   tea_green "$dir"
-  tea_set_body "$dir" '## Five-Lens-Block
+  tea_set_body "$dir" "## Five-Lens-Block
 
-| Lens | Ran | Findings | Fixed |
-|---|---|---|---|
-| code-review | yes | 0 | 0 (1 offen) |
-| maintainability-review | yes | 0 | 0 |
-| architecture-system-design-reviewer | yes | 0 | 0 |
-| design-decision-questioner | yes | 0 | 0 |
-| self-containment-review | yes | 0 | 0 |
-'
+$(write_gate_table 0 '0 (1 offen)')
+"
   out=$(report_case "$dir" "$NOW_LATE")
   assert_contains "$out" "hard-stop-1" "a zero in Findings negated an open in Fixed"
 
@@ -1505,18 +1488,12 @@ Result: no blocker, 2 findings open
   write_policy "$dir" programmieren-community
   write_meta "$dir" t1 "https://forgejo.example/seibert.group/programmieren-community/pulls/365" programmieren-community
   tea_green "$dir"
-  tea_set_body "$dir" '## Five-Lens-Block
+  tea_set_body "$dir" "## Five-Lens-Block
 
-| Lens | Ran | Findings | Fixed |
-|---|---|---|---|
-| code-review | yes | 0 | 0 |
-| maintainability-review | yes | 0 | 0 |
-| architecture-system-design-reviewer | yes | 0 | 0 |
-| design-decision-questioner | yes | 0 | 0 |
-| self-containment-review | yes | 0 | 0 |
+$(write_gate_table)
 
 Ergebnis: 2 offene Findings
-'
+"
   out=$(report_case "$dir" "$NOW_LATE")
   assert_contains "$out" "hard-stop-1" "an inflected offene Findings result was accepted"
 
@@ -1524,18 +1501,12 @@ Ergebnis: 2 offene Findings
   write_policy "$dir" programmieren-community
   write_meta "$dir" t1 "https://forgejo.example/seibert.group/programmieren-community/pulls/365" programmieren-community
   tea_green "$dir"
-  tea_set_body "$dir" '## Five-Lens-Block
+  tea_set_body "$dir" "## Five-Lens-Block
 
-| Lens | Ran | Findings | Fixed |
-|---|---|---|---|
-| code-review | yes | 0 | 0 |
-| maintainability-review | yes | 0 | 0 |
-| architecture-system-design-reviewer | yes | 0 | 0 |
-| design-decision-questioner | yes | 0 | 0 |
-| self-containment-review | yes | 0 | 0 |
+$(write_gate_table)
 
 Result: 2 findings remain
-'
+"
   out=$(report_case "$dir" "$NOW_LATE")
   assert_contains "$out" "hard-stop-1" "a count-bearing findings remain result was accepted"
 
@@ -1544,18 +1515,12 @@ Result: 2 findings remain
   write_policy "$dir" programmieren-community
   write_meta "$dir" t1 "https://forgejo.example/seibert.group/programmieren-community/pulls/365" programmieren-community
   tea_green "$dir"
-  tea_set_body "$dir" '## Five-Lens-Block
+  tea_set_body "$dir" "## Five-Lens-Block
 
-| Lens | Ran | Findings | Fixed |
-|---|---|---|---|
-| code-review | yes | 0 | 0 |
-| maintainability-review | yes | 0 | 0 |
-| architecture-system-design-reviewer | yes | 0 | 0 |
-| design-decision-questioner | yes | 0 | 0 |
-| self-containment-review | yes | 0 | 0 |
+$(write_gate_table)
 
 Result: 0 open findings
-'
+"
   out=$(report_case "$dir" "$NOW_LATE")
   assert_contains "$out" $'t1\tdue\tready' "a zero-count open findings result was rejected"
 
@@ -1565,18 +1530,12 @@ Result: 0 open findings
   write_policy "$dir" programmieren-community
   write_meta "$dir" t1 "https://forgejo.example/seibert.group/programmieren-community/pulls/365" programmieren-community
   tea_green "$dir"
-  tea_set_body "$dir" '## Five-Lens-Block
+  tea_set_body "$dir" "## Five-Lens-Block
 
-| Lens | Ran | Findings | Fixed |
-|---|---|---|---|
-| code-review | yes | 0 | 0 |
-| maintainability-review | yes | 0 | 0 |
-| architecture-system-design-reviewer | yes | 0 | 0 |
-| design-decision-questioner | yes | 0 | 0 |
-| self-containment-review | yes | 0 | 0 |
+$(write_gate_table)
 
 Result: 2 findings fixed, 0 remain
-'
+"
   out=$(report_case "$dir" "$NOW_LATE")
   assert_contains "$out" $'t1\tdue\tready' "a fixed-summary count was held as an open finding"
 
@@ -1584,18 +1543,12 @@ Result: 2 findings fixed, 0 remain
   write_policy "$dir" programmieren-community
   write_meta "$dir" t1 "https://forgejo.example/seibert.group/programmieren-community/pulls/365" programmieren-community
   tea_green "$dir"
-  tea_set_body "$dir" '## Five-Lens-Block
+  tea_set_body "$dir" "## Five-Lens-Block
 
-| Lens | Ran | Findings | Fixed |
-|---|---|---|---|
-| code-review | yes | 0 | 0 |
-| maintainability-review | yes | 0 | 0 |
-| architecture-system-design-reviewer | yes | 0 | 0 |
-| design-decision-questioner | yes | 0 | 0 |
-| self-containment-review | yes | 0 | 0 |
+$(write_gate_table)
 
 Ergebnis: 1 Finding behoben, 0 offen
-'
+"
   out=$(report_case "$dir" "$NOW_LATE")
   assert_contains "$out" $'t1\tdue\tready' "a behoben-summary count was held as an open finding"
 
@@ -1610,13 +1563,7 @@ Ergebnis: 1 Finding behoben, 0 offen
     tea_green "$dir"
     tea_set_body "$dir" "## Five-Lens-Block
 
-| Lens | Ran | Findings | Fixed |
-|---|---|---|---|
-| code-review | yes | 0 | 0 |
-| maintainability-review | yes | 0 | 0 |
-| architecture-system-design-reviewer | yes | 0 | 0 |
-| design-decision-questioner | yes | 0 | 0 |
-| self-containment-review | yes | 0 | 0 |
+$(write_gate_table)
 
 $phrase
 "
@@ -1629,16 +1576,10 @@ $phrase
   write_policy "$dir" programmieren-community
   write_meta "$dir" t1 "https://forgejo.example/seibert.group/programmieren-community/pulls/365" programmieren-community
   tea_green "$dir"
-  tea_set_body "$dir" '## Five-Lens-Block
+  tea_set_body "$dir" "## Five-Lens-Block
 
-| Lens | Ran | Findings | Fixed |
-|---|---|---|---|
-| code-review | yes | 6 | 6 (1 widerlegt) |
-| maintainability-review | yes | 0 | 0 |
-| architecture-system-design-reviewer | yes | 0 | 0 |
-| design-decision-questioner | yes | 0 | 0 |
-| self-containment-review | yes | 0 | 0 |
-'
+$(write_gate_table 6 '6 (1 widerlegt)')
+"
   out=$(report_case "$dir" "$NOW_LATE")
   assert_contains "$out" $'t1\tdue\tready' "a refuted-but-covered result cell was rejected"
 
@@ -1665,16 +1606,10 @@ $phrase
   write_policy "$dir" programmieren-community
   write_meta "$dir" t1 "https://forgejo.example/seibert.group/programmieren-community/pulls/365" programmieren-community
   tea_green "$dir"
-  tea_set_body "$dir" '## Five-Lens-Block
+  tea_set_body "$dir" "## Five-Lens-Block
 
-| Lens | Ran | Findings | Fixed |
-|---|---|---|---|
-| code-review | yes | 6 | 2 (1 widerlegt) |
-| maintainability-review | yes | 0 | 0 |
-| architecture-system-design-reviewer | yes | 0 | 0 |
-| design-decision-questioner | yes | 0 | 0 |
-| self-containment-review | yes | 0 | 0 |
-'
+$(write_gate_table 6 '2 (1 widerlegt)')
+"
   out=$(report_case "$dir" "$NOW_LATE")
   assert_contains "$out" "hard-stop-1" "an uncovered non-numeric row was accepted"
   pass "a table row naming an open finding or lacking covering counts holds; a covered refuted cell passes"
@@ -1687,24 +1622,8 @@ test_no_mistakes_gate_reads_the_designated_comment() {
   # Result line whose trailing explanation says no finding remains open. A
   # no-mistakes task's pipeline-opened body carries no gate block, so the
   # comment alone must clear hard stop 1 and reach the bound-merge wake.
-  clean_comment=$'| Lens | Ran | Findings | Fixed |
-|---|---|---|---|
-| code-review | yes | 0 | 0 |
-| maintainability-review | yes | 0 | 0 |
-| architecture-system-design-reviewer | yes | 0 | 0 |
-| design-decision-questioner | yes | 0 | 0 |
-| self-containment-review | yes | 0 | 0 |
-
-Result: clean - all five lenses ran and no finding remains open.'
-  open_comment=$'| Lens | Ran | Findings | Fixed |
-|---|---|---|---|
-| code-review | yes | 3 | 0 |
-| maintainability-review | yes | 0 | 0 |
-| architecture-system-design-reviewer | yes | 0 | 0 |
-| design-decision-questioner | yes | 0 | 0 |
-| self-containment-review | yes | 0 | 0 |
-
-Result: 1 finding open - see code-review'
+  clean_comment=$(printf '%s\n\nResult: clean - all five lenses ran and no finding remains open.' "$(write_gate_table)")
+  open_comment=$(printf '%s\n\nResult: 1 finding open - see code-review' "$(write_gate_table 3 0)")
 
   # Forgejo: a clean designated comment clears the gate and the PR is due.
   dir=$(make_case nm-comment-forgejo)
@@ -1829,16 +1748,10 @@ Result: 1 finding open - see code-review'
   write_policy "$dir" programmieren-community
   write_meta "$dir" t1 "https://forgejo.example/seibert.group/programmieren-community/pulls/365" programmieren-community
   tea_green "$dir"
-  tea_set_body "$dir" '## Five-Lens-Block
+  tea_set_body "$dir" "## Five-Lens-Block
 
-| Lens | Ran | Findings | Fixed |
-|---|---|---|---|
-| code-review | yes | 3 | 0 |
-| maintainability-review | yes | 0 | 0 |
-| architecture-system-design-reviewer | yes | 0 | 0 |
-| design-decision-questioner | yes | 0 | 0 |
-| self-containment-review | yes | 0 | 0 |
-'
+$(write_gate_table 3 0)
+"
   tea_set_five_lens_comment "$dir" "$clean_comment"
   out=$(report_case "$dir" "$NOW_LATE")
   assert_contains "$out" "hard-stop-1" "a clean comment rescued a direct-PR body that reports an open finding"

@@ -61,13 +61,14 @@
 # `Result: clean`, as a table whose every row ran and closed its findings, or as
 # at least five per-lens result entries, each positively naming a clean result
 # (`clean`, `passed`/`pass`, or a `kein`/`no blocker` entry); any other wording,
-# or a line naming an open finding, trips the stop; an `open`/`offen` word (or
-# its German inflections) is a finding unless negated within its own clause or
-# result cell, and a positive count before a remainder word (`finding(s)`,
-# `remain(s)`, `remaining`, `left`, `unresolved`, `outstanding`) is a finding
+# or a line naming an open finding, trips the stop. An `open`/`offen` word (or
+# its German inflections) is a finding unless a negation reaches it inside its
+# own clause or result cell; a positive count before `finding(s)` is a finding
 # unless the count is immediately qualified as fixed, closed, resolved, or
-# behoben. The evidence is read from the PR body and, when the task's mode
-# no-mistakes or the body carries no gate block, from the newest exact-titled
+# behoben, and a positive count before `remain(s)`, `remaining`, `left`,
+# `unresolved`, or `outstanding` is always a finding. The evidence is read from
+# the PR body and, when the task's mode is no-mistakes or the body carries no
+# gate block, from the newest exact-titled
 # comment of the authenticated operator; a clean read from either source
 # passes, and an unreadable, untitled, or foreign-authored comment is never
 # green. The review verdict (item 2)
@@ -140,8 +141,8 @@ WAIT_CONFIG_NAME=pr-green-return
 WAIVED_CHECK_NAME='deploy / deploy'
 # Built-in hard stop 5 ground that the policy's Section 5 glob block may omit.
 BUILTIN_SENSITIVE_GLOBS='.forgejo/workflows/**'
-FILE_PAGE_LIMIT=50
-FILE_PAGE_MAX=40
+API_PAGE_LIMIT=50
+API_PAGE_MAX=40
 
 # The runtime knobs keep a bounded scan bounded even on a slow forge. Only the
 # wait threshold is captain-configurable; the cadence, budget, and per-command
@@ -440,16 +441,8 @@ PATHS
 FIVE_LENS_COMMENT_TITLE='Findings and fixes from 5-lenses-review'
 
 # names_open_finding <text>: the open-finding wording the gate check treats as
-# a stop, shared by the table rows and the per-lens result lines. An
-# `open`/`offen` word, including the German inflections `offene`/`offenen`/
-# `offener`/`offenes`, counts only when no negation in the same clause or
-# result cell reaches it across punctuation or a positive count, and a positive
-# count before `finding(s)`/`remain(s)`/`remaining`/`left`/`unresolved`/
-# `outstanding` counts as well unless the count is immediately qualified as
-# fixed, closed, resolved, or behoben. So `no finding remains open`, `0 open
-# findings`, and `2 findings fixed` are clean verdicts, while `1 open finding`,
-# `2 offen`, `2 findings remain`, `2 offene Findings`, and `2 findings fixed,
-# 1 remaining` name one.
+# a stop, shared by the table rows and the per-lens result lines. The header's
+# EDGE SEMANTICS owns the accepted clean forms and the negation and count rules.
 names_open_finding() {
   printf '%s\n' "$1" \
     | grep -Eiq 'nicht[ -]?clean|not[[:space:]]+clean|findings?[[:space:]]*:[[:space:]]*[1-9][0-9]*' \
@@ -520,7 +513,7 @@ gate_block_present() {
 }
 
 # gate_section_clean <section>: hard stop 1's classification of one five-lens
-# block. The policy owner's clarification accepts `Result: clean`, a table in
+# block. The gate accepts `Result: clean`, a table in
 # which every data row ran and its result cells prove no finding is open, or a
 # per-lens result for every lens that positively names a clean result; fewer
 # than five lens results, a row naming an open finding, a non-numeric result
@@ -986,8 +979,8 @@ forgejo_verdict_read() {
 # test alone would exhaust the page cap and read no comment at all (hard stop 1).
 forgejo_five_lens_comment_read() {
   local page=1 page_json page_count comments='[]' merged merged_count comment_count=0
-  while [ "$page" -le "$FILE_PAGE_MAX" ]; do
-    page_json=$(tea_read "/repos/$PR_PATH/issues/$PR_NUMBER/comments?limit=$FILE_PAGE_LIMIT&page=$page") || {
+  while [ "$page" -le "$API_PAGE_MAX" ]; do
+    page_json=$(tea_read "/repos/$PR_PATH/issues/$PR_NUMBER/comments?limit=$API_PAGE_LIMIT&page=$page") || {
       PR_FIVE_LENS_COMMENT=
       return 0
     }
@@ -1003,7 +996,7 @@ forgejo_five_lens_comment_read() {
       PR_FIVE_LENS_COMMENT=
       return 0
     }
-    if [ "$page_count" -lt "$FILE_PAGE_LIMIT" ] || [ "$merged_count" -eq "$comment_count" ]; then
+    if [ "$page_count" -lt "$API_PAGE_LIMIT" ] || [ "$merged_count" -eq "$comment_count" ]; then
       PR_FIVE_LENS_COMMENT=$(five_lens_comment_pick "$merged" "$OP_LOGIN")
       return 0
     fi
@@ -1026,15 +1019,15 @@ forgejo_files_read() {
   local page=1 page_json page_files count
   PR_FILES_READ=0
   PR_FILES=
-  while [ "$page" -le "$FILE_PAGE_MAX" ]; do
-    page_json=$(tea_read "/repos/$PR_PATH/pulls/$PR_NUMBER/files?limit=$FILE_PAGE_LIMIT&page=$page") || { PR_FILES=; return 0; }
+  while [ "$page" -le "$API_PAGE_MAX" ]; do
+    page_json=$(tea_read "/repos/$PR_PATH/pulls/$PR_NUMBER/files?limit=$API_PAGE_LIMIT&page=$page") || { PR_FILES=; return 0; }
     count=$(printf '%s' "$page_json" | jq -r 'if type == "array" then length else error("not a file array") end' 2>/dev/null) || { PR_FILES=; return 0; }
     page_files=$(printf '%s' "$page_json" | jq -r '
       if type == "array" then
         .[]? | (.filename // empty), (select((.previous_filename // "") != "") | .previous_filename)
       else error("not a file array") end' 2>/dev/null) || { PR_FILES=; return 0; }
     [ -z "$page_files" ] || PR_FILES="${PR_FILES}${PR_FILES:+$'\n'}$page_files"
-    if [ "$count" -lt "$FILE_PAGE_LIMIT" ]; then
+    if [ "$count" -lt "$API_PAGE_LIMIT" ]; then
       PR_FILES_READ=1
       return 0
     fi
@@ -1249,7 +1242,12 @@ evaluate_task() {
   # gate block or the task is a no-mistakes one, from the designated comment
   # too: the pipeline opens a no-mistakes PR, so the operator's exact-titled
   # comment is its normal evidence. A clean read from either source passes; an
-  # unreadable, untitled, or foreign-authored comment is never green.
+  # unreadable, untitled, or foreign-authored comment is never green. The
+  # comment's head-SHA and CI-state naming duty stays with its author per the
+  # merge policy: the scan reads the live head and live checks from the forge,
+  # and a base-movement rebase moves the head content-equivalently, so parsing
+  # the named head here would hold every rebased PR. This scan enforces the
+  # title, the author, and the classified result.
   gate_mode=$(field_of "$meta" mode)
   if gate_clean "$PR_BODY"; then
     gate_ok=1
