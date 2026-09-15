@@ -9,6 +9,10 @@
 #   - every other off-default state is left untouched and reported as a loud,
 #     quantified "STUCK: ... N commits behind ... - needs attention" warning
 #     instead of a quiet skip.
+# It also pins the durable seibert/main fork-line allowance: the firstmate
+# checkout itself (FM_ROOT) sitting on that line is an allowed primary state and
+# is reported benignly instead of STUCK, while a project clone on any foreign
+# branch - including one named seibert/main - still STUCKs.
 # The pre-existing fast-forward / already-current / local-only / no-origin paths
 # must be unchanged, and bootstrap must relay the new outcomes as FLEET_SYNC lines.
 #
@@ -96,6 +100,15 @@ run_sync() {
   FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" "$ROOT/bin/fm-fleet-sync.sh" "$@" 2>/dev/null
 }
 
+# run_sync_home <home> [args...]: run fleet-sync with the fixture itself as the
+# tracked code root (FM_ROOT_OVERRIDE), the shape teardown produces when the
+# project path is the home's own checkout.
+run_sync_home() {
+  local home=$1
+  shift
+  FM_HOME="$home" FM_ROOT_OVERRIDE="$home" "$ROOT/bin/fm-fleet-sync.sh" "$@" 2>/dev/null
+}
+
 # build_enclosing_home <name>: an FM_HOME that is itself nested inside another git
 # repository - firstmate's own layout, where projects/ sits inside the firstmate
 # checkout. The enclosing repo is a clean clone of a bare origin that is one commit
@@ -128,6 +141,31 @@ build_enclosing_home() {
 
   mkdir -p "$enclosing/projects"
   printf '%s\n' "$enclosing"
+}
+
+# build_fork_home <name>: a firstmate-home-shaped repo whose OWN checkout sits on
+# the durable seibert/main fork line, wired to a bare origin that carries both
+# main and seibert/main. This is the shape teardown passes fleet-sync for a
+# firstmate-repo task: the project path IS the tracked code root. Echoes the repo.
+build_fork_home() {
+  local name=$1 root work remote remote_abs
+  root="$TMP_ROOT/fork-home-$name"
+  work="$root/work"
+  remote="$root/remote.git"
+  mkdir -p "$root"
+
+  git init -q "$work"
+  git -C "$work" symbolic-ref HEAD refs/heads/main
+  commit_file "$work" file.txt v0 C0
+  git clone --quiet --bare "$work" "$remote"
+  remote_abs=$(cd "$remote" && pwd)
+  git -C "$work" remote add origin "file://$remote_abs"
+  git -C "$work" push -q -u origin main
+
+  git clone --quiet "file://$remote_abs" "$root/home"
+  git -C "$root/home" checkout -q -b seibert/main
+  git -C "$root/home" push -q -u origin seibert/main
+  printf '%s\n' "$root/home"
 }
 
 # --- packed-refs.lock fixtures ----------------------------------------------
@@ -330,6 +368,45 @@ test_non_default_branch_is_stuck_untouched() {
   assert_not_contains "$out" "recovered" "named branch is never auto-changed"
   [ "$(git -C "$clone" symbolic-ref --short HEAD)" = "feature" ] || fail "named branch checkout was changed"
   pass "non-default named branch is reported STUCK and left untouched"
+}
+
+test_fork_line_home_is_not_stuck() {
+  local home work before out
+  home=$(build_fork_home forkline)
+  work="$(dirname "$home")/work"
+  # origin/seibert/main moves ahead: fleet-sync must neither STUCK the home nor
+  # advance the line - the self-update path owns that reconciliation.
+  commit_file "$work" file.txt v1 C1
+  git -C "$work" push -q origin main:refs/heads/seibert/main
+  before=$(head_sha "$home")
+
+  out=$(run_sync_home "$home" "$home")
+
+  assert_not_contains "$out" "STUCK" "the firstmate checkout on the seibert/main fork line must not be flagged STUCK"
+  assert_contains "$out" "skipped: primary checkout on the seibert/main fork line" \
+    "the fork-line home must be reported as an allowed primary state"
+  [ "$(head_sha "$home")" = "$before" ] || fail "fleet-sync moved the fork-line home"
+  [ "$(git -C "$home" symbolic-ref --short HEAD)" = "seibert/main" ] \
+    || fail "the fork-line home was moved off seibert/main"
+  pass "the firstmate checkout on the seibert/main fork line is reported benignly, never STUCK or moved"
+}
+
+test_project_clone_on_fork_line_branch_is_still_stuck() {
+  local home clone out
+  home=$(new_home)
+  clone=$(build_pair "$home" forkclone)
+  git -C "$clone" checkout -q -b seibert/main
+  advance_origin "$home" forkclone C1
+
+  out=$(run_sync "$home" "$clone")
+
+  assert_contains "$out" "forkclone: STUCK: on branch seibert/main" \
+    "a project clone on a branch named seibert/main is not the home's fork line and must STUCK"
+  assert_contains "$out" "commits behind origin/main - needs attention" \
+    "the clone's STUCK must stay quantified"
+  [ "$(git -C "$clone" symbolic-ref --short HEAD)" = "seibert/main" ] \
+    || fail "the project clone's branch was changed"
+  pass "the fork-line allowance is scoped to the home: a project clone on seibert/main still STUCKs"
 }
 
 test_diverged_is_stuck_untouched() {
@@ -699,6 +776,8 @@ test_detached_unique_commit_is_stuck_untouched
 test_detached_clean_ancestor_with_diverged_local_default_is_stuck_untouched
 test_dirty_is_stuck_untouched
 test_non_default_branch_is_stuck_untouched
+test_fork_line_home_is_not_stuck
+test_project_clone_on_fork_line_branch_is_still_stuck
 test_diverged_is_stuck_untouched
 test_on_default_clean_behind_fast_forwards
 test_already_current_unchanged

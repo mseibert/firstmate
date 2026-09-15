@@ -6,11 +6,14 @@
 # Self-heals the one unambiguously safe drift: a clean, detached HEAD that holds
 # no unique commits (it is an ancestor of origin/<default>) and whose <default>
 # branch is free to check out is re-attached and then fast-forwarded ("recovered:").
-# Every other off-default state - a non-default named branch, a detached HEAD with
-# unique commits, a dirty tree, or a diverged default - may hold real work, so it
-# is left untouched and reported as a quantified, loud "STUCK: ... N commits behind
-# ... - needs attention" warning rather than a quiet drift. Nothing is ever forced,
-# stashed, or discarded.
+# The firstmate checkout itself (FM_ROOT) on the durable seibert/main fork line is
+# an allowed primary state, not drift: its advancement is owned by the self-update
+# path (bin/fm-update.sh -> bin/fm-ff-lib.sh's ff_line_origin), so it is reported
+# benignly and never STUCK. Every other off-default state - a non-default named
+# branch, a detached HEAD with unique commits, a dirty tree, or a diverged default
+# - may hold real work, so it is left untouched and reported as a quantified, loud
+# "STUCK: ... N commits behind ... - needs attention" warning rather than a quiet
+# drift. Nothing is ever forced, stashed, or discarded.
 # Still skips (benignly) local-only/no-origin projects, missing remotes/branches,
 # and fetch failures.
 # A candidate under projects/ must be the root of its own work tree: git discovery
@@ -38,6 +41,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 PROJECTS="${FM_PROJECTS_OVERRIDE:-$FM_HOME/projects}"
+# Physical form of the tracked code root, so sync_project's "is this the home's own
+# checkout?" comparison holds even through a symlinked home path.
+FM_ROOT_ABS=$(cd "$FM_ROOT" 2>/dev/null && pwd -P) || FM_ROOT_ABS=$FM_ROOT
 # shellcheck source=bin/fm-lock-lib.sh
 . "$SCRIPT_DIR/fm-lock-lib.sh"
 # Inert unless FM_TIMING_LOG names a file; only the deferred network stage sets it.
@@ -360,6 +366,20 @@ sync_project() {
   dirty=no
   [ -z "$(git -C "$PROJ" status --porcelain 2>/dev/null | head -1)" ] || dirty=yes
   recovered=no
+
+  # The firstmate checkout itself may legitimately sit on the durable seibert/main
+  # fork line - the primary checkout's healthy state (docs/architecture.md), whose
+  # advancement the self-update path owns (bin/fm-update.sh -> bin/fm-ff-lib.sh's
+  # ff_line_origin). That is not a project clone drifting off its default branch,
+  # so report it benignly instead of the off-default STUCK and never move it;
+  # bin/fm-ff-lib.sh and bin/fm-tangle-lib.sh already make the same allowance.
+  # Scoped to the home's own checkout, so a project clone under projects/ on a
+  # foreign branch - even one named seibert/main - still STUCKs below. A dirty
+  # tree keeps the ordinary STUCK, exactly as it does on the default branch.
+  if [ "$cur" = "seibert/main" ] && [ "$proj_abs" = "$FM_ROOT_ABS" ] && [ "$dirty" = no ]; then
+    echo "$label: skipped: primary checkout on the seibert/main fork line (self-update owns it)"
+    return 0
+  fi
 
   if [ "$cur" != "$DEFAULT" ]; then
     # Off the default branch. Auto-recover only the one unambiguously safe drift:

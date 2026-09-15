@@ -391,6 +391,7 @@ The locked session-start deferred network stage, PR-based teardown, and merged-P
 Wake-time refreshes can target a single clone by project name, so the primary home also catches up when a secondmate reports a merge from its own home.
 Clean default-branch clones fast-forward to `origin/<default>`, and a clean detached HEAD that holds no unique commits is re-attached to the default branch before the same fast-forward path runs.
 Dirty clones, non-default branches, detached HEADs with unique commits, diverged defaults, and default branches checked out in another worktree are reported as `STUCK:` with their behind count and left untouched.
+The home's own checkout (`FM_ROOT`) on the durable `seibert/main` fork line is the one exception: a clean one is an allowed primary state, so the refresh reports it as a benign skip and never moves it, leaving that line's advancement to the self-update path.
 Fetches blocked by an orphaned `.git/packed-refs.lock` use bounded retries and remove the lock only when the shared staleness proof can prove it abandoned; [configuration.md](configuration.md#toolchain) owns the recovery details and tuning knobs.
 Local-only projects, clones without an origin remote, and fetch failures remain benign skips.
 The refresh also prunes local branches whose remote is gone and that no worktree still needs.
