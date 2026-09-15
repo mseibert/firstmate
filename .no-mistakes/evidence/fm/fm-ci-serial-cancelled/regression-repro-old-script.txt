@@ -1,0 +1,12 @@
+ok - forgejo fresh LGTM reads updated_at, not the stale created_at
+ok - forgejo created_at newer than the head does not fake a fresh verdict
+ok - forgejo in-flight tracking comment waits instead of reading a verdict
+ok - forgejo tracking comment without updated_at never reads fresh
+ok - forgejo unrecognized review line reports its text
+ok - forgejo without a crabd tracking comment reports no verdict
+ok - forgejo blocking verdict exits action-required instead of waiting
+ok - forgejo Nits found. is mergeable
+ok - forgejo pending CI blocks readiness and --no-ci escapes it
+ok - forgejo red CI exits action-required
+ok - forgejo CI falls back to head-scoped tasks when no commit status exists
+not ok - forgejo cancelled run behind a combined failure: expected exit 1, got 4
