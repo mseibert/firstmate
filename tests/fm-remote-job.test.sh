@@ -29,6 +29,8 @@ LOSS_REPLACEMENT_PID=
 LOSS_CHALLENGER_PID=
 NEVERPUBLISHED_STATE=
 NEVERPUBLISHED_WORKER_PID=
+QUARANTINE_TEMP_STATE=
+QUARANTINE_TEMP_WORKER_PID=
 DISPLACED_STATE=
 DISPLACED_OWNER_PID=
 DISPLACED_REPLACEMENT_PID=
@@ -51,13 +53,14 @@ cleanup_remote_job_fixture() {
   [ -z "$LOSS_REPLACEMENT_PID" ] || kill "$LOSS_REPLACEMENT_PID" 2>/dev/null || true
   [ -z "$LOSS_CHALLENGER_PID" ] || kill -KILL "$LOSS_CHALLENGER_PID" 2>/dev/null || true
   [ -z "$NEVERPUBLISHED_WORKER_PID" ] || kill "$NEVERPUBLISHED_WORKER_PID" 2>/dev/null || true
+  [ -z "$QUARANTINE_TEMP_WORKER_PID" ] || kill "$QUARANTINE_TEMP_WORKER_PID" 2>/dev/null || true
   [ -z "$DISPLACED_OWNER_PID" ] || kill -KILL "$DISPLACED_OWNER_PID" 2>/dev/null || true
   [ -z "$DISPLACED_REPLACEMENT_PID" ] || kill "$DISPLACED_REPLACEMENT_PID" 2>/dev/null || true
   [ -z "$DISPLACED_COMMAND_GROUP_PID" ] || kill -KILL -- "-$DISPLACED_COMMAND_GROUP_PID" 2>/dev/null || true
   [ -z "$FOREIGN_OWNER_SERVE_PID" ] || kill "$FOREIGN_OWNER_SERVE_PID" 2>/dev/null || true
   [ -z "$FOREIGN_SLEEP_PID" ] || kill "$FOREIGN_SLEEP_PID" 2>/dev/null || true
   local state
-  for state in "$INDETERMINATE_STATE" "$LOSS_STATE" "$NEVERPUBLISHED_STATE" "$DISPLACED_STATE" "$FOREIGN_STATE"; do
+  for state in "$INDETERMINATE_STATE" "$LOSS_STATE" "$NEVERPUBLISHED_STATE" "$QUARANTINE_TEMP_STATE" "$DISPLACED_STATE" "$FOREIGN_STATE"; do
     [ -n "$state" ] || continue
     if [ -f "$state/worker.pid" ]; then
       fm_remote_job_stop_worker_tree "$(cat "$state/worker.pid")" || true
@@ -869,6 +872,47 @@ kill -TERM "$NEVERPUBLISHED_WORKER_PID"
 wait "$NEVERPUBLISHED_WORKER_PID" 2>/dev/null || true
 NEVERPUBLISHED_WORKER_PID=
 pass "a never-published ownership record is reclaimed once its publish window passes"
+
+# A serving owner killed between the quarantine publish's mktemp and its mv
+# leaves the fourth publish temp class behind. The reclaim path must clear it
+# like the others, or the lock directory can never be removed.
+QUARANTINE_TEMP_STATE="$TMP_ROOT/quarantine-temp-jobs"
+QUARANTINE_TEMP_HOME="$TMP_ROOT/quarantine-temp-account"
+mkdir -p "$QUARANTINE_TEMP_HOME" "$QUARANTINE_TEMP_STATE/jobs" "$QUARANTINE_TEMP_STATE/logs" \
+  "$QUARANTINE_TEMP_STATE/worker.lock"
+chmod 700 "$QUARANTINE_TEMP_HOME" "$QUARANTINE_TEMP_STATE" "$QUARANTINE_TEMP_STATE/jobs" \
+  "$QUARANTINE_TEMP_STATE/logs" "$QUARANTINE_TEMP_STATE/worker.lock"
+sleep 0.01 &
+DEAD_OWNER_PID=$!
+wait "$DEAD_OWNER_PID" 2>/dev/null || true
+printf '%s\n' "$DEAD_OWNER_PID" > "$QUARANTINE_TEMP_STATE/worker.lock/pid"
+printf 'stale\n' > "$QUARANTINE_TEMP_STATE/worker.lock/start"
+printf 'stale\n' > "$QUARANTINE_TEMP_STATE/worker.lock/command"
+printf 'active execution could not be confirmed stopped\n' \
+  > "$QUARANTINE_TEMP_STATE/worker.lock/.quarantine.deadbeef"
+chmod 600 "$QUARANTINE_TEMP_STATE/worker.lock/pid" "$QUARANTINE_TEMP_STATE/worker.lock/start" \
+  "$QUARANTINE_TEMP_STATE/worker.lock/command" "$QUARANTINE_TEMP_STATE/worker.lock/.quarantine.deadbeef"
+touch -t 200001010000 "$QUARANTINE_TEMP_STATE/worker.lock"
+HOME="$QUARANTINE_TEMP_HOME" FM_ROOT_OVERRIDE="$REMOTE_ROOT" \
+  FM_REMOTE_JOB_STATE_ROOT="$QUARANTINE_TEMP_STATE" FM_REMOTE_JOB_PLATFORM_OVERRIDE=Linux \
+  "$REMOTE_ROOT/bin/fm-remote-job-worker.sh" --serve \
+  > "$TMP_ROOT/quarantine-temp.out" 2> "$TMP_ROOT/quarantine-temp.err" &
+QUARANTINE_TEMP_WORKER_PID=$!
+for _ in $(seq 1 400); do
+  [ -f "$QUARANTINE_TEMP_STATE/worker.ready" ] && break
+  sleep 0.05
+done
+assert_present "$QUARANTINE_TEMP_STATE/worker.ready" \
+  "a quarantine publish temp file wedged the queue instead of being reclaimed"
+[ "$(cat "$QUARANTINE_TEMP_STATE/worker.lock/pid" 2>/dev/null || true)" = "$QUARANTINE_TEMP_WORKER_PID" ] \
+  || fail "the reclaiming worker did not publish its own ownership record"
+for leftover in "$QUARANTINE_TEMP_STATE/worker.lock"/.quarantine.*; do
+  [ ! -e "$leftover" ] || fail "a reclaimed lock directory kept the quarantine publish temp file ${leftover##*/}"
+done
+kill -TERM "$QUARANTINE_TEMP_WORKER_PID"
+wait "$QUARANTINE_TEMP_WORKER_PID" 2>/dev/null || true
+QUARANTINE_TEMP_WORKER_PID=
+pass "a quarantine publish temp file does not wedge lock reclaim"
 
 # Lock loss stops a serving generation: it must stop its own lane and exit
 # without touching the replacement's claim, so a displaced generation can never

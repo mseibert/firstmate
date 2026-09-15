@@ -229,7 +229,8 @@ worker_acquire_lock() {
     fi
     [ ! -L "$WORKER_LOCK/pid" ] && [ ! -L "$WORKER_LOCK/start" ] && [ ! -L "$WORKER_LOCK/command" ] || return 1
     rm -f -- "$WORKER_LOCK/pid" "$WORKER_LOCK/start" "$WORKER_LOCK/command" || return 1
-    rm -f -- "$WORKER_LOCK"/.pid.* "$WORKER_LOCK"/.start.* "$WORKER_LOCK"/.command.* || return 1
+    rm -f -- "$WORKER_LOCK"/.pid.* "$WORKER_LOCK"/.start.* "$WORKER_LOCK"/.command.* \
+      "$WORKER_LOCK"/.quarantine.* || return 1
     # A concurrent release may win the rmdir; the next iteration either claims
     # the freed lock or observes the new owner.
     rmdir "$WORKER_LOCK" 2>/dev/null || true
