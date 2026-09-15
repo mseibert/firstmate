@@ -35,7 +35,15 @@ TMP_ROOT=$(fm_test_tmproot fm-watch-triage-tests)
 # matches the suite's other bounded waits (wait_poll_cycle 300, wait_for_exit
 # 100); all three are overridable so the regression case can exercise a cap
 # quickly.
-FM_TEST_REAP_LIMIT_TICKS=${FM_TEST_REAP_LIMIT_TICKS:-100}
+# reap's budget must sit above the longest bounded child the watcher can be
+# waiting on when SIGTERM arrives, because bash defers a trap until the current
+# foreground command returns: the inactive-reconcile scan is bounded at its
+# budget+1 backstop (11s by default), the two sequential kernel-log readers at
+# 6s each (12s), and the worktree write probe at 10s. A 10s reap cap could
+# SIGKILL a healthy watcher mid-child - the 2026-09-15 CI run did exactly that
+# in the authoritative-parked stale case - so the cap is 30s, above every
+# bounded child, and a cap hit still names a watcher stuck in unbounded work.
+FM_TEST_REAP_LIMIT_TICKS=${FM_TEST_REAP_LIMIT_TICKS:-300}
 FM_TEST_DRAIN_LIMIT_SECS=${FM_TEST_DRAIN_LIMIT_SECS:-30}
 # A bounded drain runner needs a little longer than the drain's own bound to
 # finish and report its status, so the pid wait that follows it cannot race the
