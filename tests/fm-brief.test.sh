@@ -483,7 +483,7 @@ assert_five_lens_rules() {  # <brief> <label>
 }
 
 test_five_lens_gate_in_direct_pr_dod() {
-  local home id brief lens
+  local home id brief
   home="$TMP_ROOT/five-lens-home"
   mkdir -p "$home/data"
 
@@ -527,7 +527,7 @@ test_five_lens_gate_in_direct_pr_dod() {
 # green final head from an unclean comment and from a red CI result. direct-PR
 # keeps its body-based block and local-only carries neither.
 test_five_lens_comment_in_no_mistakes_dod() {
-  local home id brief mode lens
+  local home id brief mode
 
   home="$TMP_ROOT/five-lens-comment-home"
   mkdir -p "$home/data"
@@ -569,6 +569,8 @@ test_five_lens_comment_in_no_mistakes_dod() {
     "no-mistakes DOD must wait for CI green on the final head before done"
   assert_grep "\`done: PR {url} checks green - five-lens comment: <what is not clean>\`" "$brief" \
     "no-mistakes DOD must surface an unclean comment in the done line"
+  assert_grep "the red head is firstmate's repair call" "$brief" \
+    "no-mistakes DOD must justify escalating a red final head instead of a worker fix loop"
   assert_grep "when CI is green there but the comment's Result is not clean" "$brief" \
     "no-mistakes DOD must gate the unclean-comment done line on green CI too"
   assert_grep "\`done: PR {url} checks red - <what failed>\` instead of any checks-green line" "$brief" \

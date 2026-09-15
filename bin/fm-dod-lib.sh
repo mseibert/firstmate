@@ -386,7 +386,8 @@ EOF
       cat <<EOF
 After /no-mistakes reports CI green (the CI-ready return point - do not wait for it to keep monitoring in the background until merge), run the five-lens pass and post its comment.
 The pipeline's CI monitor re-arms on base movement, not on a new head, so when a lens fix commit moved the head, wait for CI to report on that final head and record its state in the comment.
-Append \`done: PR {url} checks green\` only once CI is green on the final head the comment names, or \`done: PR {url} checks green - five-lens comment: <what is not clean>\` when CI is green there but the comment's Result is not clean; when CI is red on that final head, append \`done: PR {url} checks red - <what failed>\` instead of any checks-green line, then stop.
+Append \`done: PR {url} checks green\` only once CI is green on the final head the comment names, or \`done: PR {url} checks green - five-lens comment: <what is not clean>\` when CI is green there but the comment's Result is not clean.
+When CI is red on that final head, append \`done: PR {url} checks red - <what failed>\` instead of any checks-green line, then stop - the pipeline run is complete, so the red head is firstmate's repair call.
 You are finished.
 EOF
       ;;
