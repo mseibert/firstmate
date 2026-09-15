@@ -235,6 +235,7 @@ family_for_basename() {
     fm-lint-workflows.test.sh|\
     fm-operational-input.test.sh|fm-pi-primary-types.test.sh|\
     fm-harness-adapter-references.test.sh|\
+    fm-self-update-timer-arm.test.sh|fm-self-update-timer.test.sh|\
     fm-send-popup-settle.test.sh|fm-send-settle.test.sh|\
     fm-subagent-pretool-check.test.sh|\
     fm-supervision-instructions.test.sh|fm-task-delivery.test.sh|\
@@ -661,6 +662,8 @@ tests/fm-secondmate-reconcile.test.sh 98384
 tests/fm-secondmate-restart.test.sh 72667
 tests/fm-secondmate-safety.test.sh 59727
 tests/fm-secondmate-sync.test.sh 69748
+tests/fm-self-update-timer-arm.test.sh 836
+tests/fm-self-update-timer.test.sh 709
 tests/fm-send-inbox-doorbell-live-e2e.test.sh 94
 tests/fm-send-inbox.test.sh 39338
 tests/fm-send-remote-delivery.test.sh 27799
