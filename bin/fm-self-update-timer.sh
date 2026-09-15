@@ -32,9 +32,10 @@
 #
 # The run log is state/self-update-timer.log: one quiet line for a run with
 # nothing to report, and a bounded detailed record when a home advanced, a
-# target was skipped, or a pending restart was retried. The log is the
-# operator-facing surface; docs/configuration.md "Self-update timer" owns the
-# operator contract.
+# target was skipped, or a pending restart was retried. The pass's stderr
+# diagnostics - fm-guard.sh's WATCHER DOWN banner and its reminders - stay on
+# the unit journal and never become log detail. The log is the operator-facing
+# surface; docs/configuration.md "Self-update timer" owns the operator contract.
 #
 # Usage:
 #   fm-self-update-timer.sh run       run one pass (the timer service's ExecStart)
@@ -186,8 +187,8 @@ outcome_for() {  # <id> -> restarted|nudged|unreached|unknown
 action_run() {
   local line id i
   local -a advanced=() detail=() restart_ids=() still_pending=()
-  local primary_updated=no reread_line="" seen=" " pass_detail_count=0
-  local update_out update_rc=0 restart_rc=0 hard_fail=no header outcome
+  local primary_updated=no reread_line="" seen=" " skip_count=0
+  local update_out update_err update_err_file update_rc=0 restart_rc=0 hard_fail=no header outcome
 
   if [ ! -d "$FM_HOME" ]; then
     error "home directory is unavailable: $FM_HOME"
@@ -205,16 +206,34 @@ action_run() {
   fi
 
   # The pass's own skip semantics (dirty, diverged, offline, wrong branch) stay
-  # authoritative: this wrapper never forces, stashes, or discards anything.
-  update_out=$(FM_HOME="$FM_HOME" FM_ROOT_OVERRIDE="${FM_ROOT_OVERRIDE:-}" \
-    "$UPDATE_BIN" 2>&1) || update_rc=$?
+  # authoritative: this wrapper never forces, stashes, or discards anything. Its
+  # stdout carries the per-target status lines this wrapper parses; its stderr
+  # carries diagnostics (fm-guard.sh's WATCHER DOWN banner, a failed remote
+  # route, malformed registry entries) that belong on the unit journal and must
+  # not become log detail or force the "skipped" header. The two streams are
+  # staged separately because the banner would otherwise be parsed as if it
+  # were a pass status line.
+  update_err_file=$(mktemp "$STATE/.self-update-timer-stderr.XXXXXX" 2>/dev/null) || update_err_file=""
+  if [ -n "$update_err_file" ]; then
+    update_out=$(FM_HOME="$FM_HOME" FM_ROOT_OVERRIDE="${FM_ROOT_OVERRIDE:-}" \
+      "$UPDATE_BIN" 2>"$update_err_file") || update_rc=$?
+    update_err=$(cat "$update_err_file" 2>/dev/null || true)
+    rm -f -- "$update_err_file"
+  else
+    # Cannot stage stderr: let it reach the unit journal directly and parse
+    # stdout only, so a diagnostic still never masquerades as a pass status.
+    update_out=$(FM_HOME="$FM_HOME" FM_ROOT_OVERRIDE="${FM_ROOT_OVERRIDE:-}" \
+      "$UPDATE_BIN") || update_rc=$?
+    update_err=""
+  fi
 
-  # Parse the pass's per-target lines. Only "updated" advances a mate and
+  # Parse the pass's per-target stdout lines. Only "updated" advances a mate and
   # therefore earns a restart; "already current" is left alone. The pass's two
   # action-summary lines are deliberately not read: they express the pass's own
   # unconditional restart policy, which this wrapper replaces with the
-  # progress-gated one above. Every other non-"already current" line is kept for
-  # the log, so a skip reason is recorded verbatim.
+  # progress-gated one above. A recognized skip line is recorded verbatim and is
+  # the only pass line that drives the "skipped" header; any other stdout line
+  # is still kept for the log (failure output) but is not itself a skip.
   while IFS= read -r line; do
     case "$line" in
       "firstmate: updated "*)
@@ -224,6 +243,7 @@ action_run() {
       "firstmate: already current") ;;
       "firstmate: skipped: "*)
         detail+=("$line")
+        skip_count=$((skip_count + 1))
         ;;
       "secondmate "*": updated "*)
         id=${line#secondmate }
@@ -234,6 +254,7 @@ action_run() {
       "secondmate "*": already current") ;;
       "secondmate "*": skipped: "*)
         detail+=("$line")
+        skip_count=$((skip_count + 1))
         ;;
       "remote secondmate "*": updated on "*)
         id=${line#remote secondmate }
@@ -244,6 +265,7 @@ action_run() {
       "remote secondmate "*": already current on "*) ;;
       "remote secondmate "*": skipped on "*)
         detail+=("$line")
+        skip_count=$((skip_count + 1))
         ;;
       "reread-firstmate: "*)
         reread_line=$line
@@ -255,9 +277,22 @@ action_run() {
         ;;
     esac
   done <<< "$update_out"
-  # Only pass-sourced lines decide between the "skipped" and "pending restart
-  # retry" headers; the restart lines appended below are outcome detail.
-  pass_detail_count=${#detail[@]}
+  # A recognized skip line on stderr (an unreachable remote route) is pass
+  # status too and is recorded the same way; every other stderr line is a
+  # diagnostic and is forwarded to the unit journal instead.
+  if [ -n "$update_err" ]; then
+    while IFS= read -r line; do
+      case "$line" in
+        "firstmate: skipped: "*|"secondmate "*": skipped: "*|"remote secondmate "*": skipped on "*)
+          detail+=("$line")
+          skip_count=$((skip_count + 1))
+          ;;
+        *)
+          printf '%s\n' "$line" >&2
+          ;;
+      esac
+    done <<< "$update_err"
+  fi
   if [ "$update_rc" -ne 0 ]; then
     hard_fail=yes
     detail+=("failed: the update pass exited $update_rc")
@@ -320,7 +355,7 @@ action_run() {
     header="failed"
   elif [ "$primary_updated" = yes ] || [ "${#advanced[@]}" -gt 0 ]; then
     header="updated"
-  elif [ "$pass_detail_count" -gt 0 ]; then
+  elif [ "$skip_count" -gt 0 ]; then
     header="skipped"
   elif [ "${#restart_ids[@]}" -gt 0 ]; then
     header="pending restart retry"
@@ -328,7 +363,7 @@ action_run() {
     header="already current"
   fi
 
-  if [ "$header" = "already current" ]; then
+  if [ "$header" = "already current" ] && [ "${#detail[@]}" -eq 0 ]; then
     emit_record "already current" || return 1
     return 0
   fi

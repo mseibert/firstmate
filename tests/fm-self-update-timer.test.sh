@@ -61,8 +61,9 @@ write_out() {  # <home> <name> <line>...
   printf '%s\n' "$@" > "$home/$name"
 }
 
-# Run one timer pass. The wrapper's output lands in <home>/run.out and this
-# function returns the wrapper's exit code; FM_FAKE_* must prefix the call.
+# Run one timer pass. The wrapper's stdout lands in <home>/run.out and its
+# stderr (the unit journal surface) in <home>/run.err; this function returns the
+# wrapper's exit code and FM_FAKE_* must prefix the call.
 run_timer() {
   local home=$1
   FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" \
@@ -72,7 +73,7 @@ run_timer() {
     FM_SELF_UPDATE_PENDING="$home/state/.self-update-pending-restarts" \
     FM_FAKE_UPDATE_ARGV="$home/update.argv" \
     FM_FAKE_RESTART_ARGV="$home/restart.argv" \
-    "$RUN" run >"$home/run.out" 2>&1
+    "$RUN" run >"$home/run.out" 2>"$home/run.err"
 }
 
 # --- 1. a no-progress run is quiet and restarts nobody -----------------------
@@ -329,6 +330,98 @@ test_restart_outcomes_match_ids_exactly() {
   pass "restart outcomes are matched against the exact mate id"
 }
 
+# --- 6. pass stderr: diagnostics are journalled, recognized skips still count -
+
+test_stderr_diagnostics_do_not_mislabel_a_no_progress_run() {
+  local home out err rc log
+  home=$(make_home stderr-diagnostics)
+  make_fakes "$home"
+  # The real pass calls fm-guard.sh, whose WATCHER DOWN banner goes to stderr.
+  # The banner must reach the unit journal but must not become log detail or
+  # force the run's header to "skipped".
+  cat > "$home/fm-update.sh" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' '●  WATCHER DOWN - SUPERVISION IS OFF' >&2
+printf '%s\n' '●  This is a supervision warning only; the guarded operation WILL still run.' >&2
+cat "${FM_FAKE_UPDATE_OUT:?}"
+exit "${FM_FAKE_UPDATE_RC:-0}"
+SH
+  chmod +x "$home/fm-update.sh"
+  write_out "$home" update.out \
+    'firstmate: already current' \
+    'secondmate nuc: already current' \
+    'reread-firstmate: no' \
+    'restart-secondmates: fm-nuc' \
+    'nudge-secondmates: none'
+  FM_FAKE_UPDATE_OUT="$home/update.out" FM_FAKE_RESTART_OUT=/dev/null \
+    run_timer "$home"; rc=$?
+  out=$(cat "$home/run.out")
+  err=$(cat "$home/run.err")
+  log="$home/state/self-update-timer.log"
+  expect_code 0 "$rc" "run exit"
+  [ "$(wc -l < "$log")" -eq 1 ] \
+    || fail "stderr diagnostics must not add log lines (got $(wc -l < "$log"))"
+  assert_grep 'already current' "$log" "the no-progress run must stay the quiet line"
+  assert_not_contains "$(cat "$log")" 'WATCHER DOWN' \
+    "the guard banner must not become an operator log record"
+  assert_contains "$err" 'WATCHER DOWN' \
+    "the guard banner must still reach the unit journal on stderr"
+  assert_not_contains "$out" 'WATCHER DOWN' "the log surface must stay quiet"
+  assert_absent "$home/restart.argv" "a no-progress run must not call the restart pass"
+  pass "pass stderr diagnostics are journalled without mislabelling a no-progress run"
+}
+
+test_recognized_skip_on_stderr_still_drives_the_skipped_header() {
+  local home out rc log
+  home=$(make_home stderr-skip)
+  make_fakes "$home"
+  # fm-update.sh reports an unreachable remote route on stderr; that is a
+  # recognized pass skip line, so it must still be recorded and set the header.
+  cat > "$home/fm-update.sh" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' 'remote secondmate rem: skipped on remote-host: unreachable' >&2
+cat "${FM_FAKE_UPDATE_OUT:?}"
+exit "${FM_FAKE_UPDATE_RC:-0}"
+SH
+  chmod +x "$home/fm-update.sh"
+  write_out "$home" update.out \
+    'firstmate: already current' \
+    'reread-firstmate: no' \
+    'restart-secondmates: none' \
+    'nudge-secondmates: none'
+  FM_FAKE_UPDATE_OUT="$home/update.out" FM_FAKE_RESTART_OUT=/dev/null \
+    run_timer "$home"; rc=$?
+  out=$(cat "$home/run.out")
+  log="$home/state/self-update-timer.log"
+  expect_code 0 "$rc" "run exit"
+  assert_grep 'skipped' "$log" "a recognized stderr skip must still set the skipped header"
+  assert_contains "$out" 'remote secondmate rem: skipped on remote-host: unreachable' \
+    "a recognized stderr skip reason must be recorded verbatim"
+  pass "a recognized skip line on stderr still drives the skipped header"
+}
+
+test_unrecognized_pass_output_is_recorded_without_a_skip_header() {
+  local home out rc log
+  home=$(make_home unknown-output)
+  make_fakes "$home"
+  write_out "$home" update.out \
+    'unexpected pass notice on stdout' \
+    'firstmate: already current' \
+    'reread-firstmate: no' \
+    'restart-secondmates: none' \
+    'nudge-secondmates: none'
+  FM_FAKE_UPDATE_OUT="$home/update.out" FM_FAKE_RESTART_OUT=/dev/null \
+    run_timer "$home"; rc=$?
+  out=$(cat "$home/run.out")
+  log="$home/state/self-update-timer.log"
+  expect_code 0 "$rc" "run exit"
+  assert_contains "$out" 'unexpected pass notice on stdout' \
+    "unrecognized stdout output must not be silently dropped"
+  assert_grep 'already current' "$log" "an unrecognized stdout line must not set a skip header"
+  assert_no_grep 'skipped' "$log" "an unrecognized stdout line must not set the skipped header"
+  pass "unrecognized pass stdout output is recorded without a skip header"
+}
+
 test_usage_and_unknown_action() {
   local out rc
   out=$("$RUN" --help 2>&1); rc=$?
@@ -349,4 +442,7 @@ test_skips_are_logged_verbatim
 test_update_failure_is_reported_and_fails_the_run
 test_restart_hard_failure_keeps_the_mate_pending
 test_restart_outcomes_match_ids_exactly
+test_stderr_diagnostics_do_not_mislabel_a_no_progress_run
+test_recognized_skip_on_stderr_still_drives_the_skipped_header
+test_unrecognized_pass_output_is_recorded_without_a_skip_header
 test_usage_and_unknown_action
