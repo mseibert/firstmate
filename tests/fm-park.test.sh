@@ -11,7 +11,8 @@
 #   3. Idempotency: an already-released task is success with no second exit and
 #      no duplicate status line or backlog note.
 #   4. Resume: the short relaunch note for merge and decision, marker removal,
-#      and the wrong-reason refusal.
+#      the wrong-reason refusal, and the guarded resume completing under the
+#      real lease guard.
 #   5. Clear: the trivial-landing path removes the marker without a relaunch.
 #   6. list/status read surfaces, the bounded sweep, and the snapshot's active
 #      versus parked occupancy projection.
@@ -101,23 +102,41 @@ write_task() {  # <home> <id> [extra-meta-line...]
   : > "$home/state/$id.status"
 }
 
+# park_seam_env <home>: fill PARK_SEAM_ENV with the fixture seams every runner
+# shares, one "NAME=value" per element, so a new seam reaches both runners.
+PARK_SEAM_ENV=()
+park_seam_env() {  # <home>
+  local home=$1
+  PARK_SEAM_ENV=(
+    "PATH=$home/fakebin:$PATH"
+    "FM_HOME=$home"
+    "FM_STATE_OVERRIDE=$home/state"
+    "FM_DATA_OVERRIDE=$home/data"
+    "FM_CONFIG_OVERRIDE=$home/config"
+    "FM_PARK_CREW_STATE_BIN=$home/crew-state.sh"
+    "FM_PARK_NOW_EPOCH=1700000000"
+    "FM_TASKS_AXI_COMPATIBLE=1"
+    "FM_FAKE_CONTROL_LOG=$home/control.log"
+    "FM_FAKE_CREW_STATE=${FM_FAKE_CREW_STATE:-done}"
+    "FM_FAKE_CREW_SOURCE=${FM_FAKE_CREW_SOURCE:-run-step}"
+    "FM_FAKE_CREW_DETAIL=${FM_FAKE_CREW_DETAIL:-fixture}"
+    "FAKE_AXI_LOG=$home/axi.log"
+    "FAKE_AXI_BODY=$home/axi-body"
+    "FAKE_AXI_HELD=${FAKE_AXI_HELD:-no}"
+    "FAKE_AXI_HOLD_KIND=${FAKE_AXI_HOLD_KIND:-}"
+    "FAKE_AXI_HOLD_REASON=${FAKE_AXI_HOLD_REASON:-}"
+  )
+}
+
 # run_park <home> <args...>: invoke fm-park.sh against one fixture home with
 # every seam pointed at the fixture.
 run_park() {  # <home> <args...>
   local home=$1
   shift
-  PATH="$home/fakebin:$PATH" \
-    FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
-    FM_CONFIG_OVERRIDE="$home/config" \
-    FM_PARK_CONTROL_BIN="$home/control.sh" FM_PARK_CREW_STATE_BIN="$home/crew-state.sh" \
-    FM_PARK_NOW_EPOCH=1700000000 FM_TASKS_AXI_COMPATIBLE=1 \
-    FM_FAKE_CONTROL_LOG="$home/control.log" FM_FAKE_CONTROL_RC="${FM_FAKE_CONTROL_RC:-0}" \
-    FM_FAKE_CREW_STATE="${FM_FAKE_CREW_STATE:-done}" \
-    FM_FAKE_CREW_SOURCE="${FM_FAKE_CREW_SOURCE:-run-step}" \
-    FM_FAKE_CREW_DETAIL="${FM_FAKE_CREW_DETAIL:-fixture}" \
-    FAKE_AXI_LOG="$home/axi.log" FAKE_AXI_BODY="$home/axi-body" \
-    FAKE_AXI_HELD="${FAKE_AXI_HELD:-no}" \
-    FAKE_AXI_HOLD_KIND="${FAKE_AXI_HOLD_KIND:-}" FAKE_AXI_HOLD_REASON="${FAKE_AXI_HOLD_REASON:-}" \
+  park_seam_env "$home"
+  env "${PARK_SEAM_ENV[@]}" \
+    "FM_PARK_CONTROL_BIN=$home/control.sh" \
+    "FM_FAKE_CONTROL_RC=${FM_FAKE_CONTROL_RC:-0}" \
     "$PARK" "$@"
 }
 
@@ -150,21 +169,17 @@ SH
   chmod +x "$home/control-guarded.sh"
 }
 
-# run_park_guarded <home> <args...>: park in a Pi supervision context with the
-# REAL lease guard active, bounded so a guard deadlock fails the test instead
-# of hanging it.
+# run_park_guarded <home> <args...>: run fm-park in a Pi supervision context
+# with the REAL lease guard active, bounded so a guard deadlock fails the test
+# instead of hanging it.
 run_park_guarded() {  # <home> <args...>
   local home=$1
   shift
+  park_seam_env "$home"
   fm_run_timed 20 env PI_CODING_AGENT=true FM_SUPERVISION_ACTOR=main FM_GATE_REFUSE_BYPASS=1 \
-    PATH="$home/fakebin:$PATH" \
-    FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
-    FM_CONFIG_OVERRIDE="$home/config" \
-    FM_PARK_CONTROL_BIN="$home/control-guarded.sh" FM_PARK_CREW_STATE_BIN="$home/crew-state.sh" \
-    FM_PARK_NOW_EPOCH=1700000000 FM_TASKS_AXI_COMPATIBLE=1 \
-    FM_FAKE_CONTROL_LOG="$home/control.log" FM_FAKE_CONTROL_RC=0 \
-    FM_FAKE_CREW_STATE=done FM_FAKE_CREW_SOURCE=run-step FM_FAKE_CREW_DETAIL=fixture \
-    FAKE_AXI_LOG="$home/axi.log" FAKE_AXI_BODY="$home/axi-body" FAKE_AXI_HELD=no \
+    "${PARK_SEAM_ENV[@]}" \
+    "FM_PARK_CONTROL_BIN=$home/control-guarded.sh" \
+    FM_FAKE_CONTROL_RC=0 \
     "$PARK" "$@"
 }
 
@@ -405,47 +420,64 @@ test_manual_backend_prints_the_owed_note() {
 
 # --- lease guard across the release -----------------------------------------
 
-test_park_release_completes_under_the_real_guard() {
+# guard_release_case <case> <fresh|releasing> <label>: park t1 under the real
+# lease guard. The release holds the lease-command lock while it runs the
+# control plane, which guards the same task; before the guard hold was
+# inheritable the child waited forever on the parent's non-reentrant lock, so a
+# deadlock fails the test through the timeout instead of hanging it.
+guard_release_case() {  # <case> <fresh|releasing> <label>
+  local case=$1 retry=$2 label=$3
   local home out rc
-  home=$(make_case guard-release)
+  home=$(make_case "$case")
   write_task "$home" t1 "pr=https://github.com/example/demo/pull/7"
   printf 'done: PR https://github.com/example/demo/pull/7 checks green\n' > "$home/state/t1.status"
   printf 'manual\n' > "$home/config/backlog-backend"
   printf '%s\n' "$$" > "$home/state/.lock"
   write_guarded_control "$home"
-  # The release holds the lease-command lock while it runs the control plane,
-  # which guards the same task; before the guard hold was inheritable the child
-  # waited forever on the parent's non-reentrant lock.
+  if [ "$retry" = releasing ]; then
+    # The exact retry a sweep or a later session runs after an interrupted
+    # release: the marker is already recorded at state=releasing.
+    printf 'schema=fm-park.v1\ntask=t1\nreason=merge\npointer=https://github.com/example/demo/pull/7\nbranch=fm/demo\npr=https://github.com/example/demo/pull/7\nepoch=1699999999\nincarnation=s-t1\nstate=releasing\n' \
+      > "$home/state/t1.parked"
+  fi
   out=$(run_park_guarded "$home" park t1 2>&1); rc=$?
-  expect_code 0 "$rc" "a park release must complete while its own guard is held (a deadlock times out): $out"
-  assert_contains "$out" "parked t1 reason=merge" "the guarded park did not report the release"
-  [ "$(marker_value "$home" state)" = released ] || fail "the guarded park did not commit the verified release"
+  expect_code 0 "$rc" "$label must complete while its own guard is held (a deadlock times out): $out"
+  assert_contains "$out" "parked t1 reason=merge" "$label did not report the release"
+  [ "$(marker_value "$home" state)" = released ] || fail "$label did not commit the verified release"
   grep -qxF 't1 exit lock=held' "$home/control.log" \
-    || fail "the guarded child did not run under the parent's lock or dropped it: $(cat "$home/control.log" 2>/dev/null)"
-  [ ! -e "$home/state/.fm-lease-command.lock" ] || fail "the park parent did not release its guard lock"
-  pass "a park release completes with the real lease guard active and the child cannot drop the parent's lock"
+    || fail "$label: the guarded child did not run under the parent's lock or dropped it: $(cat "$home/control.log" 2>/dev/null)"
+  [ ! -e "$home/state/.fm-lease-command.lock" ] || fail "$label left the guard lock behind"
+  pass "$label completes with the real lease guard active and the child cannot drop the parent's lock"
+}
+
+test_park_release_completes_under_the_real_guard() {
+  guard_release_case guard-release fresh "a park release"
 }
 
 test_releasing_retry_completes_under_the_real_guard() {
+  guard_release_case guard-retry releasing "the releasing retry a sweep runs"
+}
+
+test_resume_completes_under_the_real_guard() {
   local home out rc
-  home=$(make_case guard-retry)
+  home=$(make_case guard-resume)
   write_task "$home" t1 "pr=https://github.com/example/demo/pull/7"
   printf 'done: PR https://github.com/example/demo/pull/7 checks green\n' > "$home/state/t1.status"
   printf 'manual\n' > "$home/config/backlog-backend"
   printf '%s\n' "$$" > "$home/state/.lock"
   write_guarded_control "$home"
-  # The exact retry a sweep or a later session runs after an interrupted
-  # release: the marker is already recorded at state=releasing.
-  printf 'schema=fm-park.v1\ntask=t1\nreason=merge\npointer=https://github.com/example/demo/pull/7\nbranch=fm/demo\npr=https://github.com/example/demo/pull/7\nepoch=1699999999\nincarnation=s-t1\nstate=releasing\n' \
-    > "$home/state/t1.parked"
-  out=$(run_park_guarded "$home" park t1 2>&1); rc=$?
-  expect_code 0 "$rc" "the releasing retry must complete under the guard (a deadlock times out): $out"
-  assert_contains "$out" "parked t1 reason=merge" "the guarded retry did not report the release"
-  [ "$(marker_value "$home" state)" = released ] || fail "the guarded retry did not commit the verified release"
-  grep -qxF 't1 exit lock=held' "$home/control.log" \
-    || fail "the guarded retry's child did not run under the parent's lock: $(cat "$home/control.log" 2>/dev/null)"
-  [ ! -e "$home/state/.fm-lease-command.lock" ] || fail "the guarded retry left the guard lock behind"
-  pass "the releasing retry a sweep runs completes with the real lease guard active"
+  run_park_guarded "$home" park t1 >/dev/null || fail "park failed under the real guard"
+  # resume holds the same guard while the control plane relaunches the task, so
+  # the same deadlock applies to it; before the guard hold was inheritable this
+  # call waited forever on the parent's non-reentrant lock.
+  out=$(run_park_guarded "$home" resume t1 --reason merge 2>&1); rc=$?
+  expect_code 0 "$rc" "a resume must complete while its own guard is held (a deadlock times out): $out"
+  assert_contains "$out" "resumed t1 reason=merge" "the guarded resume did not report the task"
+  grep -q 't1 relaunch --note.*lock=held' "$home/control.log" \
+    || fail "the guarded resume's child did not run under the parent's lock: $(cat "$home/control.log" 2>/dev/null)"
+  [ ! -e "$home/state/t1.parked" ] || fail "the guarded resume did not remove the marker"
+  [ ! -e "$home/state/.fm-lease-command.lock" ] || fail "the guarded resume left the guard lock behind"
+  pass "a resume completes with the real lease guard active and the child cannot drop the parent's lock"
 }
 
 test_releasing_retry_restores_the_status_line() {
@@ -684,6 +716,7 @@ test_park_refuses_an_unknown_id
 test_releasing_retry_restores_the_status_line
 test_park_release_completes_under_the_real_guard
 test_releasing_retry_completes_under_the_real_guard
+test_resume_completes_under_the_real_guard
 test_stale_marker_from_an_earlier_incarnation
 test_resume_resolves_a_raw_launch_harness
 test_decision_key_parks_and_resume_carries_the_decision

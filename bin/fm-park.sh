@@ -63,9 +63,10 @@
 #           home's owed backlog note on stderr; a failed release prints one
 #           PARK_SWEEP line so the caller can surface it. Bounded by
 #           --limit (default FM_PARK_SWEEP_LIMIT, 2) and by
-#           FM_PARK_SWEEP_BUDGET_SECS (default 20) of wall clock, and
-#           best-effort: a sweep cut off by the startup bound leaves every task
-#           as it found it and the next session or heartbeat retries.
+#           FM_PARK_SWEEP_BUDGET_SECS (default 20) of wall clock checked
+#           between tasks, and best-effort: a sweep cut off by the startup
+#           bound leaves every task as it found it and the next session or
+#           heartbeat retries.
 #
 # The marker `state/<id>.parked` is schema fm-park.v1; docs/park-release.md
 # owns the field table and the `releasing`/`released` semantics. Every reader
