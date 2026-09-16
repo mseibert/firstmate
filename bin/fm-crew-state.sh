@@ -15,7 +15,7 @@
 # fixed mapping logic, no heuristics and no LLM. Output is one stable, parseable,
 # token-tight line firstmate can read every heartbeat:
 #
-#   state: <working|parked|done|blocked|paused|failed|unknown> · source: <run-step|pane|status-log|remote-endpoint|none> · <detail>
+#   state: <working|parked|done|blocked|paused|failed|unknown> · source: <run-step|pane|status-log|remote-endpoint|park-marker|none> · <detail>
 #
 # Logic, in order:
 #   1. Resolve worktree + backend target + kind from state/<id>.meta. A meta
@@ -26,6 +26,12 @@
 #      to the routed status log; dead/missing report the remote verdict; an
 #      unreachable or unreadable remote reports unknown-remote, never a false
 #      gone/dead.
+#   1b. A released park marker at state/<id>.parked short-circuits every later
+#      read: bin/fm-park.sh writes state=released only after bin/fm-control.sh
+#      verified the worker stopped, so the task is deliberately idle awaiting a
+#      merge or a decision and reads parked with its reason and pointer. A
+#      marker still at state=releasing records an unverified release and falls
+#      through to the ordinary reads below, never claiming a free slot.
 #   2. Matching no-mistakes run for this crew's branch AND current code identity,
 #      active or terminal (from `axi status`, or the coarse `no-mistakes runs`
 #      fallback)? Branch name alone is not enough: a historical run on a reused
@@ -104,6 +110,8 @@ STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 . "$SCRIPT_DIR/fm-busy-lib.sh"
 # shellcheck source=bin/fm-nm-run-lib.sh
 . "$SCRIPT_DIR/fm-nm-run-lib.sh"
+# shellcheck source=bin/fm-park-lib.sh
+. "$SCRIPT_DIR/fm-park-lib.sh"
 
 ID=${1:-}
 [ -n "$ID" ] || { echo "usage: fm-crew-state.sh <id>" >&2; exit 2; }
@@ -149,6 +157,22 @@ REMOTE_HOST=$(meta_value remote_host)
 # probe proves nothing for it - the remote arm below reads the true source.
 if [ -z "$REMOTE_HOST" ] && { [ -z "$WT" ] || [ ! -d "$WT" ]; }; then
   emit unknown none "worktree gone (torn down?)"
+fi
+
+# --- released park marker ---------------------------------------------------
+# bin/fm-park.sh owns the operating-point release. Its marker is authoritative
+# current state because state=released is committed only after the control
+# plane verified the worker stopped; a `releasing` marker is a recorded but
+# unverified release and is deliberately not read here. The shared reader
+# enforces the schema, the task identity, and the marker's incarnation against
+# this task's current spawn_gen, so a marker left by an earlier worker never
+# reads as a released slot.
+PARK_MARKER_STATE=$(fm_park_marker_state "$STATE" "$ID" "$(meta_value spawn_gen)")
+if [ "$PARK_MARKER_STATE" = released ]; then
+  PARK_MARKER="$STATE/$ID.parked"
+  PARK_REASON=$(fm_park_marker_field "$PARK_MARKER" reason)
+  PARK_POINTER=$(fm_park_marker_field "$PARK_MARKER" pointer)
+  emit parked park-marker "released awaiting ${PARK_REASON:-unknown} - ${PARK_POINTER:-no pointer}"
 fi
 
 # --- status log ------------------------------------------------------------
@@ -281,6 +305,63 @@ nm_field() {  # <key>
 # Finding count from a findings[N]{...} table header; empty when none.
 nm_findings_count() {
   printf '%s\n' "$RUN_OUT" | grep -oE 'findings\[[0-9]+\]' | head -1 | grep -oE '[0-9]+'
+}
+# 0 when the active gate's findings table has a row whose action column is
+# `ask-user` - the canonical authority marker. The gate note text mentions
+# ask-user on every review-step gate, so the action column is the only
+# evidence; a description that merely mentions ask-user is not. The parse is
+# scoped to the gate block, so a run-level or other findings table can never
+# supply the marker.
+nm_gate_has_ask_user_finding() {
+  printf '%s\n' "$RUN_OUT" | awk '
+    function split_row(line, out,    i, c, n, quoted, field) {
+      n = 0; quoted = 0; field = ""
+      for (i = 1; i <= length(line); i++) {
+        c = substr(line, i, 1)
+        if (quoted) {
+          if (c == "\\") { i++; field = field substr(line, i, 1) }
+          else if (c == "\"") { quoted = 0 }
+          else { field = field c }
+        } else if (c == "\"") {
+          quoted = 1
+        } else if (c == ",") {
+          out[++n] = field; field = ""
+        } else {
+          field = field c
+        }
+      }
+      out[++n] = field
+      return n
+    }
+    # Only a findings table inside the gate block counts; the run-level
+    # findings scalar and any other table must never supply the marker.
+    /^[[:space:]]*gate:[[:space:]]*$/ { in_gate = 1; next }
+    in_gate && /^[^[:space:]]/ { in_gate = 0 }
+    in_gate && /^[[:space:]]*findings\[[0-9]+\]\{/ {
+      header = $0
+      sub(/^[^{]*\{/, "", header)
+      sub(/\}.*$/, "", header)
+      ncols = split(header, cols, ",")
+      action_col = 0
+      for (i = 1; i <= ncols; i++) {
+        gsub(/^[[:space:]]+|[[:space:]]+$/, "", cols[i])
+        if (cols[i] == "action") action_col = i
+      }
+      in_table = 1
+      next
+    }
+    in_table {
+      if ($0 !~ /^[[:space:]]+[^[:space:]]/) exit
+      nf = split_row($0, row)
+      if (action_col > 0 && action_col <= nf) {
+        value = row[action_col]
+        gsub(/^[[:space:]]+|[[:space:]]+$/, "", value)
+        if (value == "ask-user") { found = 1; exit }
+      }
+      next
+    }
+    END { exit found ? 0 : 1 }
+  '
 }
 nm_gate_step_row() {
   local row step rest status findings
@@ -671,7 +752,7 @@ if [ "$HAVE_RUN" = 1 ]; then
       RUN_DETAIL="parked at $gate"
       fcount=$(nm_gate_findings_count)
       [ -n "$fcount" ] && RUN_DETAIL="$RUN_DETAIL: $fcount finding(s)"
-      if printf '%s\n' "$RUN_OUT" | grep -q 'ask-user'; then
+      if [ "$gate_status" != fix_review ] && nm_gate_has_ask_user_finding; then
         RUN_DETAIL="$RUN_DETAIL (ask-user: authority decision)"
       fi
     else

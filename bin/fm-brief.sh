@@ -64,6 +64,10 @@
 # Every scaffold also carries the steering-inbox receive-and-ack section:
 # process state/<id>.inbox/*.msg in order and acknowledge each by moving it to
 # handled/ (record, doorbell, and ladder owned by bin/fm-task-inbox-lib.sh).
+# Ship and scout scaffolds also carry the done-plus-release note: a `done:`
+# whose only remainder is a merge or a decision may have its slot released,
+# with the worktree and uncommitted work preserved and a short resume run later
+# (bin/fm-park.sh owns the mechanics).
 # Ship tasks include a project-memory section so durable project-intrinsic
 # learnings can be committed to AGENTS.md through the project's delivery path;
 # it carries the AGENTS.md authoring bar (widely useful knowledge only, pointers
@@ -216,6 +220,19 @@ When a terminal message says an instruction is waiting there - and at any natura
 The move IS the acknowledgement: without it firstmate rings again and eventually treats you as stuck. An empty or absent inbox needs no action.
 EOF
 INBOX_SECTION=${INBOX_SECTION%$'\n'}
+
+# The done-plus-release note: a worker whose only remaining step is a merge or a
+# decision can have its slot released (bin/fm-park.sh owns the mechanics), and
+# the same text tells the worker what that means for its final `done:` line. It
+# is part of every ship and scout scaffold, not a per-task addition.
+IFS= read -r -d '' PARK_SECTION <<'EOF' || true
+# Waiting work and the released slot
+A `done:` report whose only remainder is a merge or a decision does not have to hold your slot: firstmate may release it immediately.
+The release stops your endpoint; your worktree, branch, and every uncommitted change are preserved, and the PR or report plus the status line and backlog carry the handoff.
+You are resumed later with a short run: reconcile the merged or decided state, rebase or fix only if needed, then report done for cleanup.
+This is expected and is not a failure, so before your final `done:` leave your deliverable - the committed branch for a ship, the report for a scout - and the status line stating exactly what remains open.
+EOF
+PARK_SECTION=${PARK_SECTION%$'\n'}
 
 if [ "$KIND" = secondmate ]; then
 SECONDMATE_PROJECTS=""
@@ -409,6 +426,8 @@ The report is the only thing that survives, so anything worth keeping must be in
 
 $INBOX_SECTION
 
+$PARK_SECTION
+
 # Definition of done
 Write your findings to \`$DATA/$ID/report.md\`.
 The report must stand alone: what you did, what you found, the evidence (commands run, output, file:line references), and what you recommend.
@@ -499,6 +518,8 @@ $ASK_USER_BLOCK
    timed-out call was only waiting for a read while the run kept working.
 
 $INBOX_SECTION
+
+$PARK_SECTION
 
 # Project memory
 If \`AGENTS.md\` or \`CLAUDE.md\` already exists, or if this task produced durable project-intrinsic knowledge, run \`$FM_ROOT/bin/fm-ensure-agents-md.sh .\` in the worktree.

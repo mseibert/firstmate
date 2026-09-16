@@ -66,6 +66,14 @@
 #     useful return-channel supervision data; remote secondmates use "unknown"
 #     without a probe, and other tasks use "not_checked".
 #   scout_reports[]: present data/<id>/report.md pointers.
+#   occupancy: {schema,active,parked,paused,blocked,done,failed,unknown,active_ids,parked_ids} -
+#     the operating-point read for dispatch. `active` counts only tasks whose
+#     current_state is `working`; a parked task released through
+#     bin/fm-park.sh is counted under `parked`, and paused/blocked waiting work
+#     is counted separately, so a fleet full of waiting tasks is never mistaken
+#     for a busy one. The counts partition every task row by its canonical
+#     current_state, and the two id lists name exactly which tasks are active
+#     and which are parked.
 #   main_inventory: {valid,reason,orphan_in_flight[],unstructured_current_count} -
 #     main-home current-inventory checks shared with secondmate_home_summary_json
 #     (orphan structured in-flight ids with no state/<id>.meta, and unstructured
@@ -1957,6 +1965,18 @@ jq -n \
      roots:{fm_root:$fm_root,state:$state,data:$data,config:$config,projects:$projects},
      backlog:$backlog,
      tasks:($tasks | map(. + {backlog:backlog_by_id(.id)})),
+     occupancy:{
+       schema:"fm-fleet-occupancy.v1",
+       active:([$tasks[] | select(.current_state.state == "working")] | length),
+       parked:([$tasks[] | select(.current_state.state == "parked")] | length),
+       paused:([$tasks[] | select(.current_state.state == "paused")] | length),
+       blocked:([$tasks[] | select(.current_state.state == "blocked")] | length),
+       done:([$tasks[] | select(.current_state.state == "done")] | length),
+       failed:([$tasks[] | select(.current_state.state == "failed")] | length),
+       unknown:([$tasks[] | select(.current_state.state == "unknown")] | length),
+       active_ids:[$tasks[] | select(.current_state.state == "working") | .id],
+       parked_ids:[$tasks[] | select(.current_state.state == "parked") | .id]
+     },
      main_inventory:$main_inventory,
      scout_reports:($scout_reports | map(. + {kind:report_kind(.id)})),
      secondmate_current:$secondmate_current,
