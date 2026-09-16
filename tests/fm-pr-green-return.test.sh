@@ -54,7 +54,8 @@
 #       persisted rotation, so the next scan evaluates the candidates behind it
 #   (w) an allowlist policy and a denylist policy each parse their posture, a
 #       denylist wait-list hit holds while an unlisted repo stays due, a
-#       qualified owner/repo row matches in both postures, and a missing or
+#       qualified owner/repo row matches in both postures, a denylist row
+#       outside ask/deny fails closed under hard stop 7, and a missing or
 #       unrecognized posture holds every candidate under hard stop 7
 set -u
 
@@ -972,11 +973,28 @@ test_denylist_wait_list_holds_listed_repos() {
     keys=$(queue_keys "$dir")
     rows=$(queue_rows "$dir")
     assert_contains "$keys" "pr-green-return:t1" "a $verdict-listed repo did not hold under a denylist policy"
-    assert_contains "$rows" "the policy default ask" "the $verdict hold payload did not name the default ask"
-    assert_contains "$rows" "wait list" "the $verdict hold did not name the wait-list posture"
+    assert_contains "$rows" "the policy wait list" "the $verdict hold payload did not name the wait list"
+    assert_not_contains "$rows" "the policy default ask" "the $verdict hold reused the allowlist default-ask label"
     assert_not_contains "$rows" "merge it bound now" "a $verdict-listed repo queued a merge wake"
   done
   pass "a repo on the denylist wait list is held for every listed verdict"
+}
+
+test_denylist_unrecognized_verdict_holds_hard_stop_7() {
+  local dir keys rows verdict
+  for verdict in Sometimes Autonomous; do
+    dir=$(make_case "denylist-bad-verdict-$verdict")
+    write_denylist_policy "$dir" "$verdict:programmieren-community"
+    write_meta "$dir" t1 "https://forgejo.example/seibert.group/programmieren-community/pulls/365" programmieren-community
+    tea_green "$dir"
+    scan_hold_wake "$dir" "$NOW_LATE" >/dev/null
+    keys=$(queue_keys "$dir")
+    rows=$(queue_rows "$dir")
+    assert_contains "$keys" "pr-green-return:t1" "a denylist row with a $verdict verdict did not hold"
+    assert_contains "$rows" "hard stop 7" "a denylist row with a $verdict verdict did not name hard stop 7"
+    assert_not_contains "$rows" "merge it bound now" "a denylist row with a $verdict verdict queued a merge wake"
+  done
+  pass "a denylist table row outside ask/deny fails closed under hard stop 7"
 }
 
 test_denylist_unlisted_repo_is_due() {
@@ -1981,6 +1999,7 @@ test_package_json_scripts_qualifier
 test_unreadable_policy_holds_hard_stop_7
 test_allowlist_default_ask_holds
 test_denylist_wait_list_holds_listed_repos
+test_denylist_unrecognized_verdict_holds_hard_stop_7
 test_denylist_unlisted_repo_is_due
 test_qualified_policy_rows_match_the_full_path
 test_missing_or_unknown_posture_holds_hard_stop_7

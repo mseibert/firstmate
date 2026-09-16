@@ -16,7 +16,7 @@
 #     itself is bound to the verified head by Forgejo's head_commit_id and
 #     GitLab's --sha. The scan itself never merges, and only main-owned check
 #     wakes can carry that mandate.
-#   - held (a policy hard stop, the policy default ask, or a GitHub PR whose
+#   - held (a policy hard stop, the policy's repo-table hold, or a GitHub PR whose
 #     merge path cannot bind the head): the wake names the reason and asks for
 #     the captain's decision instead of a merge.
 # Whether the merge actually lands is still decided live at merge time by
@@ -251,10 +251,12 @@ wait_secs() {
 # only parses what it needs: the posture, its repo table, and the sensitive path
 # globs. The posture names how that table reads - an allowlist's `autonomous`
 # rows are the merge authority, a denylist's `ask`/`deny` rows are the wait list
-# - and a missing or unrecognized posture is unparseable, never guessed.
-# A row is matched by exact name against the PR path after its owner segment,
-# the task's project name, and the full owner/repo path, so both a bare repo
-# row and a qualified owner/repo row land in either posture.
+# - and a missing or unrecognized posture is unparseable, never guessed. A
+# denylist data row outside `ask`/`deny` is unparseable too, so a table that
+# contradicts its posture holds every candidate instead of reading as
+# autonomous. A row is matched by exact name against the PR path after its
+# owner segment, the task's project name, and the full owner/repo path, so both
+# a bare repo row and a qualified owner/repo row land in either posture.
 # Anything unparseable leaves POLICY_OK=0 and every candidate is held by hard
 # stop 7.
 POLICY_OK=0
@@ -263,7 +265,7 @@ POLICY_REPO_LIST=
 POLICY_GLOBS=
 
 policy_load() {
-  local file=$FM_PR_GREEN_RETURN_POLICY posture allow globs rule_seen=0
+  local file=$FM_PR_GREEN_RETURN_POLICY posture rule globs rule_seen=0
   POLICY_OK=0
   POLICY_POSTURE=
   POLICY_REPO_LIST=
@@ -289,7 +291,7 @@ policy_load() {
     allowlist|denylist) POLICY_POSTURE=$posture ;;
     *) return 0 ;;
   esac
-  allow=$(awk '
+  rule=$(awk '
     /^## / {
       if ($0 ~ /^## The rule/) { inrule = 1; next }
       if (inrule) { exit }
@@ -297,24 +299,36 @@ policy_load() {
     }
     inrule { print }
   ' "$file" 2>/dev/null) || return 0
-  case "$allow" in
+  case "$rule" in
     *'| Repo |'*) rule_seen=1 ;;
   esac
   [ "$rule_seen" = 1 ] || return 0
-  POLICY_REPO_LIST=$(printf '%s\n' "$allow" | awk -F'|' -v posture="$POLICY_POSTURE" '
+  # A denylist table is the wait list, so every data row must name its verdict:
+  # a row the parser cannot read would otherwise count as autonomous. The
+  # allowlist branch keeps its historical tolerance, where an unread row simply
+  # never enters the autonomous set.
+  if ! POLICY_REPO_LIST=$(printf '%s\n' "$rule" | awk -F'|' -v posture="$POLICY_POSTURE" '
     NF >= 4 {
       name = $2
       verdict = tolower($3)
       gsub(/^[ \t]+|[ \t]+$/, "", name)
       gsub(/^[ \t]+|[ \t]+$/, "", verdict)
-      if (name == "") next
+      if (name == "" || name == "Repo" || name ~ /^[-:]+$/) next
       if (posture == "denylist") {
-        if (verdict == "ask" || verdict == "deny") print name
+        if (verdict == "ask" || verdict == "deny") {
+          print name
+        } else {
+          bad = 1
+        }
       } else if (verdict == "autonomous") {
         print name
       }
     }
-  ')
+    END { if (bad) exit 1 }
+  '); then
+    POLICY_REPO_LIST=
+    return 0
+  fi
   globs=$(awk '
     /^### 5\./ { in5 = 1 }
     in5 && /against:/ { seen = 1; next }
@@ -328,7 +342,7 @@ policy_load() {
   POLICY_OK=1
 }
 
-policy_repo_allowlisted() { # <name>...
+policy_repo_allowed() { # <name>...
   local name found=0
   for name in "$@"; do
     [ -n "$name" ] || continue
@@ -1345,10 +1359,10 @@ evaluate_task() {
   [ -n "$candidate" ] || candidate=${PR_PATH##*/}
   owner_name=$(field_of "$meta" project)
   [ -z "$owner_name" ] || owner_name=${owner_name##*/}
-  if ! policy_repo_allowlisted "$candidate" "$owner_name" "$PR_PATH"; then
+  if ! policy_repo_allowed "$candidate" "$owner_name" "$PR_PATH"; then
     EV_CLASS=held
     if [ "$POLICY_POSTURE" = denylist ]; then
-      EV_REASON="policy-ask: repo ${candidate:-unknown} is on the policy wait list"
+      EV_REASON="policy-wait: repo ${candidate:-unknown} is on the policy wait list"
     else
       EV_REASON="policy-ask: repo ${candidate:-unknown} is not in the autonomous allowlist"
     fi
@@ -1463,6 +1477,7 @@ label_for_reason() { # <reason>
     hard-stop-6:*) printf 'hard stop 6 (not the operator PR)\n' ;;
     hard-stop-7:*) printf 'hard stop 7 (policy unreadable)\n' ;;
     policy-ask:*) printf 'the policy default ask (%s)\n' "${1#policy-ask: }" ;;
+    policy-wait:*) printf 'the policy wait list (%s)\n' "${1#policy-wait: }" ;;
     no-bound-merge:*) printf 'no bound merge (%s)\n' "${1#no-bound-merge: }" ;;
     *) printf '%s\n' "$1" ;;
   esac
