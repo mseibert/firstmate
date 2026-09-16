@@ -52,6 +52,11 @@
 #   (u) a task without a pr= line, and a secondmate meta, are not candidates
 #   (v) a candidate killed inside a slow provider call still advances the
 #       persisted rotation, so the next scan evaluates the candidates behind it
+#   (w) an allowlist policy and a denylist policy each parse their posture, a
+#       denylist wait-list hit holds while an unlisted repo stays due, a
+#       qualified owner/repo row and a nested-path basename row match, a
+#       denylist row outside ask/deny fails closed under hard stop 7, and a
+#       missing or unrecognized posture holds every candidate under hard stop 7
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -183,18 +188,10 @@ SH
   chmod 0755 "$dir/fakebin/gh" "$dir/fakebin/tea" "$dir/fakebin/glab"
 }
 
-write_policy() { # <dir> <allowlisted repo name...>
-  local dir=$1
-  shift
-  {
-    printf '# PR-Merge-Policy\n\n'
-    printf '## The rule\n\nDefault is ask.\n\n'
-    printf '| Repo | [Autonomous | Ask] | Why |\n|---|---|---|\n'
-    local repo
-    for repo in "$@"; do
-      printf '| %s | Autonomous | fixture |\n' "$repo"
-    done
-    cat <<'EOF'
+# policy_tail: the hard-stop-5 glob block every policy fixture shares, so the
+# allowlist and denylist writers only vary the header and the rule table.
+policy_tail() {
+  cat <<'EOF'
 ## Hard-stops
 
 ### 5. Diff touches sensitive ground
@@ -217,6 +214,43 @@ package.json                                        (only the scripts block)
 
 ### 6. Not the operator PR
 EOF
+}
+
+# write_policy <dir> <allowlisted repo name...>: the allowlist shape, with the
+# trailing text after the posture value the real policy file carries.
+write_policy() { # <dir> <allowlisted repo name...>
+  local dir=$1
+  shift
+  {
+    printf '# PR-Merge-Policy\n\n'
+    printf 'Posture: allowlist.  Set up: fixture.\n\n'
+    printf '## The rule\n\nDefault is ask.\n\n'
+    printf '| Repo | [Autonomous | Ask] | Why |\n|---|---|---|\n'
+    local repo
+    for repo in "$@"; do
+      printf '| %s | Autonomous | fixture |\n' "$repo"
+    done
+    policy_tail
+  } > "$dir/fix/policy.md"
+}
+
+# write_denylist_policy <dir> <verdict>:<repo>...: the denylist shape, whose
+# third column names the wait list. The verdict is the literal Ask or Deny the
+# policy file carries; the repo name is the remote slug.
+write_denylist_policy() { # <dir> <verdict>:<repo>...
+  local dir=$1 spec verdict repo
+  shift
+  {
+    printf '# PR-Merge-Policy\n\n'
+    printf 'Posture: denylist\n\n'
+    printf '## The rule\n\nDefault is auto.\n\n'
+    printf '| Repo | [Wait | Auto] | Why |\n|---|---|---|\n'
+    for spec in "$@"; do
+      verdict=${spec%%:*}
+      repo=${spec#*:}
+      printf '| %s | %s | fixture |\n' "$repo" "$verdict"
+    done
+    policy_tail
   } > "$dir/fix/policy.md"
 }
 
@@ -926,6 +960,122 @@ test_allowlist_default_ask_holds() {
   assert_contains "$rows" "the policy default ask" "the hold payload did not name the default ask"
   assert_not_contains "$rows" "merge it bound now" "an unlisted repo queued a merge wake"
   pass "a repo outside the allowlist is held as the policy default ask"
+}
+
+test_denylist_wait_list_holds_listed_repos() {
+  local dir keys rows verdict
+  for verdict in Ask Deny; do
+    dir=$(make_case "denylist-hit-$verdict")
+    write_denylist_policy "$dir" "$verdict:programmieren-community"
+    write_meta "$dir" t1 "https://forgejo.example/seibert.group/programmieren-community/pulls/365" programmieren-community
+    tea_green "$dir"
+    scan_hold_wake "$dir" "$NOW_LATE" >/dev/null
+    keys=$(queue_keys "$dir")
+    rows=$(queue_rows "$dir")
+    assert_contains "$keys" "pr-green-return:t1" "a $verdict-listed repo did not hold under a denylist policy"
+    assert_contains "$rows" "the policy wait list" "the $verdict hold payload did not name the wait list"
+    assert_not_contains "$rows" "the policy default ask" "the $verdict hold reused the allowlist default-ask label"
+    assert_not_contains "$rows" "merge it bound now" "a $verdict-listed repo queued a merge wake"
+  done
+  pass "a repo on the denylist wait list is held for every listed verdict"
+}
+
+test_denylist_unrecognized_verdict_holds_hard_stop_7() {
+  local dir keys rows verdict
+  for verdict in Sometimes Autonomous; do
+    dir=$(make_case "denylist-bad-verdict-$verdict")
+    write_denylist_policy "$dir" "$verdict:programmieren-community"
+    write_meta "$dir" t1 "https://forgejo.example/seibert.group/programmieren-community/pulls/365" programmieren-community
+    tea_green "$dir"
+    scan_hold_wake "$dir" "$NOW_LATE" >/dev/null
+    keys=$(queue_keys "$dir")
+    rows=$(queue_rows "$dir")
+    assert_contains "$keys" "pr-green-return:t1" "a denylist row with a $verdict verdict did not hold"
+    assert_contains "$rows" "hard stop 7" "a denylist row with a $verdict verdict did not name hard stop 7"
+    assert_not_contains "$rows" "merge it bound now" "a denylist row with a $verdict verdict queued a merge wake"
+  done
+  pass "a denylist table row outside ask/deny fails closed under hard stop 7"
+}
+
+test_denylist_matches_a_nested_path_basename() {
+  local dir keys rows
+  dir=$(make_case denylist-nested-basename)
+  write_denylist_policy "$dir" "Ask:project"
+  write_meta "$dir" t1 "https://gitlab.example/group/subgroup/project/-/merge_requests/7" other-name
+  glab_green "$dir"
+  scan_hold_wake "$dir" "$NOW_LATE" >/dev/null
+  keys=$(queue_keys "$dir")
+  rows=$(queue_rows "$dir")
+  assert_contains "$keys" "pr-green-return:t1" "a nested GitLab basename row did not hold the merge request"
+  assert_contains "$rows" "the policy wait list" "the nested basename hold did not name the wait list"
+  assert_not_contains "$rows" "merge it bound now" "a nested GitLab basename row queued a merge wake"
+  pass "a denylist row naming a nested GitLab project basename is held"
+}
+
+test_denylist_unlisted_repo_is_due() {
+  local dir keys rows
+  dir=$(make_case denylist-due)
+  write_denylist_policy "$dir" "Ask:some-other-repo"
+  write_meta "$dir" t1 "https://forgejo.example/seibert.group/programmieren-community/pulls/365" programmieren-community
+  tea_green "$dir"
+  scan_case "$dir" "$NOW_LATE" >/dev/null
+  keys=$(queue_keys "$dir")
+  rows=$(queue_rows "$dir")
+  assert_contains "$keys" "pr-green-return:t1" "an unlisted repo was not due under a denylist policy"
+  assert_contains "$rows" "due" "the denylist due payload is missing"
+  assert_contains "$rows" "bin/fm-pr-merge.sh t1 https://forgejo.example/seibert.group/programmieren-community/pulls/365 --expected-head $HEAD" "the denylist due payload is missing the head-bound merge command"
+  assert_not_contains "$rows" "hard stop 7" "the denylist policy was not read"
+  pass "a repo off the denylist wait list is due under the bound merge"
+}
+
+test_qualified_policy_rows_match_the_full_path() {
+  local dir keys rows
+  dir=$(make_case denylist-qualified-hit)
+  write_denylist_policy "$dir" "Ask:seibert.group/programmieren-community"
+  write_meta "$dir" t1 "https://forgejo.example/seibert.group/programmieren-community/pulls/365" programmieren-community
+  tea_green "$dir"
+  scan_hold_wake "$dir" "$NOW_LATE" >/dev/null
+  keys=$(queue_keys "$dir")
+  rows=$(queue_rows "$dir")
+  assert_contains "$keys" "pr-green-return:t1" "a qualified denylist row did not hold the repo"
+  assert_contains "$rows" "wait list" "a qualified denylist hold did not name the wait list"
+  assert_not_contains "$rows" "merge it bound now" "a qualified denylist row queued a merge wake"
+
+  dir=$(make_case allowlist-qualified-hit)
+  write_policy "$dir" seibert.group/programmieren-community
+  write_meta "$dir" t1 "https://forgejo.example/seibert.group/programmieren-community/pulls/365" programmieren-community
+  tea_green "$dir"
+  scan_case "$dir" "$NOW_LATE" >/dev/null
+  keys=$(queue_keys "$dir")
+  rows=$(queue_rows "$dir")
+  assert_contains "$keys" "pr-green-return:t1" "a qualified allowlist row was not autonomous"
+  assert_contains "$rows" "merge it bound now" "a qualified allowlist row queued no bound-merge mandate"
+  assert_not_contains "$rows" "hard stop 7" "the qualified allowlist policy was not read"
+  pass "a qualified owner/repo policy row matches in both postures"
+}
+
+test_missing_or_unknown_posture_holds_hard_stop_7() {
+  local dir keys rows name
+  for name in missing unknown; do
+    dir=$(make_case "policy-posture-$name")
+    {
+      printf '# PR-Merge-Policy\n\n'
+      [ "$name" = unknown ] && printf 'Posture: sometimes\n\n'
+      printf '## The rule\n\nDefault is ask.\n\n'
+      printf '| Repo | [Autonomous | Ask] | Why |\n|---|---|---|\n'
+      printf '| some-other-repo | Autonomous | fixture |\n'
+      policy_tail
+    } > "$dir/fix/policy.md"
+    write_meta "$dir" t1 "https://forgejo.example/seibert.group/programmieren-community/pulls/365" programmieren-community
+    tea_green "$dir"
+    scan_hold_wake "$dir" "$NOW_LATE" >/dev/null
+    keys=$(queue_keys "$dir")
+    rows=$(queue_rows "$dir")
+    assert_contains "$keys" "pr-green-return:t1" "a $name posture did not hold"
+    assert_contains "$rows" "hard stop 7" "a $name posture did not name hard stop 7"
+    assert_not_contains "$rows" "merge it bound now" "a $name posture queued a merge wake"
+  done
+  pass "a missing or unrecognized posture holds every candidate and names hard stop 7"
 }
 
 test_merged_pr_leaves_no_wake_or_record() {
@@ -1863,6 +2013,12 @@ test_lockfile_does_not_falsely_hold_package_json
 test_package_json_scripts_qualifier
 test_unreadable_policy_holds_hard_stop_7
 test_allowlist_default_ask_holds
+test_denylist_wait_list_holds_listed_repos
+test_denylist_unrecognized_verdict_holds_hard_stop_7
+test_denylist_matches_a_nested_path_basename
+test_denylist_unlisted_repo_is_due
+test_qualified_policy_rows_match_the_full_path
+test_missing_or_unknown_posture_holds_hard_stop_7
 test_merged_pr_leaves_no_wake_or_record
 test_forgejo_due_with_fresh_crabd_verdict
 test_forgejo_verdict_channel
