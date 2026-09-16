@@ -52,7 +52,7 @@ wake() { printf '%s\n' "$1" >> "$WAKE_LOG"; return 0; }
 export FM_DEAD_WORKER_LOADAVG=0.10
 
 reset_state() {
-  rm -f "$STATE_DIR"/*.meta "$STATE_DIR"/*.status \
+  rm -f "$STATE_DIR"/*.meta "$STATE_DIR"/*.status "$STATE_DIR"/*.parked \
     "$STATE_DIR"/.dead-worker-* "$STATE_DIR"/.paused-* \
     "$STATE_DIR"/.paused-rechecked-* "$STATE_DIR"/.wake-queue \
     "$STATE_DIR"/.wake-queue.seq "$STATE_DIR"/.watch-triage.log \
@@ -263,6 +263,26 @@ printf 'done-pending-verify: PR offen - CI gruen, KEIN Merge (captain verifies)\
 [ "$(wake_count)" = 0 ] || fail "a done-pending-verify worker must not wake: $(cat "$WAKE_LOG")"
 [ ! -e "$STATE_DIR/.dead-worker-tmux_win-dpv" ] || fail "a done-pending-verify worker must leave no dead-worker marker"
 pass "dead-worker: a done-pending-verify worker is not a dead worker (expected parked state)"
+
+# A released park marker (bin/fm-park.sh) is the other expected-stopped state:
+# the control plane verified the worker stopped and the task is deliberately
+# parked awaiting a merge or a decision, so its dead endpoint on an idle machine
+# is the release itself, never a dead worker. A `releasing` marker records an
+# unverified release whose worker may still be running, so it stays in flight.
+reset_state
+mk_meta dw-parked "tmux:win-parked"
+backdate dw-parked
+printf 'paused [key=park-dw-parked]: released awaiting merge - https://github.com/example/repo/pull/1\n' > "$STATE_DIR/dw-parked.status"
+printf 'schema=fm-park.v1\ntask=dw-parked\nreason=merge\npointer=https://github.com/example/repo/pull/1\nbranch=fm/x\npr=https://github.com/example/repo/pull/1\nepoch=1\nincarnation=s1\nstate=released\n' > "$STATE_DIR/dw-parked.parked"
+(
+  fm_backend_agent_alive() { printf 'dead'; }
+  fm_dead_worker_reality_check "tmux:win-parked" dw-parked "$(window_key "tmux:win-parked")" ship
+) && fail "a released park marker must never escalate as a dead worker (its agent exiting is the release)"
+[ "$(wake_count)" = 0 ] || fail "a parked task must not wake: $(cat "$WAKE_LOG")"
+[ ! -e "$STATE_DIR/.dead-worker-tmux_win-parked" ] || fail "a parked task must leave no dead-worker marker"
+printf 'schema=fm-park.v1\ntask=dw-parked\nreason=merge\npointer=https://github.com/example/repo/pull/1\nbranch=fm/x\npr=https://github.com/example/repo/pull/1\nepoch=1\nincarnation=s1\nstate=releasing\n' > "$STATE_DIR/dw-parked.parked"
+task_expects_live_worker dw-parked || fail "a releasing park marker must still expect a live worker"
+pass "dead-worker: a released park marker is an expected-stopped state and releasing is not"
 
 reset_state
 mk_meta dw-unknown "tmux:win-unknown"

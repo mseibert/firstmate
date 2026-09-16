@@ -46,7 +46,8 @@ SH
   cat > "$home/crew-state.sh" <<'SH'
 #!/usr/bin/env bash
 set -u
-printf 'state: %s · source: run-step · fixture\n' "${FM_FAKE_CREW_STATE:-done}"
+printf 'state: %s · source: %s · %s\n' \
+  "${FM_FAKE_CREW_STATE:-done}" "${FM_FAKE_CREW_SOURCE:-run-step}" "${FM_FAKE_CREW_DETAIL:-fixture}"
 SH
   chmod +x "$home/crew-state.sh"
   cat > "$home/fakebin/tasks-axi" <<'SH'
@@ -110,6 +111,8 @@ run_park() {  # <home> <args...>
     FM_PARK_NOW_EPOCH=1700000000 FM_TASKS_AXI_COMPATIBLE=1 \
     FM_FAKE_CONTROL_LOG="$home/control.log" FM_FAKE_CONTROL_RC="${FM_FAKE_CONTROL_RC:-0}" \
     FM_FAKE_CREW_STATE="${FM_FAKE_CREW_STATE:-done}" \
+    FM_FAKE_CREW_SOURCE="${FM_FAKE_CREW_SOURCE:-run-step}" \
+    FM_FAKE_CREW_DETAIL="${FM_FAKE_CREW_DETAIL:-fixture}" \
     FAKE_AXI_LOG="$home/axi.log" FAKE_AXI_BODY="$home/axi-body" \
     FAKE_AXI_HELD="${FAKE_AXI_HELD:-no}" \
     FAKE_AXI_HOLD_KIND="${FAKE_AXI_HOLD_KIND:-}" FAKE_AXI_HOLD_REASON="${FAKE_AXI_HOLD_REASON:-}" \
@@ -243,7 +246,7 @@ test_decision_key_parks_and_resume_carries_the_decision() {
   home=$(make_case decision)
   write_task "$home" t1
   printf 'needs-decision [key=nm-run-fix-review2]: choose a route\n' > "$home/state/t1.status"
-  out=$(FM_FAKE_CREW_STATE=parked run_park "$home" park t1); rc=$?
+  out=$(FM_FAKE_CREW_STATE=parked FM_FAKE_CREW_SOURCE=status-log run_park "$home" park t1); rc=$?
   expect_code 0 "$rc" "a documented decision wait must park"
   assert_contains "$out" "parked t1 reason=decision pointer=key=nm-run-fix-review2" \
     "park did not report the decision release"
@@ -267,7 +270,7 @@ test_captain_held_row_parks() {
   home=$(make_case captain-hold)
   write_task "$home" t1
   printf 'done: report ready\n' > "$home/state/t1.status"
-  out=$(FAKE_AXI_HOLD_KIND=captain FAKE_AXI_HOLD_REASON='pick a route' FM_FAKE_CREW_STATE=parked \
+  out=$(FAKE_AXI_HOLD_KIND=captain FAKE_AXI_HOLD_REASON='pick a route' FM_FAKE_CREW_STATE=parked FM_FAKE_CREW_SOURCE=status-log \
     run_park "$home" park t1); rc=$?
   expect_code 0 "$rc" "a captain-held row must park"
   assert_contains "$out" "reason=decision pointer=captain-hold: pick a route" \
@@ -345,7 +348,7 @@ test_manual_backend_prints_the_owed_note() {
   printf 'done: PR https://github.com/example/demo/pull/7 checks green\n' > "$home/state/t1.status"
   printf 'manual\n' > "$home/config/backlog-backend"
   printf 'original body\n' > "$home/axi-body"
-  out=$(run_park "$home" park t1); rc=$?
+  out=$(run_park "$home" park t1 2>&1); rc=$?
   expect_code 0 "$rc" "a manual-backend home still parks"
   assert_contains "$out" "Backlog: add this note by hand to $home/data/backlog.md:" \
     "the manual fallback did not name the owed hand edit"
@@ -353,6 +356,70 @@ test_manual_backend_prints_the_owed_note() {
     "the manual fallback did not print the note"
   [ "$(cat "$home/axi-body")" = 'original body' ] || fail "the manual path wrote the backlog body"
   pass "a manual-backend home is told the exact note owed"
+}
+
+test_releasing_retry_restores_the_status_line() {
+  local home out rc
+  home=$(make_case releasing-retry)
+  write_task "$home" t1 "pr=https://github.com/example/demo/pull/7"
+  printf 'done: PR https://github.com/example/demo/pull/7 checks green\n' > "$home/state/t1.status"
+  # Simulate a release interrupted between the marker and the status line.
+  printf 'schema=fm-park.v1\ntask=t1\nreason=merge\npointer=https://github.com/example/demo/pull/7\nbranch=fm/demo\npr=https://github.com/example/demo/pull/7\nepoch=1699999999\nincarnation=s-t1\nstate=releasing\n' \
+    > "$home/state/t1.parked"
+  out=$(run_park "$home" park t1); rc=$?
+  expect_code 0 "$rc" "a releasing marker must be retried to completion"
+  assert_contains "$out" "parked t1 reason=merge" "the retry did not report the release"
+  grep -qxF 'paused [key=park-t1]: released awaiting merge - https://github.com/example/demo/pull/7' \
+    "$home/state/t1.status" || fail "the releasing retry did not restore the status handoff"
+  [ "$(marker_value "$home" state)" = released ] || fail "the retry did not commit the verified release"
+  [ "$(wc -l < "$home/control.log")" -eq 1 ] || fail "the retry did not stop the worker exactly once"
+  pass "a releasing retry restores the status line and commits the verified release"
+}
+
+# --- run-step gates ---------------------------------------------------------
+
+test_ask_user_gate_parks_as_decision() {
+  local home out rc
+  home=$(make_case ask-user-gate)
+  write_task "$home" t1 "pr=https://github.com/example/demo/pull/7"
+  printf 'needs-decision [key=nm-run-review]: ask-user findings=f4\n' > "$home/state/t1.status"
+  out=$(FM_FAKE_CREW_STATE=parked FM_FAKE_CREW_SOURCE=run-step \
+    FM_FAKE_CREW_DETAIL='parked at review: 1 finding(s) (ask-user: authority decision)' \
+    run_park "$home" park t1); rc=$?
+  expect_code 0 "$rc" "an ask-user-gated run must park as a decision wait"
+  assert_contains "$out" "reason=decision pointer=key=nm-run-review" \
+    "the ask-user gate did not take its keyed decision pointer"
+  [ "$(marker_value "$home" pointer)" = "key=nm-run-review" ] || fail "the gate pointer is wrong"
+  pass "an ask-user-gated run parks as a decision wait with the gate key"
+}
+
+test_fix_review_gate_refuses() {
+  local home out rc
+  home=$(make_case fix-review-gate)
+  write_task "$home" t1 "pr=https://github.com/example/demo/pull/7"
+  printf 'working: at the fix-review gate\n' > "$home/state/t1.status"
+  out=$(FM_FAKE_CREW_STATE=parked FM_FAKE_CREW_SOURCE=run-step \
+    FM_FAKE_CREW_DETAIL='parked at fix_review: 2 finding(s)' \
+    run_park "$home" park t1 2>&1); rc=$?
+  expect_code 1 "$rc" "a fix-review-gated run must refuse parking"
+  assert_contains "$out" "gate the worker must answer" "the refusal did not name the worker-owned gate"
+  [ ! -e "$home/state/t1.parked" ] || fail "a refused fix-review gate wrote a marker"
+  [ ! -e "$home/control.log" ] || fail "a refused fix-review gate stopped the worker"
+  pass "a fix-review-gated run is refused because the worker must answer it"
+}
+
+test_ask_user_gate_without_a_key_refuses() {
+  local home out rc
+  home=$(make_case ask-user-gate-no-key)
+  write_task "$home" t1 "pr=https://github.com/example/demo/pull/7"
+  printf 'working: at the authority gate\n' > "$home/state/t1.status"
+  out=$(FM_FAKE_CREW_STATE=parked FM_FAKE_CREW_SOURCE=run-step \
+    FM_FAKE_CREW_DETAIL='parked at review: 1 finding(s) (ask-user: authority decision)' \
+    run_park "$home" park t1 2>&1); rc=$?
+  expect_code 1 "$rc" "an ask-user gate without a recorded key must refuse"
+  assert_contains "$out" "no keyed decision is recorded" "the refusal did not name the missing gate key"
+  [ ! -e "$home/state/t1.parked" ] || fail "a refused gate wrote a marker"
+  pass "an ask-user gate without a recorded decision key refuses rather than guessing"
 }
 
 # --- sweep ------------------------------------------------------------------
@@ -385,6 +452,20 @@ test_sweep_parks_eligible_tasks_and_skips_working_ones() {
   pass "the sweep parks eligible tasks only, bounded by --limit, and stays silent"
 }
 
+test_sweep_surfaces_the_manual_backlog_note() {
+  local home out rc
+  home=$(make_case sweep-manual)
+  write_task "$home" t1 "pr=https://github.com/example/demo/pull/7"
+  printf 'done: PR https://github.com/example/demo/pull/7 checks green\n' > "$home/state/t1.status"
+  printf 'manual\n' > "$home/config/backlog-backend"
+  out=$(run_park "$home" sweep 2>&1); rc=$?
+  expect_code 0 "$rc" "a manual-backend sweep must exit 0"
+  assert_contains "$out" "Backlog: add this note by hand to $home/data/backlog.md:" \
+    "the sweep discarded the owed manual backlog note"
+  [ "$(marker_value "$home" state)" = released ] || fail "the sweep did not release the task"
+  pass "the sweep surfaces the owed manual backlog note instead of discarding it"
+}
+
 test_sweep_reports_a_failed_release() {
   local home out rc
   home=$(make_case sweep-failure)
@@ -395,7 +476,10 @@ test_sweep_reports_a_failed_release() {
   assert_contains "$out" "PARK_SWEEP: could not release t1" "the sweep did not report the failed release"
   [ -f "$home/state/t1.parked" ] || fail "a failed release should leave the durable intent marker"
   [ "$(marker_value "$home" state)" = releasing ] || fail "a failed release must not claim released"
-  pass "a failed release leaves a releasing marker and prints one PARK_SWEEP line"
+  out=$(run_park "$home" status t1); rc=$?
+  expect_code 1 "$rc" "status must exit 1 for an unverified release"
+  assert_contains "$out" "releasing t1" "status must not read an unverified release as parked"
+  pass "a failed release leaves a releasing marker, prints one PARK_SWEEP line, and status stays honest"
 }
 
 # --- snapshot occupancy -----------------------------------------------------
@@ -469,14 +553,19 @@ test_park_refuses_a_working_crew
 test_park_refuses_a_secondmate
 test_park_refuses_without_a_pointer
 test_park_refuses_an_unknown_id
+test_releasing_retry_restores_the_status_line
 test_decision_key_parks_and_resume_carries_the_decision
 test_captain_held_row_parks
+test_ask_user_gate_parks_as_decision
+test_fix_review_gate_refuses
+test_ask_user_gate_without_a_key_refuses
 test_resume_refuses_the_wrong_reason
 test_resume_refuses_a_task_that_is_not_parked
 test_clear_removes_the_marker_without_relaunch
 test_list_and_status_report_the_parked_set
 test_manual_backend_prints_the_owed_note
 test_sweep_parks_eligible_tasks_and_skips_working_ones
+test_sweep_surfaces_the_manual_backlog_note
 test_sweep_reports_a_failed_release
 test_snapshot_separates_active_and_parked_tasks
 

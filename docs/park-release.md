@@ -12,7 +12,9 @@ A task is parked when firstmate handles a wake that shows a worker waiting, or w
 
 - A `done:` report whose only remainder is a merge: the task has a recorded `pr=` and the crew reads `done` or `parked`.
 - A documented decision wait: the status log holds an open keyed `needs-decision` or `blocked` event, or the backlog row is captain-held (`hold_kind: captain`).
-- A no-mistakes run parked at a gate counts as a decision wait: the run step reads `parked` and its ask-user or fix-review decision is the pointer.
+- A no-mistakes run parked at an ask-user/authority gate: the canonical current-state line reads `parked` from the run step and carries the `ask-user` marker, and the pointer is the gate's open keyed status decision.
+- A run parked at any other gate (fix-review) is refused: that gate waits on the worker, so the worker must answer it and parking would stop the process the gate is waiting on.
+- A run parked at a gate whose decision key is not recorded refuses rather than guessing.
 
 The sweep (`bin/fm-park.sh sweep`) is the bounded session-start and heartbeat housekeeping pass: the locked startup child of `bin/fm-startup-network.sh` runs it after the network sweeps, and heartbeat review runs it by hand.
 It is silent on success, bounded by `FM_PARK_SWEEP_LIMIT` (default 2) and `FM_PARK_SWEEP_BUDGET_SECS` (default 20), and prints one `PARK_SWEEP:` line per release it could not complete.
@@ -22,15 +24,15 @@ It is silent on success, bounded by `FM_PARK_SWEEP_LIMIT` (default 2) and `FM_PA
 `fm-park.sh park <task-id>` refuses loudly unless every condition holds:
 
 - The task is not a persistent secondmate; an idle secondmate is healthy and is never parked.
-- The crew is not actively working: `bin/fm-crew-state.sh` must not read `working`. A run parked at a gate is allowed; a running pipeline run is not.
+- The crew is not actively working: `bin/fm-crew-state.sh` must not read `working`. A run parked at a gate is allowed only through the gate rules above; a running pipeline run is not.
 - There is a provable handoff pointer: an open keyed decision, a captain-held backlog row, or a recorded `pr=`.
-- A merge pointer additionally requires crew state `parked` or `done`; a merge handoff on any other state is unclear and is refused rather than guessed.
+- A merge pointer additionally requires crew state `parked` or `done` and no pending gate; a gate-pending run never falls through to the merge label, and a merge handoff on any other state is refused rather than guessed.
 
 ## What park does
 
 1. Write `state/<id>.parked` (schema `fm-park.v1`) with `state=releasing` as the durable intent.
 2. Append one status line: `<paused-verb> [key=park-<id>]: released awaiting <merge|decision> - <pointer>`, where `<paused-verb>` is the configured `FM_CLASSIFY_PAUSED_VERB` (default `paused`).
-3. Record the handoff note in the task's backlog row under the same gate rules as every other lifecycle mutation: with an automatic backend and compatible tasks-axi the note is written through `tasks-axi update --body-file --archive-body`, a manual-backend home prints the exact note owed, and an automatic-backend home whose backend cannot be read is refused before any mutation.
+3. Record the handoff note in the task's backlog row under the same gate rules as every other lifecycle mutation: with an automatic backend and compatible tasks-axi the note is written through `tasks-axi update --body-file --archive-body`, a manual-backend home prints the exact note owed on stderr, and an automatic-backend home whose backend cannot be read is refused before any mutation.
 4. Stop the worker through `bin/fm-control.sh <id> exit`, which preserves the endpoint, the worktree, the branch, and every uncommitted change, and which verifies through the backend's recovery-grade classifier that the agent actually stopped.
 5. Rewrite the marker with `state=released` only after that stop is verified.
 
@@ -76,7 +78,7 @@ The merge watch stays armed while the task is parked: `bin/fm-pr-poll.sh`'s vali
 ## Read surfaces
 
 `fm-park.sh list` prints one TSV row per marker: id, reason, pointer, branch, pr, epoch, incarnation, state.
-`fm-park.sh status <task-id>` prints one line for one task and exits 0 when a marker exists and 1 when it does not.
+`fm-park.sh status <task-id>` prints `parked <id> ...` and exits 0 only for a released marker, `releasing <id> ...` and exits 1 for a recorded but unverified release, and `not-parked <id>` and exits 1 when no marker exists.
 Both read only this home's `state/` directory.
 
 ## Fail-closed boundaries

@@ -26,14 +26,21 @@
 #
 #   park    Check eligibility and release the task's slot. Eligibility is: not
 #           a secondmate, no actively working pipeline run, and a provable
-#           handoff - an open keyed `needs-decision`/`blocked` status decision,
-#           a captain-held backlog row, or a recorded `pr=` on a `done`/`parked`
-#           crew. A run parked at a no-mistakes gate is allowed; a running run is
-#           refused. The action writes the marker (state=releasing), appends the
-#           status line, records the backlog note, then verifies the stop and
-#           rewrites the marker state=released. An already-released task is
-#           idempotent success with no second exit. A marker left at
-#           state=releasing (an interrupted or failed release) is retried.
+#           handoff. A no-mistakes run parked at an ask-user/authority gate is a
+#           decision wait whose pointer is the gate's open keyed decision; a run
+#           parked at any other gate (fix-review) is refused because the worker
+#           must answer that gate, so it is not waiting on firstmate or the
+#           captain; a gate-free task uses an open keyed
+#           `needs-decision`/`blocked` status decision, a captain-held backlog
+#           row, or a recorded `pr=` on a `done`/`parked` crew. The run-step gate
+#           facts come from the canonical current-state line, never from a
+#           second attribution of no-mistakes records. A run parked at a gate
+#           whose decision key is not recorded refuses rather than guessing. The
+#           action writes the marker (state=releasing), appends the status line,
+#           records the backlog note, then verifies the stop and rewrites the
+#           marker state=released. An already-released task is idempotent success
+#           with no second exit. A marker left at state=releasing (an interrupted
+#           or failed release) is retried.
 #   resume  Require a released marker whose reason matches --reason, relaunch
 #           the worker through bin/fm-control.sh with a short note for that
 #           reason, then remove the marker. --note carries the captain's
@@ -43,8 +50,9 @@
 #           teardown never depends on a worker relaunch.
 #   list    Machine-readable TSV of every parked task, one row per marker:
 #           id, reason, pointer, branch, pr, epoch, incarnation, state.
-#   status  One line for one task, `parked <id> reason=... ...` (exit 0) or
-#           `not-parked <id>` (exit 1).
+#   status  One line for one task: `parked <id> reason=... ...` (exit 0) for a
+#           released marker, `releasing <id> reason=... ...` (exit 1) for a
+#           recorded but unverified release, or `not-parked <id>` (exit 1).
 #   sweep   Bounded session-start/heartbeat housekeeping: find eligible but
 #           unmarked tasks and park them. Silent on success; a failed release
 #           prints one PARK_SWEEP line so the caller can surface it. Bounded by
@@ -71,7 +79,8 @@
 # gate rules as every other lifecycle mutation (docs/configuration.md "Backlog
 # backend"): with an automatic backend and compatible tasks-axi the note is
 # recorded with `tasks-axi update --body-file --archive-body`; a manual-backend
-# home keeps its backlog hand-edited and park prints the exact note owed; an
+# home keeps its backlog hand-edited and park prints the exact note owed on
+# stderr, so a caller that discards park's stdout still surfaces it; an
 # automatic-backend home with an unresolvable or incompatible backend is
 # refused before any mutation.
 #
@@ -181,20 +190,6 @@ backlog_row_body() {  # <id>
   decode_field "$(printf '%s\n' "$show" | sed -n 's/^  body: //p' | head -1)"
 }
 
-# The backlog root addressing helper: markdown backends keep an explicit file,
-# every other backend is addressed through its own tasks-axi configuration.
-tasks_axi_here() {
-  local data root file
-  data=$(fm_backlog_data_absolute "$DATA") || return 1
-  root=$(fm_backlog_root "$data") || return 1
-  if [ "$(fm_tasks_axi_backend "$root")" = markdown ]; then
-    file=$(fm_backlog_file "$data") || return 1
-    (cd "$root" && fm_tasks_axi "$@" --file "$file")
-  else
-    (cd "$root" && fm_tasks_axi "$@")
-  fi
-}
-
 # --- task resolution --------------------------------------------------------
 
 ID=
@@ -269,12 +264,35 @@ load_marker() {  # <marker-file>
 
 # The current crew state token from the canonical reader. Unreadable or
 # unparseable output is `unknown`, never a guess.
-crew_state() {
-  local line
+
+# Parse the canonical current-state line into CREW_STATE, CREW_SOURCE, and
+# CREW_DETAIL. The line is owned by bin/fm-crew-state.sh; park_probe needs the
+# run-step gate facts it carries (a run parked at a gate reports
+# source=run-step with the gate name and, for an authority gate, the
+# `ask-user` marker), so this is the same run-step source read through its one
+# owner rather than a second attribution of no-mistakes records.
+CREW_STATE=unknown
+CREW_SOURCE=none
+CREW_DETAIL=
+crew_state_fields() {
+  local line rest
+  CREW_STATE=unknown
+  CREW_SOURCE=none
+  CREW_DETAIL=
   line=$(FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" "$FM_PARK_CREW_STATE_BIN" "$ID" 2>/dev/null) || line=
   case "$line" in
-    'state: '*) line=${line#state: }; printf '%s' "${line%% *}" ;;
-    *) printf 'unknown' ;;
+    'state: '*) ;;
+    *) return 0 ;;
+  esac
+  rest=${line#state: }
+  CREW_STATE=${rest%% *}
+  case "$line" in
+    *' · source: '*) rest=${line#*' · source: '} ;;
+    *) return 0 ;;
+  esac
+  CREW_SOURCE=${rest%% *}
+  case "$rest" in
+    *' · '*) CREW_DETAIL=${rest#*' · '} ;;
   esac
 }
 
@@ -316,10 +334,13 @@ work_branch() {  # <worktree>
 }
 
 # park_probe fills the PARK_* fields when the task is eligible, or PARK_REFUSE
-# with the reason it is not. The crew-state read is the expensive one, so it
-# runs only after some pointer evidence exists.
+# with the reason it is not. The current-state read comes first because a
+# no-mistakes run parked at a gate decides the handoff: an ask-user/authority
+# gate is a decision wait whose pointer is the gate's open keyed decision, a
+# gate the worker itself must answer (fix-review) refuses parking, and only a
+# gate-free task may use its recorded pr= as a merge handoff.
 park_probe() {
-  local state key hold pr
+  local state source detail key hold pr
   PARK_REASON=
   PARK_POINTER=
   PARK_BRANCH=
@@ -334,29 +355,52 @@ park_probe() {
     return 1
   fi
   pr=$(meta_get "$META" pr)
-  key=$(open_decision_key)
-  hold=
-  [ -n "$key" ] || hold=$(captain_hold_pointer)
-  if [ -n "$key" ]; then
-    PARK_REASON=decision
-    PARK_POINTER="key=$key"
-  elif [ -n "$hold" ]; then
-    PARK_REASON=decision
-    PARK_POINTER=$hold
-  elif [ -n "$pr" ]; then
-    PARK_REASON=merge
-    PARK_POINTER=$pr
-  else
-    PARK_REFUSE="no provable handoff: no open keyed decision, no captain-held backlog row, and no recorded pr= to wait on"
-    return 1
-  fi
-  state=$(crew_state)
+  crew_state_fields
+  state=$CREW_STATE
+  source=$CREW_SOURCE
+  detail=$CREW_DETAIL
   case "$state" in
     working)
       PARK_REFUSE="the crew is actively working ($state); only a parked run at a gate, a done task, or a documented wait may be parked"
       return 1
       ;;
   esac
+  if [ "$state" = parked ] && [ "$source" = run-step ]; then
+    # A no-mistakes run parked at a gate. The gate decides: an authority gate
+    # waits on firstmate/captain, every other gate waits on the worker.
+    case "$detail" in
+      *ask-user*)
+        key=$(open_decision_key)
+        if [ -z "$key" ]; then
+          PARK_REFUSE="a run is parked at an ask-user gate but no keyed decision is recorded on the status log; record the gate decision before parking"
+          return 1
+        fi
+        PARK_REASON=decision
+        PARK_POINTER="key=$key"
+        ;;
+      *)
+        PARK_REFUSE="a run is parked at a gate the worker must answer (${detail:-gate}); it is not waiting on firstmate or the captain, and parking would stop the worker the gate waits on"
+        return 1
+        ;;
+    esac
+  else
+    key=$(open_decision_key)
+    hold=
+    [ -n "$key" ] || hold=$(captain_hold_pointer)
+    if [ -n "$key" ]; then
+      PARK_REASON=decision
+      PARK_POINTER="key=$key"
+    elif [ -n "$hold" ]; then
+      PARK_REASON=decision
+      PARK_POINTER=$hold
+    elif [ -n "$pr" ]; then
+      PARK_REASON=merge
+      PARK_POINTER=$pr
+    else
+      PARK_REFUSE="no provable handoff: no open keyed decision, no captain-held backlog row, and no recorded pr= to wait on"
+      return 1
+    fi
+  fi
   if [ "$PARK_REASON" = merge ]; then
     case "$state" in
       parked|done) ;;
@@ -426,11 +470,13 @@ backlog_display() {
 backlog_note_manual() {
   case "${FM_BACKLOG_TRANSITION_SKIP:-}" in
     *'keeps no backlog'*)
-      printf 'Backlog: %s\n' "$FM_BACKLOG_TRANSITION_SKIP"
+      printf 'Backlog: %s\n' "$FM_BACKLOG_TRANSITION_SKIP" >&2
       ;;
     *)
-      printf 'Backlog: add this note by hand to %s:\n' "$(backlog_display)"
-      park_note_text | sed 's/^/  /'
+      # The owed hand edit goes to stderr so a sweep that discards park_task's
+      # stdout still surfaces it (the startup report captures stderr).
+      printf 'Backlog: add this note by hand to %s:\n' "$(backlog_display)" >&2
+      park_note_text | sed 's/^/  /' >&2
       ;;
   esac
 }
@@ -474,9 +520,10 @@ park_backlog_note() {
     printf 'fm-park: cannot stage the park note for %s\n' "$ID" >&2
     return 1
   fi
-  if ! tasks_axi_here update "$ID" --body-file "$tmp" --archive-body >/dev/null; then
+  if ! fm_backlog_mutate "$DATA" update "$ID" --body-file "$tmp" --archive-body >/dev/null; then
     rm -f "$tmp"
-    printf 'fm-park: could not record the park note on %s in the configured backlog\n' "$ID" >&2
+    printf 'fm-park: could not record the park note on %s in the configured backlog: %s\n' \
+      "$ID" "${FM_BACKLOG_TRANSITION_ERROR:-unknown error}" >&2
     return 1
   fi
   rm -f "$tmp"
@@ -530,8 +577,11 @@ park_task_locked() {
         return 0
         ;;
       releasing)
-        # An interrupted or failed release: retry the note if it never landed,
-        # then the stop, then commit the verified state.
+        # An interrupted or failed release: retry the idempotent status line
+        # (the fresh path writes it after the marker, so a release interrupted
+        # in between owes it), then the note, then the stop, then commit the
+        # verified state.
+        append_park_status_line || fail "could not append the park status line for $ID"
         park_backlog_note || { PARK_RESULT=failed; return 1; }
         finish_release || { PARK_RESULT=failed; return 1; }
         PARK_RESULT=parked
@@ -707,7 +757,7 @@ command_list() {
 }
 
 command_status() {
-  local id=${1:-}
+  local id=${1:-} state
   [ -n "$id" ] || { usage >&2; exit 2; }
   resolve_task "$id"
   if [ ! -e "$MARKER" ]; then
@@ -716,6 +766,21 @@ command_status() {
   fi
   require_regular_marker
   load_marker "$MARKER"
+  state=$(marker_get "$MARKER" state)
+  # Only a released marker is parked state; a releasing marker's release is not
+  # verified, so its leading token must not read as a freed slot.
+  if [ "$state" != released ]; then
+    printf 'releasing %s reason=%s pointer=%s branch=%s pr=%s epoch=%s incarnation=%s state=%s\n' \
+      "$ID" \
+      "$(marker_get "$MARKER" reason)" \
+      "$(marker_get "$MARKER" pointer)" \
+      "$(marker_get "$MARKER" branch)" \
+      "$(marker_get "$MARKER" pr)" \
+      "$(marker_get "$MARKER" epoch)" \
+      "$(marker_get "$MARKER" incarnation)" \
+      "$state"
+    return 1
+  fi
   printf 'parked %s reason=%s pointer=%s branch=%s pr=%s epoch=%s incarnation=%s state=%s\n' \
     "$ID" \
     "$(marker_get "$MARKER" reason)" \
@@ -724,7 +789,7 @@ command_status() {
     "$(marker_get "$MARKER" pr)" \
     "$(marker_get "$MARKER" epoch)" \
     "$(marker_get "$MARKER" incarnation)" \
-    "$(marker_get "$MARKER" state)"
+    "$state"
 }
 
 command_sweep() {
