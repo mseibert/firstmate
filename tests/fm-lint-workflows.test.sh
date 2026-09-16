@@ -5,6 +5,12 @@
 # in the local/no-mistakes lint path before merge. Regression origin: #2512 put
 # a column-0 heredoc body inside a `run: |` block in ci.yml; there was no
 # workflow YAML lint, and the broken workflow could not report its own breakage.
+#
+# The same gate covers .forgejo/workflows/*, with one actionlint rule suppressed
+# there: Forgejo needs `uses:` to carry a full https://github.com/... URL, which
+# actionlint's `action` rule rejects as malformed. The tests below pin both
+# halves - the URL form is accepted, and a genuinely broken reference still
+# fails.
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -211,9 +217,76 @@ test_empty_workflows_dir_fails() {
   rc=0
   out=$("$LINT_WF" --root "$tmp" 2>&1) || rc=$?
   [ "$rc" -ne 0 ] || fail "empty workflows dir unexpectedly passed"$'\n'"$out"
-  assert_contains "$out" "no GitHub workflow files found" \
+  assert_contains "$out" "no workflow files found under" \
     "empty workflows dir did not report the missing files"
   pass "empty workflows directory fails closed"
+}
+
+test_forgejo_lane_accepts_the_url_uses_form() {
+  local tmp out rc
+  tmp=$(fm_test_tmproot fm-lint-wf-forgejo)
+  mkdir -p "$tmp/.forgejo/workflows"
+  cat > "$tmp/.forgejo/workflows/ci.yml" <<'YAML'
+name: CI
+on:
+  push:
+    branches: [main]
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: https://github.com/actions/checkout@v6.1.0
+YAML
+  rc=0
+  out=$("$LINT_WF" --root "$tmp" 2>&1) || rc=$?
+  [ "$rc" -eq 0 ] || fail "the Forgejo URL form must be accepted"$'\n'"$out"
+  assert_contains "$out" "1 Forgejo" "the Forgejo lane was not counted"
+  pass "the Forgejo lane is linted and its URL-shaped uses is accepted"
+}
+
+test_forgejo_lane_catches_a_broken_uses() {
+  local tmp out rc
+  tmp=$(fm_test_tmproot fm-lint-wf-forgejo-bad)
+  mkdir -p "$tmp/.forgejo/workflows"
+  cat > "$tmp/.forgejo/workflows/ci.yml" <<'YAML'
+name: CI
+on:
+  push:
+    branches: [main]
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: bogus-action
+YAML
+  rc=0
+  out=$("$LINT_WF" --root "$tmp" 2>&1) || rc=$?
+  [ "$rc" -ne 0 ] || fail "a broken uses in the Forgejo lane unexpectedly passed"$'\n'"$out"
+  assert_contains "$out" "bogus-action" "the broken uses was not named"
+  pass "a broken uses in the Forgejo lane still fails"
+}
+
+test_forgejo_lane_catches_a_syntax_error() {
+  local tmp out rc
+  tmp=$(fm_test_tmproot fm-lint-wf-forgejo-syntax)
+  mkdir -p "$tmp/.forgejo/workflows"
+  cat > "$tmp/.forgejo/workflows/ci.yml" <<'YAML'
+name: CI
+bogus-key: x
+on:
+  push:
+    branches: [main]
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: echo ok
+YAML
+  rc=0
+  out=$("$LINT_WF" --root "$tmp" 2>&1) || rc=$?
+  [ "$rc" -ne 0 ] || fail "a syntax error in the Forgejo lane unexpectedly passed"$'\n'"$out"
+  assert_contains "$out" "bogus-key" "the syntax error was not named"
+  pass "a syntax error in the Forgejo lane fails"
 }
 
 test_explicit_broken_path_fails() {
@@ -519,6 +592,9 @@ test_current_workflows_pass
 test_col0_heredoc_fails_with_clear_error
 test_valid_fixture_passes
 test_empty_workflows_dir_fails
+test_forgejo_lane_accepts_the_url_uses_form
+test_forgejo_lane_catches_a_broken_uses
+test_forgejo_lane_catches_a_syntax_error
 test_explicit_broken_path_fails
 test_non_mapping_root_fails
 test_missing_actionlint_fails_closed

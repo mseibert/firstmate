@@ -42,7 +42,7 @@ test_batch_dispatches_every_pair() {
   status=$?
   [ "$status" -ne 0 ] || fail "batch with missing briefs should exit non-zero"
   printf '%s\n' "$out" | grep -F 'batch: FAILED to spawn nope-batch-a-z1 (projects/none-a)' >/dev/null \
-    || fail "first pair was not dispatched/reported"
+    || fail "first pair was not dispatched/reported"$'\n'"--- spawn output ---"$'\n'"$out"
   printf '%s\n' "$out" | grep -F 'batch: FAILED to spawn nope-batch-b-z2 (projects/none-b)' >/dev/null \
     || fail "second pair was not dispatched/reported (loop stopped early?)"
   pass "batch dispatch re-execs and reports every id=repo pair"

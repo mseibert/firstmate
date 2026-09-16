@@ -1450,8 +1450,20 @@ fm_backend_herdr_projection_order_best_effort() {  # <session> <created-workspac
 # every later pane, so remove home, harness identity, and supervision selection
 # inherited from whichever agent happened to start it. Bounded poll for the
 # server to report running.
+#
+# The bound is a guard, not a target: on the fleet's own hosts a healthy server
+# reports running in well under a second. It is overridable because a loaded CI
+# runner can take far longer to start a process than a workstation - measured
+# 2026-09-17, process creation on the Forgejo runner is 6x slower than on a Mac,
+# and the hardcoded 10s bound is why a Herdr-dependent lane failed there while
+# the same lane passed locally. FM_HERDR_SERVER_ENSURE_TIMEOUT_SECS raises it.
+FM_HERDR_SERVER_ENSURE_TIMEOUT_SECS_DEFAULT=10
 fm_backend_herdr_server_ensure() {  # <session>
-  local session=$1 running out i
+  local session=$1 running out i timeout attempts
+  timeout=${FM_HERDR_SERVER_ENSURE_TIMEOUT_SECS:-$FM_HERDR_SERVER_ENSURE_TIMEOUT_SECS_DEFAULT}
+  case "$timeout" in
+    '' | *[!0-9]* | 0) timeout=$FM_HERDR_SERVER_ENSURE_TIMEOUT_SECS_DEFAULT ;;
+  esac
   running=$(fm_backend_herdr_cli "$session" status --json 2>/dev/null | jq -r '.server.running // false' 2>/dev/null)
   [ "$running" = "true" ] && return 0
   (
@@ -1459,12 +1471,13 @@ fm_backend_herdr_server_ensure() {  # <session>
       CURSOR_AGENT CURSOR_INVOKED_AS CLAUDECODE PI_CODING_AGENT FM_PI_HARNESS GROK_AGENT FM_SUPERVISION_MODEL
     fm_backend_herdr_cli "$session" server >/dev/null 2>&1 &
   ) || return 1
-  for i in $(seq 1 20); do
+  attempts=$((timeout * 2))
+  for i in $(seq 1 "$attempts"); do
     running=$(fm_backend_herdr_cli "$session" status --json 2>/dev/null | jq -r '.server.running // false' 2>/dev/null)
     [ "$running" = "true" ] && return 0
     sleep 0.5
   done
-  echo "error: herdr server for session '$session' did not report running within 10s" >&2
+  echo "error: herdr server for session '$session' did not report running within ${timeout}s" >&2
   return 1
 }
 

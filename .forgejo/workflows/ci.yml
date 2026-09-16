@@ -1,0 +1,576 @@
+# CI on Forgejo (forgejo.seibert.tools).
+#
+# This is the Forgejo lane. It is the port of .github/workflows/ci.yml, and it
+# exists because the fleet's home for this repository is moving here.
+#
+# Forgejo Actions reads BOTH .forgejo/workflows and .github/workflows, so while
+# the GitHub file is still present this lane is not the only one that runs on a
+# push. See "Two lanes during the move" below.
+#
+# Forgejo differences from the GitHub file, each measured on this instance on
+# 2026-09-16 rather than assumed:
+#
+# - `uses:` needs the full `https://github.com/...` URL, and the fleet pins an
+#   exact version instead of a moving major tag. A bare `actions/checkout`
+#   resolves against forgejo.seibert.tools, where that repository does not exist.
+# - `runs-on: ubuntu-24.04`, not `ubuntu-latest`. The image is
+#   ghcr.io/catthehacker/ubuntu:act-24.04 and it carries git, jq, python3, curl,
+#   docker and sudo. The other label, `node-slim`, is node:trixie-slim and has
+#   none of those but node - it is not usable for these jobs.
+# - The runner image has no tmux, so the job that requires it installs it. The
+#   install is idempotent and skips itself when tmux is already present.
+# - `upload-artifact` and `download-artifact` are pinned to v3, not v4. Forgejo
+#   16.0.3 speaks the v3 artifact API; v4's @actions/artifact refuses this server
+#   with GHESNotSupportedError. Probed 2026-09-16 with both versions side by side
+#   on one run: v4 failed, v3 uploaded, and the artifact listed through the API.
+#   The fleet had never noticed, because its one other upload-artifact caller
+#   always found no files and short-circuited before the upload path.
+# - The runner image carries no ruby and no global TypeScript, both of which the
+#   GitHub runner image provides and the suite depends on. The lane installs both.
+# - The test steps run through bin/fm-ci-unprivileged.sh. This instance's runner
+#   executes jobs as root, and root ignores the file-permission bits several
+#   suites use to inject a write failure - so on a root runner those proofs are
+#   vacuous. Measured 2026-09-16: seven suites fail as root and pass unprivileged.
+#   The helper is a no-op when the caller is not root, so the GitHub lane and a
+#   developer's machine are unaffected.
+# - Every job-level `timeout-minutes` is larger than the GitHub file's, and the
+#   Herdr server-readiness bound is raised through FM_HERDR_SERVER_ENSURE_TIMEOUT_SECS.
+#   The GitHub numbers are guards sized for a fast runner. This one is slower for a
+#   reason that is measured, not assumed: on 2026-09-17 the same benchmark in the
+#   same image took 2583 ms here and 419 ms on a Mac to spawn 2000 processes, and
+#   188 ms against 27 ms to create 2000 small files. Streaming throughput is
+#   actually higher here (2222 MB/s against 961 MB/s), so the cost is metadata and
+#   process work - which is exactly what this suite is made of. Concurrency is not
+#   the cause: two lanes run side by side locally change per-script durations by
+#   1.00-1.04x. Widening a guard costs nothing on a machine this size and does not
+#   weaken an assertion.
+#   If the runner's own `build_timeout` is lower than these numbers, the runner
+#   kills the job before the workflow bound does; that value was not verified.
+# - The portable-serial job asks bin/fm-test-run.sh for the shard total instead of
+#   reading `strategy.job-total`. Probed on this instance 2026-09-16:
+#   `strategy.job-total` and `strategy.job-index` expand to the empty string here,
+#   which produced the lane name `portable-serial-1of` and failed every shard with
+#   "unknown lane". `strategy.max-parallel`, `matrix.*`, `runner.*` and `github.*`
+#   all resolve, so that is the only unusable context. See the step for why asking
+#   the owner is stricter than the GitHub form rather than weaker.
+#
+# Two lanes during the move
+#
+# Both lanes run on a Forgejo push until the GitHub file is removed. The GitHub
+# file's bare `actions/checkout@v6` cannot resolve on this instance, so its runs
+# are red here for a reason that says nothing about the code. Removing it is the
+# last step of the move, not this one.
+#
+# What this lane does not cover
+#
+# The GitHub file carries a `macos-stock-bash` job, "Stock macOS Bash snapshot
+# compatibility", which runs the snapshot consumers under /bin/bash to catch
+# anything that only works on the newer Bash. This instance has no macOS runner,
+# so the job is not in this lane and that check does not run here. It is a real
+# gap, not a decision: the repository supports macOS, and this lane cannot prove
+# that part of it. Whoever finishes the move has to decide whether to find a
+# macOS runner, move the check somewhere it can run, or drop it knowingly.
+
+name: CI
+
+on:
+  push:
+    branches: [main, seibert/main]
+  pull_request:
+    branches: [main, seibert/main]
+
+# The GitHub runner image sets a UTF-8 locale; this instance's image leaves LANG
+# unset, so the shell falls back to POSIX and bash counts BYTES where the suite
+# counts codepoints. Measured 2026-09-16: fm-public-followup fails with "got 1200
+# characters" for a text the emitter bounds at 600 codepoints - 600 two-byte
+# characters - and passes with LANG=C.UTF-8. C.UTF-8 sorts ASCII the way C does,
+# so the coverage guard's sort-based comparison is unaffected; verified in the
+# image.
+env:
+  LANG: C.UTF-8
+  # The suite's own Herdr server-readiness bound. bin/backends/herdr.sh documents
+  # why it is overridable: process creation on this runner is 6x slower than on a
+  # workstation, and its 10s default is why a Herdr-dependent test failed here
+  # while the same test passed locally.
+  FM_HERDR_SERVER_ENSURE_TIMEOUT_SECS: '60'
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: https://github.com/actions/checkout@v6.1.0
+      - name: Install pinned ShellCheck
+        run: |
+          set -eu
+          bin/fm-install-shellcheck.sh "$RUNNER_TEMP/bin"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - name: Install pinned actionlint
+        run: |
+          set -eu
+          bin/fm-install-actionlint.sh "$RUNNER_TEMP/bin"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      # Single owner of the lint definition (shell file set, config, version,
+      # and GitHub workflow lint). Do not re-spell the checks here; keep CI
+      # and the pre-push gate on this script so a self-broken ci.yml still
+      # fails locally before merge.
+      - run: bin/fm-lint.sh
+
+  # Deterministic proof that portable parallel shards + portable serial + Herdr
+  # equal the complete tests/*.test.sh inventory with no missing or duplicates,
+  # and that the portable serial CI shards partition that serial lane exactly.
+  test-coverage:
+    name: Test coverage guard
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: https://github.com/actions/checkout@v6.1.0
+      - name: Prove complete regression partition
+        run: bin/fm-test-run.sh --check-coverage
+
+  # Two duration-balanced portable parallel shards of the Phase 2 proven-isolated
+  # set only. Composition owner: bin/fm-test-run.sh (docs/fm-test-portable-shards.md).
+  tests-portable-parallel-1:
+    name: Behavior portable parallel 1
+    runs-on: ubuntu-24.04
+    # Measured shard wall is ~1 min of serial sum on proven scripts; this cap is
+    # a hang tripwire with margin, not the expected healthy end of the lane.
+    timeout-minutes: 25
+    steps:
+      - uses: https://github.com/actions/checkout@v6.1.0
+        with:
+          fetch-depth: 0
+      - name: Install pinned ShellCheck
+        run: |
+          set -eu
+          bin/fm-install-shellcheck.sh "$RUNNER_TEMP/bin"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - name: Install pinned actionlint
+        run: |
+          set -eu
+          bin/fm-install-actionlint.sh "$RUNNER_TEMP/bin"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - name: Install tasks-axi
+        run: |
+          set -eu
+          npm install -g tasks-axi
+          tasks-axi --version
+      - name: Install the Pi package for the Pi extension tests
+        run: |
+          set -eu
+          npm install -g @earendil-works/pi-coding-agent
+          npm ls -g --depth 0 @earendil-works/pi-coding-agent
+      # The Pi extension typecheck tests need `tsc` on PATH and skip themselves
+      # without it. The GitHub runner image carries a global TypeScript; this
+      # instance's image does not, and a gate skip is not a pass - the lane runs
+      # with --fail-on-gate-skip. Installing it here keeps the check real.
+      - name: Install TypeScript for the Pi extension typecheck
+        run: |
+          set -eu
+          command -v tsc >/dev/null && { tsc --version; exit 0; }
+          npm install -g typescript
+          tsc --version
+      # tests/fm-test-run.test.sh parses this repository's workflow YAML with ruby.
+      # The GitHub runner image carries ruby; this instance's image does not, and
+      # the test fails closed when it is absent rather than skipping.
+      - name: Install ruby for the workflow-YAML contract test
+        run: |
+          set -eu
+          command -v ruby >/dev/null && { ruby --version; exit 0; }
+          apt-get update -qq
+          apt-get install -y -qq --no-install-recommends ruby
+          ruby --version
+      - name: Run portable parallel shard 1
+        run: |
+          set -eu
+          mkdir -p "$RUNNER_TEMP/fm-test"
+          bin/fm-ci-unprivileged.sh bin/fm-test-run.sh --lane portable-parallel-1 \
+            --fail-on-gate-skip 'Pi extension typecheck prerequisite not found' \
+            --json "$RUNNER_TEMP/fm-test/fm-test-timing-portable-parallel-1.json"
+      - name: Upload shard 1 timing artifact
+        if: always()
+        uses: https://github.com/actions/upload-artifact@v3.2.2
+        with:
+          name: fm-test-timing-portable-parallel-1
+          path: ${{ runner.temp }}/fm-test/fm-test-timing-portable-parallel-1.json
+          if-no-files-found: warn
+
+  tests-portable-parallel-2:
+    name: Behavior portable parallel 2
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: https://github.com/actions/checkout@v6.1.0
+        with:
+          fetch-depth: 0
+      - name: Install pinned ShellCheck
+        run: |
+          set -eu
+          bin/fm-install-shellcheck.sh "$RUNNER_TEMP/bin"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - name: Install pinned actionlint
+        run: |
+          set -eu
+          bin/fm-install-actionlint.sh "$RUNNER_TEMP/bin"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - name: Install tasks-axi
+        run: |
+          set -eu
+          npm install -g tasks-axi
+          tasks-axi --version
+      - name: Run portable parallel shard 2
+        run: |
+          set -eu
+          mkdir -p "$RUNNER_TEMP/fm-test"
+          bin/fm-ci-unprivileged.sh bin/fm-test-run.sh --lane portable-parallel-2 \
+            --json "$RUNNER_TEMP/fm-test/fm-test-timing-portable-parallel-2.json"
+      - name: Upload shard 2 timing artifact
+        if: always()
+        uses: https://github.com/actions/upload-artifact@v3.2.2
+        with:
+          name: fm-test-timing-portable-parallel-2
+          path: ${{ runner.temp }}/fm-test/fm-test-timing-portable-parallel-2.json
+          if-no-files-found: warn
+
+  # Required portable serial remainder: watcher, lock, AFK, tmux, daemon,
+  # ambiguous, and other stateful tests. Real Herdr stays in tests-herdr.
+  # Split across separate runners so no two of these stateful scripts ever share
+  # a machine: each shard is still strictly serial in itself. Shard membership
+  # and the shard count both belong to bin/fm-test-run.sh, which refuses a lane
+  # whose "ofN" disagrees with it (docs/fm-test-portable-shards.md).
+  tests-portable-serial:
+    name: Behavior portable serial ${{ matrix.shard }}
+    runs-on: ubuntu-24.04
+    # Cap is a hang tripwire, not the expected healthy end of the lane, so it
+    # must sit well clear of the slowest shard a loaded runner really produces.
+    # The refreshed hints give every shard 16.43 minutes of conservative
+    # assignment weight, but a loaded runner can stretch one script far past its
+    # hint: on 2026-09-15 shard 1 ran all 30 tests green in 29m44s while
+    # fm-watch-triage alone took 22m17s against its 6m36s hint, and the
+    # 30-minute cap cancelled the job before its timing artifact finished
+    # uploading even though every test had passed.
+    # 45 minutes keeps the bound a hang tripwire with roughly 1.5x margin over
+    # that worst measured shard instead of the routine end of the lane.
+    timeout-minutes: 60
+    strategy:
+      # Every shard reports so one failure never hides another shard's result.
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5]
+    steps:
+      - uses: https://github.com/actions/checkout@v6.1.0
+        with:
+          fetch-depth: 0
+      - name: Install pinned ShellCheck
+        run: |
+          set -eu
+          bin/fm-install-shellcheck.sh "$RUNNER_TEMP/bin"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - name: Install pinned actionlint
+        run: |
+          set -eu
+          bin/fm-install-actionlint.sh "$RUNNER_TEMP/bin"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      # The instance's ubuntu-24.04 image (ghcr.io/catthehacker/ubuntu:act-24.04)
+      # carries git, jq, python3, curl and docker but no tmux. Measured
+      # 2026-09-16 on the runner itself.
+      - name: Install tmux
+        run: |
+          set -eu
+          command -v tmux >/dev/null && { tmux -V; exit 0; }
+          apt-get update -qq
+          apt-get install -y -qq --no-install-recommends tmux
+          tmux -V
+      - name: Require tmux for e2e tests
+        run: |
+          set -eu
+          command -v tmux >/dev/null || {
+            echo "::error::tmux is required for real afk injection e2e coverage"
+            exit 1
+          }
+          tmux -V
+      - name: Install tasks-axi for backlog-handoff delegation
+        run: |
+          set -eu
+          npm install -g tasks-axi
+          tasks-axi --version
+      # The Pi extension tests read the installed Pi package's own types and
+      # runtime, so without it they gate-skip and pass silently. It is a public
+      # npm package and needs no credential, so CI can hold the real thing.
+      - name: Install the Pi package for the Pi extension tests
+        run: |
+          set -eu
+          npm install -g @earendil-works/pi-coding-agent
+          npm ls -g --depth 0 @earendil-works/pi-coding-agent
+      # The Pi extension typecheck tests need `tsc` on PATH and skip themselves
+      # without it. The GitHub runner image carries a global TypeScript; this
+      # instance's image does not, and a gate skip is not a pass - the lane runs
+      # with --fail-on-gate-skip. Installing it here keeps the check real.
+      - name: Install TypeScript for the Pi extension typecheck
+        run: |
+          set -eu
+          command -v tsc >/dev/null && { tsc --version; exit 0; }
+          npm install -g typescript
+          tsc --version
+      # tests/fm-test-run.test.sh parses this repository's workflow YAML with ruby.
+      # The GitHub runner image carries ruby; this instance's image does not, and
+      # the test fails closed when it is absent rather than skipping.
+      - name: Install ruby for the workflow-YAML contract test
+        run: |
+          set -eu
+          command -v ruby >/dev/null && { ruby --version; exit 0; }
+          apt-get update -qq
+          apt-get install -y -qq --no-install-recommends ruby
+          ruby --version
+      - name: Run portable serial shard ${{ matrix.shard }}
+        env:
+          FM_SERIAL_SHARD: ${{ matrix.shard }}
+        run: |
+          set -eu
+          # The shard total is asked of the lane owner rather than taken from the
+          # matrix, and that is the Forgejo lane's one deliberate divergence from
+          # the GitHub file, which uses `strategy.job-total`. Probed on this
+          # instance 2026-09-16: `strategy.job-total` and `strategy.job-index`
+          # expand to the empty string here, so the GitHub form silently produced
+          # the lane name `portable-serial-1of` and every shard failed with
+          # "unknown lane". `strategy.max-parallel`, `matrix.*`, `runner.*` and
+          # `github.*` all resolve, so only this one context is unusable.
+          #
+          # Asking bin/fm-test-run.sh is stricter than the GitHub form rather than
+          # weaker: the GitHub lane fails when the matrix and the lane owner
+          # disagree, while this one cannot disagree with the owner at all. A
+          # matrix that has grown past the owner still leaves a shard unrun, and
+          # the coverage guard in the test-coverage job is what catches that - on
+          # both forges.
+          fm_serial_total=$(bin/fm-test-run.sh --list-lanes \
+            | sed -n 's/^portable-serial-[0-9]*of\([0-9]*\)$/\1/p' | sort -u)
+          case "$fm_serial_total" in
+            '' | *[!0-9]*)
+              echo "::error::could not derive the portable-serial shard total from bin/fm-test-run.sh --list-lanes"
+              exit 1
+              ;;
+          esac
+          [ "$(printf '%s\n' "$fm_serial_total" | wc -l | tr -d ' ')" -eq 1 ] || {
+            echo "::error::bin/fm-test-run.sh --list-lanes reports more than one portable-serial shard total: $fm_serial_total"
+            exit 1
+          }
+          FM_SERIAL_LANE="portable-serial-${FM_SERIAL_SHARD}of${fm_serial_total}"
+          mkdir -p "$RUNNER_TEMP/fm-test"
+          # The Pi package is installed above and CI provides npm and tsc, so
+          # any missing typecheck prerequisite is a broken lane, not a valid skip.
+          bin/fm-ci-unprivileged.sh bin/fm-test-run.sh --lane "$FM_SERIAL_LANE" \
+            --fail-on-gate-skip 'Pi extension typecheck prerequisite not found' \
+            --json "$RUNNER_TEMP/fm-test/fm-test-timing-portable-serial-${FM_SERIAL_SHARD}.json"
+      - name: Upload portable serial shard ${{ matrix.shard }} timing artifact
+        if: always()
+        uses: https://github.com/actions/upload-artifact@v3.2.2
+        with:
+          name: fm-test-timing-portable-serial-${{ matrix.shard }}
+          path: ${{ runner.temp }}/fm-test/fm-test-timing-portable-serial-${{ matrix.shard }}.json
+          if-no-files-found: warn
+
+  # Required real-Herdr lane: pinned install, serial real-herdr-gated family,
+  # hard-fail on "skip: herdr not found". Starts on Linux x86_64; if a genuine
+  # platform invariant fails (focus, cleanup, default-session tripwire), keep
+  # the failure evidence and move the job to macOS rather than skip assertions.
+  tests-herdr:
+    name: Behavior tests (Herdr)
+    runs-on: ubuntu-24.04
+    # Healthy runs finish around 7 minutes. This job cap is a last-resort hang
+    # tripwire, not the expected end of the lane. The family-run step owns the
+    # tighter bound so a wedged suite fails fast with always() cleanup and
+    # timing artifacts still uploaded (docs/fm-test-portable-shards.md).
+    timeout-minutes: 75
+    steps:
+      - uses: https://github.com/actions/checkout@v6.1.0
+        with:
+          fetch-depth: 0
+      # The Herdr family skips itself when tmux is absent ("skip: tmux not found"),
+      # and a skipped test reports success. The GitHub runner image ships tmux, so
+      # the GitHub lane never had to install it; this one does.
+      - name: Install tmux
+        run: |
+          set -eu
+          command -v tmux >/dev/null && { tmux -V; exit 0; }
+          apt-get update -qq
+          apt-get install -y -qq --no-install-recommends tmux
+          tmux -V
+      - name: Require tools for real Herdr
+        run: |
+          set -eu
+          command -v jq >/dev/null || { echo "::error::jq is required"; exit 1; }
+          command -v python3 >/dev/null || { echo "::error::python3 is required"; exit 1; }
+          command -v curl >/dev/null || { echo "::error::curl is required"; exit 1; }
+          command -v tar >/dev/null || { echo "::error::tar is required"; exit 1; }
+          jq --version
+          python3 --version
+      - name: Install pinned Herdr
+        run: |
+          set -eu
+          bin/fm-install-herdr.sh "$RUNNER_TEMP/bin"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - name: Install pinned Treehouse
+        run: |
+          set -eu
+          # Several real-herdr-gated E2E scripts require treehouse for spawn
+          # worktree acquisition (presentation, workspace-per-home, autodetect).
+          bin/fm-install-treehouse.sh "$RUNNER_TEMP/bin"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - name: Assert Herdr pin and protocol floor
+        run: |
+          set -eu
+          command -v herdr >/dev/null || { echo "::error::herdr not on PATH after install"; exit 1; }
+          command -v treehouse >/dev/null || { echo "::error::treehouse not on PATH after install"; exit 1; }
+          herdr --version
+          treehouse --version
+          status=$(herdr status --json)
+          printf '%s\n' "$status"
+          version=$(printf '%s' "$status" | jq -r '.client.version // empty')
+          protocol=$(printf '%s' "$status" | jq -r '.client.protocol // empty')
+          [ "$version" = "0.7.4" ] || {
+            echo "::error::expected exact Herdr pin 0.7.4, got ${version:-<empty>}"
+            exit 1
+          }
+          case "$protocol" in
+            ''|*[!0-9]*) echo "::error::could not read client protocol"; exit 1 ;;
+          esac
+          [ "$protocol" -ge 16 ] || {
+            echo "::error::herdr protocol $protocol is below the required floor 16"
+            exit 1
+          }
+      - name: Start default Herdr session for fleet-state tripwire
+        run: |
+          set -eu
+          # Lab provision requires exactly one running default session so the
+          # default-session tripwire can arm. Start it headless; never use it
+          # for lab work (tests still refuse default and use fm-lab-* only).
+          mkdir -p "$RUNNER_TEMP/fm-herdr"
+          # Started through the same wrapper the tests run under, so the server and
+          # the suite share one HOME and therefore one Herdr socket. Started as
+          # root the socket landed under /root while the unprivileged test user
+          # looked in its own HOME, found no default session, and the fleet-state
+          # tripwire refused every lab provision with "requires exactly one running
+          # default session".
+          bin/fm-ci-unprivileged.sh sh -c 'nohup herdr server >"$1" 2>&1 & echo $! >"$2"' _ \
+            "$RUNNER_TEMP/fm-herdr/default-server.log" "$RUNNER_TEMP/fm-herdr/default-server.pid"
+          attempt=0
+          while [ "$attempt" -lt 300 ]; do
+            running=$(bin/fm-ci-unprivileged.sh herdr status --json 2>/dev/null | jq -r '.server.running // false' || echo false)
+            if [ "$running" = true ]; then
+              bin/fm-ci-unprivileged.sh herdr session list --json | jq -e '
+                [.sessions[]? | select(.default == true and .name == "default" and .running == true)]
+                | length == 1
+              ' >/dev/null
+              echo "default Herdr session is running"
+              exit 0
+            fi
+            sleep 0.2
+            attempt=$((attempt + 1))
+          done
+          echo "::error::default Herdr server did not become ready"
+          cat "$RUNNER_TEMP/fm-herdr/default-server.log" || true
+          exit 1
+      - name: Snapshot pre-suite Herdr sessions
+        run: |
+          set -eu
+          mkdir -p "$RUNNER_TEMP/fm-herdr"
+          bin/fm-ci-unprivileged.sh bin/fm-herdr-ci-cleanup.sh snapshot "$RUNNER_TEMP/fm-herdr/sessions-before.json"
+      - name: Run real-Herdr family (serial, required)
+        # Comfortably above the ~7 min healthy wall and far below the 75 min
+        # job backstop. A hang must fail this step so cleanup still runs.
+        timeout-minutes: 20
+        run: |
+          set -eu
+          mkdir -p "$RUNNER_TEMP/fm-test"
+          # Serial only. Fail if any script reports herdr not found. Live
+          # harness credential tests stay outside this family (opt-in env only).
+          bin/fm-ci-unprivileged.sh bin/fm-test-run.sh --family real-herdr-gated \
+            --fail-on-gate-skip 'herdr not found' \
+            --json "$RUNNER_TEMP/fm-test/fm-test-timing-herdr.json"
+      - name: Cleanup job-owned Herdr lab sessions
+        if: always()
+        run: |
+          set -eu
+          bin/fm-ci-unprivileged.sh bin/fm-herdr-ci-cleanup.sh teardown "$RUNNER_TEMP/fm-herdr/sessions-before.json" || {
+            echo "::warning::lab session cleanup reported a problem; see logs"
+            # Surface diagnostics without weakening the suite result above.
+            bin/fm-ci-unprivileged.sh herdr session list --json || true
+            exit 1
+          }
+      - name: Upload Herdr timing and diagnostics
+        if: always()
+        uses: https://github.com/actions/upload-artifact@v3.2.2
+        with:
+          name: fm-test-timing-herdr
+          path: |
+            ${{ runner.temp }}/fm-test/fm-test-timing-herdr.json
+            ${{ runner.temp }}/fm-herdr/sessions-before.json
+            ${{ runner.temp }}/fm-herdr/default-server.log
+          if-no-files-found: warn
+
+  # Aggregate per-lane timing into one summary artifact for critical-path review.
+  tests-timing-aggregate:
+    name: Behavior timing aggregate
+    runs-on: ubuntu-24.04
+    needs:
+      - tests-portable-parallel-1
+      - tests-portable-parallel-2
+      - tests-portable-serial
+      - tests-herdr
+    if: always()
+    steps:
+      - uses: https://github.com/actions/checkout@v6.1.0
+      - name: Download lane timing artifacts
+        uses: https://github.com/actions/download-artifact@v3.1.0
+        with:
+          pattern: fm-test-timing-*
+          path: ${{ runner.temp }}/fm-test-aggregate
+          merge-multiple: true
+      - name: Build aggregate timing summary
+        run: |
+          set -eu
+          mkdir -p "$RUNNER_TEMP/fm-test"
+          shopt -s nullglob
+          inputs=("$RUNNER_TEMP"/fm-test-aggregate/fm-test-timing-*.json)
+          if [ "${#inputs[@]}" -eq 0 ]; then
+            echo "::warning::no per-lane timing JSON found to aggregate"
+            exit 0
+          fi
+          bin/fm-test-run.sh --aggregate-json \
+            "$RUNNER_TEMP/fm-test/fm-test-timing-aggregate.json" \
+            "${inputs[@]}"
+      - name: Upload aggregate timing artifact
+        if: always()
+        uses: https://github.com/actions/upload-artifact@v3.2.2
+        with:
+          name: fm-test-timing-aggregate
+          path: ${{ runner.temp }}/fm-test/fm-test-timing-aggregate.json
+          if-no-files-found: warn
+
+  invariants:
+    name: Repo invariants
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: https://github.com/actions/checkout@v6.1.0
+      - name: Compatibility pointers must stay intact
+        run: |
+          set -eu
+          [ ! -L CLAUDE.md ] || { echo "::error::CLAUDE.md must be a real @AGENTS.md pointer file, not a symlink"; exit 1; }
+          tmp=$(mktemp)
+          trap 'rm -f "$tmp"' EXIT
+          printf '%s\n' \
+            '<!-- Points Claude at AGENTS.md via import; edit AGENTS.md, not this file. -->' \
+            '@AGENTS.md' >"$tmp"
+          cmp -s CLAUDE.md "$tmp" || { echo "::error::CLAUDE.md must be the canonical @AGENTS.md pointer"; exit 1; }
+          [ "$(readlink .claude/skills)" = "../.agents/skills" ] || { echo "::error::.claude/skills must be a symlink to ../.agents/skills"; exit 1; }
+      - name: Personal fleet paths must not be tracked
+        run: |
+          set -eu
+          tracked=$(git ls-files -- data state config projects .no-mistakes)
+          if [ -n "$tracked" ]; then
+            echo "::error::Personal fleet paths are tracked in git:"
+            printf '%s\n' "$tracked"
+            exit 1
+          fi

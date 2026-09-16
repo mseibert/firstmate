@@ -71,6 +71,7 @@ FM_LINT_WORKER_SHELLCHECK_PID=
 # shellcheck disable=SC2329 # Registered by the private worker's signal traps.
 fm_lint_worker_stop() {
   [ -n "$FM_LINT_WORKER_SHELLCHECK_PID" ] || return 0
+  [ -z "${FM_LINT_TRACE:-}" ] || printf 'fm-lint[worker %s]: stop shellcheck pid=%s\n' "$$" "$FM_LINT_WORKER_SHELLCHECK_PID" >&2
   kill "$FM_LINT_WORKER_SHELLCHECK_PID" 2>/dev/null || true
   wait "$FM_LINT_WORKER_SHELLCHECK_PID" 2>/dev/null || true
   FM_LINT_WORKER_SHELLCHECK_PID=
@@ -320,6 +321,10 @@ if ! command -v shellcheck >/dev/null 2>&1; then
   exit 1
 fi
 unset SHELLCHECK_OPTS
+# FM_LINT_TRACE=1 prints what the parent's EXIT cleanup and each worker's signal
+# trap actually act on - the active pid list, and the process-group id each pid
+# resolves to at that moment. Off by default. It exists because a survivor whose
+# pgid is right cannot be explained without seeing whether the cleanup ran at all.
 SHELLCHECK_BIN=$(command -v shellcheck)
 if ! PERL_BIN=$(command -v perl); then
   printf 'fm-lint.sh: perl is required for bounded worker cleanup.\n' >&2
@@ -364,18 +369,23 @@ ACTIVE_PIDS=()
 # shellcheck disable=SC2329 # Registered by the EXIT and signal traps below.
 fm_lint_cleanup() {
   local pid
+  [ -z "${FM_LINT_TRACE:-}" ] || printf 'fm-lint[parent %s]: cleanup, active pids=[%s]\n' "$$" "${ACTIVE_PIDS[*]:-}" >&2
   for pid in "${ACTIVE_PIDS[@]:-}"; do
     [ -n "$pid" ] || continue
+    [ -z "${FM_LINT_TRACE:-}" ] || printf 'fm-lint[parent %s]: TERM group=%s pgid_now=%s\n' "$$" "$pid" "$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d ' ')" >&2
     kill -TERM -- "-$pid" 2>/dev/null || true
     kill -TERM "$pid" 2>/dev/null || true
   done
   for pid in "${ACTIVE_PIDS[@]:-}"; do
     [ -n "$pid" ] || continue
+    [ -z "${FM_LINT_TRACE:-}" ] || printf 'fm-lint[parent %s]: KILL group=%s members_now=%s\n' "$$" "$pid" "$(ps -e -o pgid= 2>/dev/null | tr -d ' ' | grep -c "^$pid$")" >&2
     kill -KILL -- "-$pid" 2>/dev/null || true
     kill -KILL "$pid" 2>/dev/null || true
   done
   for pid in "${ACTIVE_PIDS[@]:-}"; do
-    [ -n "$pid" ] && wait "$pid" 2>/dev/null || true
+    [ -n "$pid" ] || continue
+    [ -z "${FM_LINT_TRACE:-}" ] || printf 'fm-lint[parent %s]: after KILL, group=%s members_now=%s\n' "$$" "$pid" "$(ps -e -o pgid= 2>/dev/null | tr -d ' ' | grep -c "^$pid$")" >&2
+    wait "$pid" 2>/dev/null || true
   done
   rm -rf "$TMP_ROOT"
 }

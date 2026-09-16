@@ -1201,8 +1201,16 @@ if [ "${1:-}" = "--version" ]; then
 fi
 printf '%s\n' "$$" > "$FM_TEST_SHELLCHECK_PID"
 trap 'exit 143' HUP INT TERM
+# A bash trap runs only after the foreground command finishes, so the sleep's
+# length is also this fake's worst-case reaction time to TERM. It was `sleep 1`
+# and the caller below waited one second, which is a race by construction: the
+# fake needed up to a full second and the window was a full second. Measured in
+# the CI image on 2026-09-16, the reaction took 100-600 ms depending on where in
+# the cycle the signal landed, and the Forgejo lane lost that race while a quiet
+# machine won it. A short sleep keeps the fake a long-running process - which is
+# the whole of what it stands for - and makes its reaction prompt.
 while :; do
-  sleep 1
+  sleep 0.05
 done
 SH
   chmod +x "$fakebin/shellcheck"
@@ -1219,6 +1227,7 @@ SH
       fi
       PATH="$fakebin:$PATH" TMPDIR="$lint_tmp" FM_LINT_JOBS="$jobs" \
         FM_LINT_TELEMETRY="$telemetry_file" FM_TEST_SHELLCHECK_PID="$pid_file" \
+        FM_LINT_TRACE=1 \
         "$LINT" "$fixture" > "$out_file" 2>&1 &
       parent_pid=$!
       i=0
@@ -1233,24 +1242,42 @@ SH
         fail "jobs=$jobs telemetry=$telemetry did not start ShellCheck"
       }
       shellcheck_pid=$(cat "$pid_file")
+      # Identity, not a bare pid: on a container that has spawned thousands of
+      # processes a recycled pid makes `kill -0` succeed for a stranger. This
+      # repository fixed that misread in the production code (#14, pid plus start
+      # time); the check here reads the same two fields.
+      shellcheck_identity=$(ps -p "$shellcheck_pid" -o lstart=,comm= 2>/dev/null | tr -s ' ') || shellcheck_identity=
+      fm_fake_shellcheck_alive() {
+        local now
+        now=$(ps -p "$shellcheck_pid" -o lstart=,comm= 2>/dev/null | tr -s ' ') || return 1
+        [ -n "$shellcheck_identity" ] && [ "$now" = "$shellcheck_identity" ]
+      }
       kill -TERM "$parent_pid" 2>/dev/null \
         || fail "jobs=$jobs telemetry=$telemetry parent could not be interrupted"
       parent_rc=0
       wait "$parent_pid" 2>/dev/null || parent_rc=$?
       survivor=0
       i=0
-      while [ "$i" -lt 100 ] && kill -0 "$shellcheck_pid" 2>/dev/null; do
-        sleep 0.01
+      # 100 x 0.05 s. The fake reacts within its own 0.05 s sleep now, so this is
+      # a bound with real margin rather than a second race, and a genuine leak
+      # still fails it.
+      while [ "$i" -lt 100 ] && fm_fake_shellcheck_alive; do
+        sleep 0.05
         i=$((i + 1))
       done
-      if kill -0 "$shellcheck_pid" 2>/dev/null; then
+      if fm_fake_shellcheck_alive; then
         survivor=1
+        # Name the process before reaping it: a bare pid cannot tell a real
+        # survivor from a recycled one on a busy container. The pgid is in the
+        # line because the parent's cleanup kills the WORKER's process group, so
+        # whether this survivor sat in that group is the first thing to read.
+        survivor_detail=$(ps -p "$shellcheck_pid" -o pid=,etime=,ppid=,pgid=,comm= 2>/dev/null | tr -s ' ')
         kill -KILL "$shellcheck_pid" 2>/dev/null || true
       fi
       [ "$parent_rc" -eq 143 ] \
         || fail "jobs=$jobs telemetry=$telemetry signal exit was $parent_rc, expected 143"
       [ "$survivor" -eq 0 ] \
-        || fail "jobs=$jobs telemetry=$telemetry left ShellCheck running"
+        || fail "jobs=$jobs telemetry=$telemetry left ShellCheck running${survivor_detail:+: $survivor_detail}"$'\n'"--- parent output ---"$'\n'"$(cat "$out_file" 2>/dev/null)"
       [ -z "$(find "$lint_tmp" -mindepth 1 -maxdepth 1 -name 'fm-lint.*' -print -quit)" ] \
         || fail "jobs=$jobs telemetry=$telemetry left temporary worker state"
     done
