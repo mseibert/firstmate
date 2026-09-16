@@ -1,0 +1,77 @@
+==================================================================
+fm-lint follow-up manual verification (2026-09-16T17:11:09Z)
+worktree: /home/martin_seibert/.no-mistakes/worktrees/e36b903ea8f4/01M2NJGG6YPDAN5AGB2B7X74YX  (HEAD 2a6ec96)
+shellcheck: 0.11.0
+==================================================================
+
+### A. --fast is refused under BOTH CI signals, allowed locally
+
+$ CI=true GITHUB_ACTIONS= bin/fm-lint.sh --fast <fixture>
+fm-lint.sh: --fast is local-only; unset CI and GITHUB_ACTIONS to use it.
+exit=2
+
+$ GITHUB_ACTIONS=true CI= bin/fm-lint.sh --fast <fixture>
+fm-lint.sh: --fast is local-only; unset CI and GITHUB_ACTIONS to use it.
+exit=2
+
+$ GITHUB_ACTIONS= CI= bin/fm-lint.sh --fast <fixture>   (ordinary local shell)
+fm-lint.sh: ShellCheck 0.11.0 (pinned 0.11.0)
+fm-lint.sh: fast local mode; ShellCheck extended analysis and source following disabled
+exit=0
+
+### B. Real ShellCheck invocation args per environment (logging wrapper)
+
+$ CI=true GITHUB_ACTIONS= bin/fm-lint.sh <fixture>
+fm-lint.sh: ShellCheck 0.11.0 (pinned 0.11.0)
+fm-lint.sh: local mode; ShellCheck source following disabled (GitHub Actions runs the full source-aware pass)
+exit=0
+logged: shellcheck args: --norc --exclude=SC1091,SC2034,SC2153,SC2329 -- /tmp/fm-lint-evidence.dQz7pG/crossfile.sh
+
+$ GITHUB_ACTIONS=true CI=true bin/fm-lint.sh <fixture>
+fm-lint.sh: ShellCheck 0.11.0 (pinned 0.11.0)
+fm-lint.sh: full ShellCheck extended analysis enabled
+
+In /tmp/fm-lint-evidence.dQz7pG/crossfile.sh line 3:
+cross_file_only=1
+^-------------^ SC2034 (warning): cross_file_only appears unused. Verify use (or export if used externally).
+
+
+In /tmp/fm-lint-evidence.dQz7pG/crossfile.sh line 7:
+    cross_file_helper() {
+    ^-- SC2329 (info): This function is never invoked. Check usage (or ignored if invoked indirectly).
+
+For more information:
+  https://www.shellcheck.net/wiki/SC2034 -- cross_file_only appears unused. V...
+  https://www.shellcheck.net/wiki/SC2329 -- This function is never invoked. C...
+exit=1
+logged: shellcheck args: --norc --external-sources -- /tmp/fm-lint-evidence.dQz7pG/crossfile.sh
+
+### C. End-user-visible difference: CI=true-only stays safe, GHA runner is source-aware
+
+$ CI=true GITHUB_ACTIONS= bin/fm-lint.sh <crossfile fixture>
+fm-lint.sh: ShellCheck 0.11.0 (pinned 0.11.0)
+fm-lint.sh: local mode; ShellCheck source following disabled (GitHub Actions runs the full source-aware pass)
+exit=0
+
+$ GITHUB_ACTIONS=true bin/fm-lint.sh <crossfile fixture>
+fm-lint.sh: ShellCheck 0.11.0 (pinned 0.11.0)
+fm-lint.sh: full ShellCheck extended analysis enabled
+
+In /tmp/fm-lint-evidence.dQz7pG/crossfile.sh line 3:
+cross_file_only=1
+^-------------^ SC2034 (warning): cross_file_only appears unused. Verify use (or export if used externally).
+
+
+In /tmp/fm-lint-evidence.dQz7pG/crossfile.sh line 7:
+    cross_file_helper() {
+    ^-- SC2329 (info): This function is never invoked. Check usage (or ignored if invoked indirectly).
+
+For more information:
+  https://www.shellcheck.net/wiki/SC2034 -- cross_file_only appears unused. V...
+  https://www.shellcheck.net/wiki/SC2329 -- This function is never invoked. C...
+exit=1
+
+### D. CI=true still claims CI for FILE-SET selection (full canonical set)
+$ CI=true GITHUB_ACTIONS= bin/fm-lint.sh --list-files | wc -l
+386
+

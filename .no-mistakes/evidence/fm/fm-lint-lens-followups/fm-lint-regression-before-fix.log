@@ -1,0 +1,4 @@
+ok - fm-lint.sh rejects explicit --fast mode under either CI signal
+not ok - ShellCheck flags were not external-sources=no exclude=SC1091,SC2034,SC2153,SC2329
+external-sources=yes
+exclude=none

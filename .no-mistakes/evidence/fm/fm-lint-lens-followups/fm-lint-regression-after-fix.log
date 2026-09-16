@@ -1,0 +1,2 @@
+ok - fm-lint.sh rejects explicit --fast mode under either CI signal
+ok - fm-lint.sh keeps the safe posture when only CI=true is set
