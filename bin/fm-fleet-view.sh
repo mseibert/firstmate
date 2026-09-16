@@ -63,6 +63,7 @@ printf '%s\n' "$SNAPSHOT" | jq -r '
   "",
   "Schema: \(.schema)",
   "Home: \(.fm_home)",
+  "Occupancy: active=\(.occupancy.active) parked=\(.occupancy.parked) paused=\(.occupancy.paused) blocked=\(.occupancy.blocked)",
   "",
   "## Under Way",
   (if (.tasks | length) == 0 then

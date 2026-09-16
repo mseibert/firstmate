@@ -160,6 +160,10 @@ mkdir -p "$STATE"
 # (inbox_steer_check below).
 # shellcheck source=bin/fm-task-inbox-lib.sh
 . "$SCRIPT_DIR/fm-task-inbox-lib.sh"
+# The released-marker read is owned by bin/fm-park-lib.sh so the watcher, the
+# current-state reader, and the lifecycle owner agree on which markers count.
+# shellcheck source=bin/fm-park-lib.sh
+. "$SCRIPT_DIR/fm-park-lib.sh"
 
 WATCH_LOCK="$STATE/.watch.lock"
 WATCH_PATH="$SCRIPT_DIR/fm-watch.sh"
@@ -900,7 +904,10 @@ handle_paused_stale() {  # <window> <task> <hash>
   case "$mtime" in ''|*[!0-9]*) mtime=$(date +%s) ;; esac
   age=$(( $(date +%s) - mtime ))
   last=$(last_status_line "$statusf")
-  if status_is_captain_held "$last"; then
+  if park_marker_released "$task"; then
+    detail="parked, awaiting the supervisor"
+    reason="parked ${age}s, awaiting the supervisor - released operating-point marker, rechecked on a long cadence not a wedge; resume or clear the parked task"
+  elif status_is_captain_held "$last"; then
     detail="captain-held, awaiting the captain"
     reason="captain-held ${age}s, awaiting the captain - verified hold transfer, rechecked on a long cadence not a wedge; answer the held decision or release the hold"
   elif status_is_done_pending_verify "$last"; then
@@ -1097,8 +1104,21 @@ machine_is_idle() {  # <exclude-task>
 # agent by design (the expected parked state), so its agent exiting is exactly
 # as legitimate as a done: worker's. A declared pause, decision wait, or anything
 # else stays in flight: an idle declaration never excuses a missing process.
+#
+# A released operating-point marker (bin/fm-park.sh) is the other expected-
+# stopped state: the control plane verified the worker stopped and the task is
+# deliberately parked awaiting a merge or a decision, so its missing process is
+# the release itself. Only state=released qualifies; a `releasing` marker is an
+# unverified release whose worker may still be running.
+park_marker_released() {  # <task>
+  local task=$1 gen
+  gen=$(fm_meta_get "$STATE/$task.meta" spawn_gen)
+  [ "$(fm_park_marker_state "$STATE" "$task" "$gen")" = released ]
+}
+
 task_expects_live_worker() {  # <task>
   local task=$1 last verb
+  park_marker_released "$task" && return 1
   last=$(last_status_line "$STATE/$task.status")
   verb=$(status_line_verb "$last")
   case "$verb" in

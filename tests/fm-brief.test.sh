@@ -666,6 +666,48 @@ test_ship_project_memory_wording() {
   pass "fm-brief.sh: ship project-memory wording carries the AGENTS.md authoring bar"
 }
 
+# The done-plus-release note is part of every ship and scout scaffold: a worker
+# whose only remainder is a merge or a decision must know its slot can be
+# released while the endpoint, worktree, and uncommitted work are preserved,
+# and that resuming is a short run. A secondmate charter is not a delivery
+# contract and must not carry it.
+test_done_plus_park_note_is_scaffolded() {
+  local home brief
+  home="$TMP_ROOT/park-note-home"
+  mkdir -p "$home/data"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" brief-park-ship some-proj --mode no-mistakes >/dev/null 2>&1 \
+    || fail "ship scaffold failed"
+  brief="$home/data/brief-park-ship/brief.md"
+  assert_grep "# Waiting work and the released slot" "$brief" \
+    "ship brief lost the done-plus-release heading"
+  assert_grep "firstmate may release it immediately" "$brief" \
+    "ship brief lost the release rule"
+  assert_grep "your worktree, branch, and every uncommitted change are preserved" "$brief" \
+    "ship brief lost the work-preservation guarantee"
+  assert_grep "You are resumed later with a short run" "$brief" \
+    "ship brief lost the resume shape"
+  assert_grep "This is expected and is not a failure" "$brief" \
+    "ship brief lost the expectation wording"
+  assert_grep "the committed branch for a ship, the report for a scout" "$brief" \
+    "ship brief lost the deliverable-shaped closing instruction"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" brief-park-scout some-proj --scout >/dev/null 2>&1 \
+    || fail "scout scaffold failed"
+  brief="$home/data/brief-park-scout/brief.md"
+  assert_grep "# Waiting work and the released slot" "$brief" \
+    "scout brief lost the done-plus-release heading"
+  assert_grep "firstmate may release it immediately" "$brief" \
+    "scout brief lost the release rule"
+  assert_grep "the committed branch for a ship, the report for a scout" "$brief" \
+    "scout brief lost the deliverable-shaped closing instruction"
+  FM_HOME="$home" FM_SECONDMATE_CHARTER='Supervise assigned work.' \
+    "$ROOT/bin/fm-brief.sh" brief-park-mate --secondmate --no-projects >/dev/null 2>&1 \
+    || fail "secondmate scaffold failed"
+  brief="$home/data/brief-park-mate/brief.md"
+  assert_no_grep "# Waiting work and the released slot" "$brief" \
+    "a secondmate charter must not carry the crew release note"
+  pass "fm-brief.sh: ship and scout scaffolds carry the done-plus-release note"
+}
+
 test_herdr_lab_contract_is_explicit_and_complete() {
   local home id brief
   home="$TMP_ROOT/herdr-lab-home"
@@ -1108,6 +1150,7 @@ test_five_lens_gate_in_direct_pr_dod
 test_five_lens_comment_in_no_mistakes_dod
 test_ask_user_escalation_format
 test_ship_project_memory_wording
+test_done_plus_park_note_is_scaffolded
 test_herdr_lab_contract_is_explicit_and_complete
 test_herdr_lab_contract_quotes_foreign_firstmate_path
 test_herdr_lab_omission_is_loud_for_ship_and_scout

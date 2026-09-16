@@ -312,14 +312,62 @@ run_parked() {  # <branch>
 run:
   id: "01RUN"
   branch: $1
-  status: awaiting_approval
+  status: running
   awaiting_agent: parked 2m10s
   head: "${FM_FAKE_RUN_HEAD:-abc1234}"
   pr: ""
-  findings[2]{id,severity,file,line,action,description}:
-    r1,warning,a.go,,auto-fix,ignored error
-    r2,error,b.go,,ask-user,changes product behavior
-gate: review
+  findings: 1 awaiting, 1 auto-fix
+gate:
+  step: review
+  status: awaiting_approval
+  note: "Review auto-fix is disabled by default (\`auto_fix.review: 0\`), so blocking and ask-user review findings park for your decision rather than being silently self-fixed."
+  findings[2]{id,severity,file,action,description}:
+    r1,warning,a.go,auto-fix,ignored error
+    r2,error,b.go,ask-user,"changes product behavior"
+EOF
+}
+
+# A review gate whose note text names ask-user but whose findings carry only the
+# auto-fix action: the authority marker must not come from a whole-document text
+# match.
+run_parked_auto_fix_only() {  # <branch>
+  cat <<EOF
+run:
+  id: "01RUN"
+  branch: $1
+  status: running
+  awaiting_agent: parked 1m2s
+  head: "${FM_FAKE_RUN_HEAD:-abc1234}"
+  pr: ""
+  findings: 1 auto-fix
+gate:
+  step: review
+  status: awaiting_approval
+  note: "Review auto-fix is disabled by default (\`auto_fix.review: 0\`), so blocking and ask-user review findings park for your decision rather than being silently self-fixed."
+  findings[1]{id,severity,file,action,description}:
+    r1,warning,a.go,auto-fix,"a description that mentions ,ask-user, inline"
+EOF
+}
+
+# A run-level findings table with an ask-user row must never mark the gate: the
+# authority marker comes only from the gate block's own findings table.
+run_parked_run_level_table_before_gate() {  # <branch>
+  cat <<EOF
+run:
+  id: "01RUN"
+  branch: $1
+  status: running
+  awaiting_agent: parked 1m2s
+  head: "${FM_FAKE_RUN_HEAD:-abc1234}"
+  pr: ""
+  findings[1]{id,severity,file,action,description}:
+    r1,error,b.go,ask-user,"a run-level table row"
+gate:
+  step: review
+  status: awaiting_approval
+  note: "Review auto-fix is disabled by default (\`auto_fix.review: 0\`), so blocking and ask-user review findings park for your decision rather than being silently self-fixed."
+  findings[1]{id,severity,file,action,description}:
+    r2,warning,a.go,auto-fix,"a gate table row"
 EOF
 }
 
@@ -345,11 +393,13 @@ run:
   status: running
   head: "${FM_FAKE_RUN_HEAD:-abc1234}"
   pr: ""
-  findings[1]{id,severity,file,line,action,description}:
-    r1,error,b.go,,ask-user,changes product behavior
+  findings: 1 awaiting
 gate:
   step: review
   status: fix_review
+  note: "Review auto-fix is disabled by default (\`auto_fix.review: 0\`), so blocking and ask-user review findings park for your decision rather than being silently self-fixed."
+  findings[1]{id,severity,file,action,description}:
+    r1,error,b.go,ask-user,"changes product behavior"
 steps[3]{step,status,findings,duration_ms}:
   intent,completed,0,0
   review,fix_review,1,0
@@ -713,8 +763,40 @@ test_gate_block_parked_not_superseded() {
   assert_contains "$out" "source: run-step" "gate block wait -> run-step source"
   assert_contains "$out" "parked at review" "gate block wait names the gate"
   assert_contains "$out" "1 finding(s)" "gate block wait includes finding count"
+  assert_not_contains "$out" "ask-user" "a fix_review gate is the pipeline's fix round, not an authority wait"
   assert_not_contains "$out" "superseded" "gate block wait not flagged stale"
   pass "gate block parked run is not flagged superseded"
+}
+
+test_review_gate_without_ask_user_action_has_no_marker() {
+  reset_fakes
+  local d out
+  d=$(new_case parked-auto-fix-only)
+  make_repo_on_branch "$d/wt" fm/feat-af
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/af.meta" "window=fm:fm-af" "worktree=$d/wt" "kind=ship"
+  printf 'needs-decision: review gate\n' > "$d/state/af.status"
+  FM_FAKE_AXI_STATUS="$(run_parked_auto_fix_only fm/feat-af)"
+  out=$(run_crew_state "$d" af)
+  assert_contains "$out" "state: parked" "auto-fix-only review gate -> parked"
+  assert_contains "$out" "1 finding(s)" "auto-fix-only review gate keeps its finding count"
+  assert_not_contains "$out" "ask-user" "the gate note text and a description mention must not become the authority marker"
+  pass "an auto-fix-only review gate carries no authority marker"
+}
+
+test_run_level_findings_table_does_not_mark_the_gate() {
+  reset_fakes
+  local d out
+  d=$(new_case parked-run-level-table)
+  make_repo_on_branch "$d/wt" fm/feat-rl
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/rl.meta" "window=fm:fm-rl" "worktree=$d/wt" "kind=ship"
+  printf 'needs-decision: review gate\n' > "$d/state/rl.status"
+  FM_FAKE_AXI_STATUS="$(run_parked_run_level_table_before_gate fm/feat-rl)"
+  out=$(run_crew_state "$d" rl)
+  assert_contains "$out" "state: parked" "the gate block still parks"
+  assert_not_contains "$out" "ask-user" "a run-level findings table must not supply the gate authority marker"
+  pass "the authority marker is scoped to the gate block's findings table"
 }
 
 test_ci_ready_done_log_beats_monitoring_run() {
@@ -1725,6 +1807,42 @@ test_torn_down_worktree() {
   pass "torn-down worktree is handled gracefully"
 }
 
+# (j2) a released park marker (bin/fm-park.sh) is authoritative current state,
+# and a still-releasing marker is a recorded but unverified release that must
+# fall through to the ordinary reads rather than claim a free slot.
+test_park_marker_reads_parked() {
+  reset_fakes
+  local d; d=$(new_case parkmarker)
+  make_fakebin "$d" >/dev/null
+  mkdir -p "$d/wt"
+  fm_write_meta "$d/state/parked-k.meta" "window=fm:fm-parked-k" "worktree=$d/wt" "kind=ship" "harness=grok"
+  printf 'done: PR https://example.invalid/1 checks green\n' > "$d/state/parked-k.status"
+  printf 'schema=fm-park.v1\ntask=parked-k\nreason=merge\npointer=https://example.invalid/1\nbranch=fm/x\npr=https://example.invalid/1\nepoch=1\nincarnation=s1\nstate=released\n' \
+    > "$d/state/parked-k.parked"
+  local out rc
+  out=$(run_crew_state "$d" parked-k); rc=$?
+  expect_code 0 "$rc" "a released park marker exits 0"
+  assert_contains "$out" "state: parked" "a released park marker reads parked"
+  assert_contains "$out" "source: park-marker" "the marker read names its source"
+  assert_contains "$out" "released awaiting merge - https://example.invalid/1" \
+    "the marker detail carries the reason and pointer"
+  printf 'schema=fm-park.v1\ntask=parked-k\nreason=merge\npointer=https://example.invalid/1\nbranch=fm/x\npr=https://example.invalid/1\nepoch=1\nincarnation=s1\nstate=releasing\n' \
+    > "$d/state/parked-k.parked"
+  out=$(run_crew_state "$d" parked-k)
+  assert_not_contains "$out" "state: parked" "a releasing marker must not read as a verified release"
+  assert_contains "$out" "state: done" "a releasing marker falls through to the ordinary read"
+  # A released marker from an earlier incarnation is stale: a control-plane
+  # relaunch started a new worker outside fm-park, so the release no longer
+  # describes this task and must not free its slot.
+  fm_write_meta "$d/state/parked-k.meta" "window=fm:fm-parked-k" "worktree=$d/wt" "kind=ship" "harness=grok" "spawn_gen=s2"
+  printf 'schema=fm-park.v1\ntask=parked-k\nreason=merge\npointer=https://example.invalid/1\nbranch=fm/x\npr=https://example.invalid/1\nepoch=1\nincarnation=s1\nstate=released\n' \
+    > "$d/state/parked-k.parked"
+  out=$(run_crew_state "$d" parked-k)
+  assert_not_contains "$out" "state: parked" "a marker from an earlier incarnation must not read as parked"
+  assert_contains "$out" "state: done" "a stale marker falls through to the ordinary read"
+  pass "the released park marker is authoritative for its incarnation; releasing and stale markers are not"
+}
+
 # --- remote secondmate arm ---------------------------------------------------
 # A meta recording remote_host= must never be read through the local worktree
 # probe or a local backend adapter: the recorded worktree and pane live on the
@@ -2310,6 +2428,8 @@ test_genuine_daemon_down_reports_blocked
 test_genuine_parked_not_superseded
 test_scalar_gate_parked_not_superseded
 test_gate_block_parked_not_superseded
+test_review_gate_without_ask_user_action_has_no_marker
+test_run_level_findings_table_does_not_mark_the_gate
 test_ci_ready_done_log_beats_monitoring_run
 test_ci_monitoring_checks_green_surfaces_done
 test_top_level_ci_checks_green_surfaces_done
@@ -2357,6 +2477,7 @@ test_dead_window_still_reports_active_run_step
 test_no_timeout_uses_perl_bound
 test_scout_skips_run_lookup
 test_torn_down_worktree
+test_park_marker_reads_parked
 test_remote_alive_with_log_uses_status_log
 test_remote_alive_idle_is_healthy_not_gone
 test_remote_unreachable_is_unknown_remote_not_dead

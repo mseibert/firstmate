@@ -107,6 +107,7 @@ state/               runtime records and signals; gitignored
   <id>.backlog-close  the exact backlog transition a teardown recorded before removing the task's record, so an interrupted cleanup can still be finished at the next session start; bin/fm-backlog-transition-lib.sh owns its format and replay, and a landed transition removes it
   <id>.inbox/          durable steering inbox: sequenced firstmate instruction records the worker acknowledges by moving them into its handled/ subdirectory; written by fm-send, with ordinary records re-rung and escalated by the watcher while explicit fire-and-forget records are excluded from that ladder, and removed by teardown (bin/fm-task-inbox-lib.sh)
   <id>.meta          task metadata; each producer script's header owns its exact fields and mutation contract, with docs/configuration.md routing operator-facing backend and trace-context details
+  <id>.parked        released operating-point marker for a task only waiting on a merge or a decision; written and removed by bin/fm-park.sh, read as current state by bin/fm-crew-state.sh, and removed by teardown (schema and semantics: docs/park-release.md)
   <id>.herdr-presentation  quarantinable attempt and restart-binding journal for Herdr's optional visual projection; never task or endpoint authority; see docs/herdr-backend.md "Presentation spaces"
   <id>.check.sh      authenticated slow poll; the watcher dispatches validated PR data and the byte-identified Relay shim through trusted repository scripts, runs registered custom checks from hash-validated private snapshots, and rejects every other state check without execution
   <id>.check-trust   private content binding created by fm-check-register.sh for an intentional custom check
@@ -170,6 +171,7 @@ A lock-refused session must not spawn, steer, merge, drain the wake queue, repai
 The digest itself makes no external-network call and never waits for one.
 Every network check a session start owes - GitHub auth, dead-secondmate relaunch, secondmate convergence, pending handoff delivery, and project clone refresh - runs off the digest's blocking path in a bounded worker owned by `bin/fm-startup-network.sh` and is reported in the digest's own `NETWORK CHECKS` section.
 The locked startup inactive-outcome scan joins that worker so a slow local current-state read cannot block the digest; its findings use the ordinary durable wake queue.
+The bounded park sweep joins it too, releasing eligible waiting tasks that still hold a slot and reporting only a release it could not complete or the backlog note a manual home owes.
 When that section reports its checks still in progress it names exactly what is unconfirmed; treat none of those as passed until `bin/fm-startup-network.sh report` returns the finished result, while a failed or otherwise actionable result also arrives as a `check: startup-network` wake.
 
 1. **Lock** - acquires the per-home session lock first, before anything mutates shared state, then starts the deferred startup stage above.
@@ -318,6 +320,7 @@ The spawn must resolve a genuine isolated task worktree distinct from the primar
 When the configured tasks-axi backlog gate applies, the spawn itself moves the work item to In flight and refuses rather than dispatching work this home has no item for, so recording the dispatch is never a separate step to remember; a manual-backend home retains the hand-editing contract in `docs/configuration.md`.
 The read-only `bin/fm-backlog-readcheck.sh` reconciles In-flight rows against worker state before dispatch, reports only, never blocks a dispatch, and is also run by the session-start digest.
 After spawning, confirm the worker is processing the brief and handle any trust dialog through `harness-adapters`.
+The operating point counts only actively working tasks: a task parked through `bin/fm-park.sh` while it waits on a merge or a decision is not active work, never blocks the next dispatch, and is released as soon as that wait is recognized (`docs/park-release.md`).
 A persistent secondmate is recorded in the secondmate registry and runtime state, never as a backlog work item.
 
 Steer a worker with ordinary text through fail-closed `fm-send`: the message becomes a durable record in the task's steering inbox (multi-line text is legal, local and remote alike) and the worker's terminal receives only a constant doorbell line, with the watcher re-ringing an unacknowledged local message and escalating a stuck one (`bin/fm-task-inbox-lib.sh`; `bin/fm-send.sh` owns the typed-plane carve-outs).
@@ -387,6 +390,12 @@ A captain instruction to merge is explicit authority; `yolo` is the only standin
 For any custom `state/<id>.check.sh` you write yourself, keep it an ordinary single-link mode-`0700` file, print one line only when firstmate should wake, print nothing otherwise, finish before `FM_CHECK_TIMEOUT`, then bind its current bytes with `bin/fm-check-register.sh <id>` before the watcher may execute it.
 Retire a custom check only through `bin/fm-check-unregister.sh <id>` (or `bin/fm-teardown.sh` for a spawned task); never hand-compose an `rm` with `$STATE`/`$ID`.
 
+A worker that reports `done:` while only a merge or a decision remains does not keep its slot: park it with `bin/fm-park.sh park <id>` as you handle the wake, so the handoff lives in the PR, the status log, and the backlog while the slot frees up.
+Parking stops the endpoint and preserves the worktree, the branch, and every uncommitted change; it never discards work.
+When the merge lands, resume the parked task first with `bin/fm-park.sh resume <id> --reason merge` and then run the ordinary landing and teardown path; when you answer a parked task's decision, resume it first with `--reason decision` and then deliver the answer through `bin/fm-send.sh --resolve-key`, which the relaunched worker reads from its durable inbox.
+A trivially and cleanly complete landing may skip the resume: `bin/fm-park.sh clear <id>` removes the marker without a relaunch, so cleanup never depends on a worker relaunch.
+`docs/park-release.md` owns the mechanism, and the bounded sweep keeps eligible tasks from being missed.
+
 Tear down a ship task only after landing is confirmed.
 A teardown refusal for uncommitted or unlanded work is a stop-and-investigate result, never an obstacle to bypass.
 Never force teardown without explicit discard authority.
@@ -428,7 +437,9 @@ Handle actionable wakes as follows:
 1. For `signal:`, read the listed event lines first, then reconcile current state only where action depends on it.
 2. For `stale:`, inspect the recorded endpoint and load `stuck-crewmate-recovery` for a stopped, looping, confused, or unresponsive worker; a deep-inspection reason also requires current-state and validation-log inspection.
 3. For `check:`, act on the named poll result, including merges, Relay events, process-to-event source results, and captain inbox notes; a `check: pr-green-return` wake carries the bound-merge mandate or the hold report for a task's PR, and running its named `bin/fm-pr-merge.sh` command is how a due mandate lands; a handled inbox note is also acknowledged with `bin/fm-inbox.sh drain --ack <id>`, or it stays counted as still waiting for firstmate.
-4. For `heartbeat:`, review the whole fleet from the structured fleet view, reconcile suspicious tasks and PR state, update the backlog, and never report an unchanged fleet as progress.
+4. For `heartbeat:`, review the whole fleet from the structured fleet view, reconcile suspicious tasks and PR state, release waiting tasks that still hold a slot with `bin/fm-park.sh sweep`, update the backlog, and never report an unchanged fleet as progress.
+
+Handle a waiting worker as part of its wake: park it (`bin/fm-park.sh park <id>`) when its report shows that only a merge or a decision remains, and resume it first (`bin/fm-park.sh resume <id> --reason merge|decision`) when that merge lands or that decision is answered (section 7; `docs/park-release.md`).
 
 When any wake reports a merged PR for a project cloned in this home, refresh that clone through the guarded fleet-sync path.
 When Relay-linked work reaches a milestone or terminal state, load `fmx-respond`; before terminal teardown, use its promised-final reconciliation when a typed public commitment exists, otherwise post the final completion follow-up so the link clears even if earlier follow-ups were spent.
