@@ -58,8 +58,8 @@
 set -u
 
 REQUIRED_SHELLCHECK=0.11.0
-# Cross-file codes that need --external-sources. Local changed-file mode
-# cannot judge them, so they stay CI-only.
+# Cross-file codes that need --external-sources. Local runs cannot judge
+# them, so they stay CI-only.
 LOCAL_NOX_EXCLUDE=SC1091,SC2034,SC2153,SC2329
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SELF="$SELF_DIR/fm-lint.sh"
