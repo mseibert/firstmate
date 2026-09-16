@@ -213,7 +213,14 @@ fm_lint_in_github_actions() {
   [ "${GITHUB_ACTIONS:-}" = true ]
 }
 
-if [ "$FAST" -eq 1 ] && { fm_lint_in_github_actions || [ "${CI:-}" = true ]; }; then
+# fm_lint_in_ci reports the ambient CI signal that refuses --fast and selects
+# the full file set: the trusted runner or a CI=true convention. Source
+# following keys off fm_lint_in_github_actions alone.
+fm_lint_in_ci() {
+  fm_lint_in_github_actions || [ "${CI:-}" = true ]
+}
+
+if [ "$FAST" -eq 1 ] && fm_lint_in_ci; then
   printf 'fm-lint.sh: --fast is local-only; unset CI and GITHUB_ACTIONS to use it.\n' >&2
   exit 2
 fi
@@ -260,7 +267,7 @@ if [ "$#" -gt 0 ]; then
   ROOTS=("$@")
 else
   full_lint=1
-  if [ "${GITHUB_ACTIONS:-}" != true ] && [ "${CI:-}" != true ] \
+  if ! fm_lint_in_ci \
     && command -v git >/dev/null 2>&1 \
     && git rev-parse --is-inside-work-tree >/dev/null 2>&1 \
     && [ "$(git rev-parse --abbrev-ref HEAD 2>/dev/null)" != main ]; then
