@@ -6,16 +6,17 @@
 # itself is never requested, and nothing notices. This scan is the bounded,
 # poll-loop-owned return path: for every own task that records a pr= line, it
 # reads the live pull request, applies the merge policy in ~/.claude/pr-policy.md
-# (hard stops and the autonomous allowlist), and, once the PR has held the same
+# (hard stops and the posture's repo table), and, once the PR has held the same
 # verdict for the configured wait, queues a check wake for MAIN:
-#   - due  (green + mergeable + no policy hold + repo allowlisted + a forge
-#     whose merge path can bind a head): the wake carries the mandate to merge
+#   - due  (green + mergeable + no policy hold + the repo allowed by the
+#     posture table + a forge whose merge path can bind a head): the wake
+#     carries the mandate to merge
 #     through bin/fm-pr-merge.sh with --expected-head naming the head this scan
 #     verified, and the merge path refuses a live head that differs. The merge
 #     itself is bound to the verified head by Forgejo's head_commit_id and
 #     GitLab's --sha. The scan itself never merges, and only main-owned check
 #     wakes can carry that mandate.
-#   - held (a policy hard stop, the allowlist default ask, or a GitHub PR whose
+#   - held (a policy hard stop, the policy default ask, or a GitHub PR whose
 #     merge path cannot bind the head): the wake names the reason and asks for
 #     the captain's decision instead of a merge.
 # Whether the merge actually lands is still decided live at merge time by
@@ -84,8 +85,8 @@
 # mergeable=true already proves the "only on conflict" condition false, and a
 # package.json match holds only when its base and head scripts blocks differ or
 # cannot be read. `.forgejo/workflows/**` is matched as built-in hard stop 5
-# ground in addition to the policy's parsed globs, because the policy's own
-# allowlist rows name it while its Section 5 glob block omits it. The
+# ground in addition to the policy's parsed globs, because a policy's own repo
+# rows can name it while its Section 5 glob block omits it. The
 # changed-file list is trusted only once the read proves it complete: Forgejo
 # pages until a short page, a GitLab `overflow: true` response fails closed, and
 # a rename contributes its old path as well as its new one to the sensitive set.
@@ -247,21 +248,44 @@ wait_secs() {
 # ---------------------------------------------------------------- policy ----
 
 # The policy file is the single owner of the hard-stop wording; this section
-# only parses what it needs: the autonomous allowlist names and the sensitive
-# path globs. Anything unparseable leaves POLICY_OK=0 and every candidate is
-# held by hard stop 7.
+# only parses what it needs: the posture, its repo table, and the sensitive path
+# globs. The posture names how that table reads - an allowlist's `autonomous`
+# rows are the merge authority, a denylist's `ask`/`deny` rows are the wait list
+# - and a missing or unrecognized posture is unparseable, never guessed.
+# Anything unparseable leaves POLICY_OK=0 and every candidate is held by hard
+# stop 7.
 POLICY_OK=0
-POLICY_ALLOWLIST=
+POLICY_POSTURE=
+POLICY_REPO_LIST=
 POLICY_GLOBS=
 
 policy_load() {
-  local file=$FM_PR_GREEN_RETURN_POLICY allow globs rule_seen=0
+  local file=$FM_PR_GREEN_RETURN_POLICY posture allow globs rule_seen=0
   POLICY_OK=0
-  POLICY_ALLOWLIST=
+  POLICY_POSTURE=
+  POLICY_REPO_LIST=
   POLICY_GLOBS=
   if [ -z "$file" ] || [ ! -f "$file" ] || [ -L "$file" ] || [ ! -r "$file" ]; then
     return 0
   fi
+  # The posture field lives in the header before `## The rule`; only its first
+  # word is read, so trailing prose such as `Posture: allowlist.  Set up: ...`
+  # is tolerated. Anything else is unrecognized, never guessed.
+  posture=$(awk '
+    /^## The rule/ { exit }
+    /^[ \t]*[Pp]osture[ \t]*:/ {
+      line = $0
+      sub(/^[^:]*:[ \t]*/, "", line)
+      sub(/[ \t].*$/, "", line)
+      gsub(/[.,;:]+$/, "", line)
+      print tolower(line)
+      exit
+    }
+  ' "$file" 2>/dev/null) || return 0
+  case "$posture" in
+    allowlist|denylist) POLICY_POSTURE=$posture ;;
+    *) return 0 ;;
+  esac
   allow=$(awk '
     /^## / {
       if ($0 ~ /^## The rule/) { inrule = 1; next }
@@ -274,13 +298,18 @@ policy_load() {
     *'| Repo |'*) rule_seen=1 ;;
   esac
   [ "$rule_seen" = 1 ] || return 0
-  POLICY_ALLOWLIST=$(printf '%s\n' "$allow" | awk -F'|' '
+  POLICY_REPO_LIST=$(printf '%s\n' "$allow" | awk -F'|' -v posture="$POLICY_POSTURE" '
     NF >= 4 {
       name = $2
-      verdict = $3
+      verdict = tolower($3)
       gsub(/^[ \t]+|[ \t]+$/, "", name)
       gsub(/^[ \t]+|[ \t]+$/, "", verdict)
-      if (tolower(verdict) == "autonomous" && name != "") print name
+      if (name == "") next
+      if (posture == "denylist") {
+        if (verdict == "ask" || verdict == "deny") print name
+      } else if (verdict == "autonomous") {
+        print name
+      }
     }
   ')
   globs=$(awk '
@@ -297,13 +326,21 @@ policy_load() {
 }
 
 policy_repo_allowlisted() { # <name>...
-  local name
+  local name found=0
   for name in "$@"; do
     [ -n "$name" ] || continue
-    if printf '%s\n' "$POLICY_ALLOWLIST" | grep -Fx -- "$name" >/dev/null 2>&1; then
-      return 0
+    if printf '%s\n' "$POLICY_REPO_LIST" | grep -Fx -- "$name" >/dev/null 2>&1; then
+      found=1
+      break
     fi
   done
+  # The table's meaning inverts under a denylist: a listed repo is the one that
+  # waits, and an unlisted repo is autonomous.
+  if [ "$POLICY_POSTURE" = denylist ]; then
+    [ "$found" = 1 ] && return 1
+    return 0
+  fi
+  [ "$found" = 1 ] && return 0
   return 1
 }
 
@@ -1307,7 +1344,11 @@ evaluate_task() {
   [ -z "$owner_name" ] || owner_name=${owner_name##*/}
   if ! policy_repo_allowlisted "$candidate" "$owner_name"; then
     EV_CLASS=held
-    EV_REASON="policy-ask: repo ${candidate:-unknown} is not in the autonomous allowlist"
+    if [ "$POLICY_POSTURE" = denylist ]; then
+      EV_REASON="policy-ask: repo ${candidate:-unknown} is on the policy wait list"
+    else
+      EV_REASON="policy-ask: repo ${candidate:-unknown} is not in the autonomous allowlist"
+    fi
     return 0
   fi
 

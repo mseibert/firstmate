@@ -139,14 +139,14 @@ make_case() {
 }
 
 # The merge-policy fixture the return-path re-verification reads. It mirrors the
-# shape bin/fm-pr-green-return.sh parses: the autonomous allowlist table and
-# Section 5's sensitive-glob block.
+# shape bin/fm-pr-green-return.sh parses: the allowlist posture, its repo table,
+# and Section 5's sensitive-glob block.
 write_merge_policy() { # <dir> <allowlisted repo name...>
   local dir=$1 repo
   shift
   mkdir -p "$dir/fix"
   {
-    printf '# PR-Merge-Policy\n\n## The rule\n\nDefault is ask.\n\n'
+    printf '# PR-Merge-Policy\n\nPosture: allowlist.  Set up: fixture.\n\n## The rule\n\nDefault is ask.\n\n'
     printf '| Repo | [Autonomous | Ask] | Why |\n|---|---|---|\n'
     for repo in "$@"; do
       printf '| %s | Autonomous | fixture |\n' "$repo"
