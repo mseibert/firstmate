@@ -133,6 +133,10 @@
       "audience": "agent-runtime"
     },
     {
+      "path": ".agents/skills/cognee-memory/SKILL.md",
+      "audience": "agent-runtime"
+    },
+    {
       "path": ".agents/skills/decision-hold-lifecycle/SKILL.md",
       "audience": "agent-runtime"
     },
@@ -301,6 +305,10 @@
       "audience": "operator-current"
     },
     {
+      "path": "docs/captain-hold-lifecycle.md",
+      "audience": "maintainer-architecture"
+    },
+    {
       "path": "docs/cd-guard.md",
       "audience": "maintainer-architecture"
     },
@@ -313,19 +321,15 @@
       "audience": "operator-current"
     },
     {
+      "path": "docs/cognee-memory-bridge.md",
+      "audience": "operator-current"
+    },
+    {
       "path": "docs/configuration.md",
       "audience": "operator-current"
     },
     {
-      "path": "docs/captain-hold-lifecycle.md",
-      "audience": "maintainer-architecture"
-    },
-    {
       "path": "docs/documentation-audiences.md",
-      "audience": "maintainer-architecture"
-    },
-    {
-      "path": "docs/extension-bindings.md",
       "audience": "maintainer-architecture"
     },
     {
@@ -365,6 +369,10 @@
       "audience": "operator-example"
     },
     {
+      "path": "docs/extension-bindings.md",
+      "audience": "maintainer-architecture"
+    },
+    {
       "path": "docs/fm-test-isolation-proof.md",
       "audience": "maintainer-verification"
     },
@@ -397,12 +405,12 @@
       "audience": "operator-current"
     },
     {
-      "path": "docs/secondmate-parent-channel.md",
-      "audience": "maintainer-architecture"
-    },
-    {
       "path": "docs/scripts.md",
       "audience": "operator-current"
+    },
+    {
+      "path": "docs/secondmate-parent-channel.md",
+      "audience": "maintainer-architecture"
     },
     {
       "path": "docs/sessionstart-nudge.md",
@@ -455,6 +463,10 @@
     {
       "path": "docs/turnend-guard.md",
       "audience": "operator-current"
+    },
+    {
+      "path": "docs/verification/cognee-memory-bridge.md",
+      "audience": "maintainer-verification"
     },
     {
       "path": "docs/verification/dispatch-auth.md",
