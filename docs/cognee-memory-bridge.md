@@ -24,13 +24,21 @@ committed or hard-coded.
 
 Access goes through the 1Password service account only, never the captain's
 interactive 1Password session.
-The service-account token comes from `OP_SERVICE_ACCOUNT_TOKEN` when set,
-otherwise from the configured service-account keychain item
-`op-service-account-claude-code`.
+The service-account token is resolved in this order:
+
+1. `OP_SERVICE_ACCOUNT_TOKEN` when set in the environment.
+2. The macOS keychain item `op-service-account-claude-code`, the per-invocation
+   source a captain's own shell wrapper injects from.
+3. The headless token file at `OP_SA_TOKEN_FILE`, defaulting to
+   `~/.config/op/sa-token`. A Linux firstmate has no keychain, and that is the
+   file the fleet's own `op` wrapper reads the same service-account token from.
+4. Otherwise the bridge refuses with a clear message and exits non-zero.
+
+Steps 2 and 3 are the two platform variants of one idea, so a single bridge
+serves a macOS captain and a headless Linux host without a second copy of the
+secret and without depending on a host-specific helper being on `PATH`.
 This keeps the bridge usable whenever an agent runs, without an interactive
 login.
-If no service-account token is available, the bridge refuses with a clear
-message and exits non-zero.
 
 The vault, item, and field can be overridden per run with `COGNEE_OP_VAULT`,
 `COGNEE_OP_ITEM`, and `COGNEE_OP_FIELD`.

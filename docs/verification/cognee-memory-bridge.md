@@ -184,6 +184,48 @@ which is why requiring the key cannot relabel a legitimate empty result.
 An empty `search_result` list, and a top-level empty list, both still render the
 no-entries note and succeed.
 
+## A headless Linux firstmate resolves the token from the file
+
+The record above was taken on macOS. On 2026-09-16 the bridge was measured on the
+two headless Linux hosts that actually run firstmate, and the token guard - not
+the credential - turned out to be the blocker.
+
+Both hosts answered the same way, with the bridge as it stood before this branch:
+
+```
+$ bin/fm-cognee-context.sh "firstmate Forgejo Umzug" --top-k 2
+error: no 1Password service-account token available (set OP_SERVICE_ACCOUNT_TOKEN or install the op-service-account-claude-code keychain item); refusing interactive sign-in
+```
+
+while the credential itself was fine on both, read through the same service
+account and the same item:
+
+```
+$ op read op://ai-agent-reads/sas5a33ahm5kug3wrc5zprwlw4/api_key | wc -c
+64
+```
+
+Neither host has a keychain, so neither of the guard's two sources could ever
+resolve there. Both do have the fleet's `op` wrapper on `PATH`, and that wrapper
+injects the service-account token from `~/.config/op/sa-token` on every
+invocation - which is why the `op read` above worked while the bridge refused.
+
+With the file added as the third source, both hosts render real memory:
+
+| Host | Before | After |
+|---|---|---|
+| proxmox | `exit=1`, no service-account token | `exit=0`, entries rendered |
+| claudeserver | `exit=1`, no service-account token | `exit=0`, entries rendered |
+
+Reachability is not the constraint: `https://cognee.seibert.tools` answered HTTP
+200 in 0.05 s from proxmox and 0.07 s from claudeserver, and the `personal`
+dataset returned hits for every probe query.
+
+The `HOME`-unset path was measured at the same time, under the script's `set -u`:
+the first version of this fallback expanded `$HOME` unguarded and died with
+`HOME: unbound variable` before reaching the fail-closed message. It is guarded
+now, and a hermetic test covers both halves.
+
 ## What is still unproven
 
 - The `team` dataset. Every run above used the default `personal` dataset.
@@ -207,3 +249,9 @@ no-entries note and succeed.
   object, some other shape, or an empty body on a 404 is unobserved. An empty
   body leaves the message exactly as recorded above; the appending itself is
   covered only by the hermetic test's stubbed bodies.
+- The headless token file's own permissions. Both Linux hosts keep it at mode 600
+  and the bridge only requires that it be readable, so the mode is a host
+  convention this record observed, not a guarantee the bridge enforces.
+- A file that exists but holds an empty or malformed token. The file branch was
+  measured only with a real token; the empty case falls through to the
+  fail-closed message by construction, but no live run observed it.
