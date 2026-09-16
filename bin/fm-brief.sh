@@ -68,6 +68,12 @@
 # whose only remainder is a merge or a decision may have its slot released,
 # with the worktree and uncommitted work preserved and a short resume run later
 # (bin/fm-park.sh owns the mechanics).
+# Ship and scout briefs carry the machine constraints (heap cap on every node
+# step, heavy checks sequentially per workspace, build token for anything that
+# starts a node toolchain or runs longer than a few seconds) so a fresh worker
+# cannot repeat the memory-exhaustion incident class; the brief points at the
+# active home's data/captain.md and data/learnings.md, which keep the full
+# rules and their history.
 # Ship tasks include a project-memory section so durable project-intrinsic
 # learnings can be committed to AGENTS.md through the project's delivery path;
 # it carries the AGENTS.md authoring bar (widely useful knowledge only, pointers
@@ -234,6 +240,22 @@ This is expected and is not a failure, so before your final `done:` leave your d
 EOF
 PARK_SECTION=${PARK_SECTION%$'\n'}
 
+# The machine constraints every ship and scout brief carries (Captain
+# 2026-09-12/16): short, non-negotiable rules for heavy node work on a small
+# build machine. The full rules and their history stay in the active home's
+# data/captain.md and data/learnings.md, so this section only states the rules
+# and points there instead of copying the detail.
+IFS= read -r -d '' MACHINE_CONSTRAINTS_SECTION <<EOF || true
+# Machine constraints
+This build machine is small (about 3.8 GB RAM, 2 cores, no swap); heavy node steps have starved other lanes before.
+- Cap the heap of every node step: \`NODE_OPTIONS="--max-old-space-size=2048"\` (1536 when the machine is loaded), never 4096 or larger.
+- Run heavy checks - lint, tsc, test suites, builds - strictly sequentially per workspace; never two at once.
+- Take the machine-wide build token before anything that starts a node toolchain or runs longer than a few seconds: pnpm install, prisma generate, every build, every test suite, dev servers; wait while it is held.
+- Stop a dev server as soon as the step that needed it ends.
+The full machine rules and their history live in $DATA/captain.md and $DATA/learnings.md; read the relevant section before heavy work.
+EOF
+MACHINE_CONSTRAINTS_SECTION=${MACHINE_CONSTRAINTS_SECTION%$'\n'}
+
 if [ "$KIND" = secondmate ]; then
 SECONDMATE_PROJECTS=""
 idx=1
@@ -389,6 +411,8 @@ This is a SCOUT task: the deliverable is a written report, not a PR.
 The worktree is your laboratory - install, run, edit, and make scratch commits freely; all of it is discarded at teardown.
 The report is the only thing that survives, so anything worth keeping must be in it.
 
+$MACHINE_CONSTRAINTS_SECTION
+
 # Rules
 1. Never push to any remote and never open a PR.
 2. Stay inside this worktree; the only files you may write outside it are the report and the status file below.
@@ -477,6 +501,8 @@ The path check is authoritative: \`git rev-parse --git-dir\` and \`git rev-parse
 If the top-level path is the primary checkout or not the worktree you were launched in, STOP - do not branch or commit here - append \`blocked: launched in primary checkout, not an isolated worktree\` to the status file and stop.
 
 1. First action: create your branch: \`git checkout -b fm/$ID\`$SETUP2
+
+$MACHINE_CONSTRAINTS_SECTION
 
 # Rules
 $RULE1

@@ -708,6 +708,45 @@ test_done_plus_park_note_is_scaffolded() {
   pass "fm-brief.sh: ship and scout scaffolds carry the done-plus-release note"
 }
 
+# Machine constraints (Captain 2026-09-12/16): heavy node validation runs kept
+# exhausting the small build machine because the rules lived only in the
+# captain's home records, so every ship and scout brief must carry the short
+# version. The full rules stay in the home's data/captain.md and
+# data/learnings.md, which the brief points at rather than duplicating.
+test_machine_constraints_in_standard_scaffold() {
+  local home kind id brief
+  home="$TMP_ROOT/machine-constraints-home"
+  mkdir -p "$home/data"
+
+  for kind in no-mistakes direct-PR local-only scout; do
+    id="brief-machine-constraints-$kind"
+    if [ "$kind" = scout ]; then
+      FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --scout >/dev/null 2>&1
+    else
+      FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode "$kind" >/dev/null 2>&1
+    fi
+    brief="$home/data/$id/brief.md"
+    assert_present "$brief" "$kind brief was not scaffolded"
+    assert_grep "# Machine constraints" "$brief" \
+      "$kind brief is missing the machine-constraints section"
+    assert_grep 'NODE_OPTIONS="--max-old-space-size=2048"' "$brief" \
+      "$kind brief is missing the heap cap on node steps"
+    assert_grep "never 4096 or larger" "$brief" \
+      "$kind brief does not forbid the 4 GB cap behind the incident class"
+    assert_grep "strictly sequentially per workspace" "$brief" \
+      "$kind brief is missing the sequential heavy-check rule"
+    assert_grep "build token before anything that starts a node toolchain" "$brief" \
+      "$kind brief is missing the build-token discipline"
+    assert_grep "pnpm install, prisma generate" "$brief" \
+      "$kind brief does not name the token-requiring steps"
+    assert_grep "Stop a dev server as soon as the step that needed it ends" "$brief" \
+      "$kind brief is missing the dev-server shutdown rule"
+    assert_grep "$home/data/captain.md and $home/data/learnings.md" "$brief" \
+      "$kind brief does not point at the home docs that own the full rules"
+  done
+  pass "fm-brief.sh: ship and scout briefs carry the machine constraints"
+}
+
 test_herdr_lab_contract_is_explicit_and_complete() {
   local home id brief
   home="$TMP_ROOT/herdr-lab-home"
@@ -1151,6 +1190,7 @@ test_five_lens_comment_in_no_mistakes_dod
 test_ask_user_escalation_format
 test_ship_project_memory_wording
 test_done_plus_park_note_is_scaffolded
+test_machine_constraints_in_standard_scaffold
 test_herdr_lab_contract_is_explicit_and_complete
 test_herdr_lab_contract_quotes_foreign_firstmate_path
 test_herdr_lab_omission_is_loud_for_ship_and_scout
