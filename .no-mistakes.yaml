@@ -33,8 +33,20 @@ document:
 commands:
   lint: 'bin/fm-lint.sh'
 
-# Publish each run's test evidence to the orphan no-mistakes/evidence branch linked from the PR.
-# The evidence is not committed to the feature or default branch.
+# Keep each run's test evidence on local disk, not in an orphan branch of this
+# repository. This line is a deliberate override of the upstream default.
+#
+# Upstream ships `store_in_repo: true`, and this fork inherited it, which is how a
+# `no-mistakes/evidence` branch accumulated here: 760 files, 416 of them run
+# transcripts, carrying internal repository names, host names, and paths from real
+# runs. Because this repository is public, all of that was published. The branch
+# is deleted, but the setting would have recreated it on the next run.
+#
+# Local disk is the default this overrides to, and it is where the evidence
+# belongs: `~/.no-mistakes/evidence` already has retention and a run cap, and
+# nothing there is reachable by anyone but the operator.
+#
+# Do not set this back to `true` in this repository.
 test:
   evidence:
-    store_in_repo: true
+    store_in_repo: false
