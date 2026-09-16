@@ -708,15 +708,15 @@ test_done_plus_park_note_is_scaffolded() {
   pass "fm-brief.sh: ship and scout scaffolds carry the done-plus-release note"
 }
 
-# Machine constraints (Captain 2026-09-12/16): heavy node validation runs kept
-# exhausting the small build machine because the rules lived only in the
-# captain's home records, so every ship and scout brief must carry the short
-# version. The brief states the rules authoritatively and points at the home's
-# data/captain.md and data/learnings.md only where that home keeps them.
+# Machine constraints: every ship and scout brief must carry the short
+# heavy-node rules, and point at the home's data/captain.md and
+# data/learnings.md only where that home keeps them.
 test_machine_constraints_in_standard_scaffold() {
   local home kind id brief
   home="$TMP_ROOT/machine-constraints-home"
   mkdir -p "$home/data"
+  : > "$home/data/captain.md"
+  : > "$home/data/learnings.md"
 
   for kind in no-mistakes direct-PR local-only scout; do
     id="brief-machine-constraints-$kind"
@@ -730,28 +730,61 @@ test_machine_constraints_in_standard_scaffold() {
     assert_grep "# Machine constraints" "$brief" \
       "$kind brief is missing the machine-constraints section"
     assert_grep "check your own host's memory and cores" "$brief" \
-      "$kind brief presents the primary host profile without making it context-only"
+      "$kind brief does not tell the worker to check its own host capacity"
     assert_grep 'NODE_OPTIONS="--max-old-space-size=2048"' "$brief" \
       "$kind brief is missing the heap cap on node steps"
     assert_grep "never 4096 or larger" "$brief" \
-      "$kind brief does not forbid the 4 GB cap behind the incident class"
+      "$kind brief does not forbid the 4 GB cap that exhausts a memory-tight host"
+    assert_grep "about 4 GB RAM or less" "$brief" \
+      "$kind brief does not define what makes a host memory-tight"
     assert_grep "a host with memory to spare sets its own capacity" "$brief" \
       "$kind brief does not scope the heap cap to memory-tight hosts"
     assert_grep "strictly sequentially per workspace" "$brief" \
       "$kind brief is missing the sequential heavy-check rule"
     assert_grep "If this home provides the machine-wide build token" "$brief" \
       "$kind brief does not condition the build-token rule on the home providing one"
+    assert_grep "$home/state/build-token.sh" "$brief" \
+      "$kind brief does not name the token tool behind the build-token rule"
+    assert_grep "A dev server takes it only for its start" "$brief" \
+      "$kind brief does not keep a dev server from holding the build token"
     assert_grep "Otherwise run one heavy step at a time" "$brief" \
       "$kind brief is missing the no-token fallback"
     assert_grep "pnpm install, prisma generate" "$brief" \
       "$kind brief does not name the token-requiring steps"
     assert_grep "Stop a dev server as soon as the step that needed it ends" "$brief" \
       "$kind brief is missing the dev-server shutdown rule"
-    assert_grep "The bullets above are the authoritative rules" "$brief" \
-      "$kind brief does not make its inline rules authoritative"
-    assert_grep "$home/data/captain.md and $home/data/learnings.md where this home provides them" "$brief" \
-      "$kind brief does not point conditionally at the home docs that own the full rules"
+    assert_grep "The bullets above are authoritative for this brief" "$brief" \
+      "$kind brief does not make its inline rules authoritative for the task"
+    assert_grep "This home's records carry more detail and the history behind them where they keep them; read them before heavy work: $home/data/captain.md and $home/data/learnings.md" "$brief" \
+      "$kind brief does not point at the home docs that carry the detail and history"
   done
+
+  # A home that keeps neither record gets the rules without a pointer to files it lacks.
+  home="$TMP_ROOT/machine-constraints-no-records-home"
+  mkdir -p "$home/data"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" brief-machine-constraints-no-records some-proj --mode no-mistakes >/dev/null 2>&1
+  brief="$home/data/brief-machine-constraints-no-records/brief.md"
+  assert_present "$brief" "machine-constraints brief without home records was not scaffolded"
+  assert_grep "The bullets above are authoritative for this brief" "$brief" \
+    "a home without records lost the authoritative inline rules"
+  assert_no_grep "This home's records carry more detail" "$brief" \
+    "a home without records got a pointer to files it does not keep"
+  assert_no_grep "$home/data/captain.md" "$brief" \
+    "a home without records got a dangling captain.md reference"
+  assert_no_grep "$home/data/learnings.md" "$brief" \
+    "a home without records got a dangling learnings.md reference"
+
+  # A home that keeps only one record gets only that record named.
+  home="$TMP_ROOT/machine-constraints-one-record-home"
+  mkdir -p "$home/data"
+  : > "$home/data/learnings.md"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" brief-machine-constraints-one-record some-proj --mode no-mistakes >/dev/null 2>&1
+  brief="$home/data/brief-machine-constraints-one-record/brief.md"
+  assert_grep "This home's records carry more detail and the history behind them where they keep them; read them before heavy work: $home/data/learnings.md" "$brief" \
+    "a home keeping only learnings.md lost its pointer"
+  assert_no_grep "$home/data/captain.md" "$brief" \
+    "a home keeping only learnings.md got a dangling captain.md reference"
+
   pass "fm-brief.sh: ship and scout briefs carry the machine constraints"
 }
 
