@@ -330,6 +330,22 @@ assert_contains "$OUT" "# Cognee memory context" \
 pass "the headless service-account token file is honored when no keychain yields one"
 
 # ---------------------------------------------------------------------------
+# 7c. An unset HOME still reaches the fail-closed message. The script runs under
+#     `set -u`, so the default token path must guard HOME rather than expand it.
+# ---------------------------------------------------------------------------
+fakebin=$(make_fake_bins "$TMP_ROOT/nohome")
+OUT=$(PATH="$fakebin:$BASE_PATH" "${CLEAN_ENV[@]}" -u OP_SERVICE_ACCOUNT_TOKEN \
+  -u SECURITY_STUB_TOKEN -u OP_SA_TOKEN_FILE -u HOME \
+  "$BRIDGE" "firstmate" 2>&1)
+RC=$?
+[ "$RC" -eq 1 ] || fail "unset-HOME case must exit 1, got $RC"
+assert_contains "$OUT" "no 1Password service-account token available" \
+  "unset-HOME case reaches the fail-closed message"
+assert_not_contains "$OUT" "unbound variable" \
+  "unset-HOME case does not die on an unbound variable"
+pass "an unset HOME fails closed instead of dying on an unbound variable"
+
+# ---------------------------------------------------------------------------
 # 8. OP_SERVICE_ACCOUNT_TOKEN env is honored verbatim (portable path).
 # ---------------------------------------------------------------------------
 fakebin=$(make_fake_bins "$TMP_ROOT/envtoken")

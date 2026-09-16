@@ -184,7 +184,9 @@ elif command -v security >/dev/null 2>&1; then
   OP_TOKEN=$(security find-generic-password -a "${USER:-$(id -un)}" -s op-service-account-claude-code -w 2>/dev/null) || OP_TOKEN=
 fi
 # Headless fallback: the same file the fleet's `op` wrapper injects from.
-SA_TOKEN_FILE=${OP_SA_TOKEN_FILE:-$HOME/.config/op/sa-token}
+# HOME is guarded because the script runs under `set -u`: an unset HOME must
+# still reach the fail-closed message below, not die on an unbound variable.
+SA_TOKEN_FILE=${OP_SA_TOKEN_FILE:-${HOME:-}/.config/op/sa-token}
 if [ -z "$OP_TOKEN" ] && [ -r "$SA_TOKEN_FILE" ]; then
   OP_TOKEN=$(cat "$SA_TOKEN_FILE")
 fi
