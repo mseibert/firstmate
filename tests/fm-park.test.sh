@@ -102,11 +102,26 @@ write_task() {  # <home> <id> [extra-meta-line...]
   : > "$home/state/$id.status"
 }
 
-# park_seam_env <home>: fill PARK_SEAM_ENV with the fixture seams every runner
-# shares, one "NAME=value" per element, so a new seam reaches both runners.
+# park_seam_env <home> [ambient]: fill PARK_SEAM_ENV with the fixture seams
+# every runner shares, one "NAME=value" per element, so a new seam reaches both
+# runners. The values are the pinned fixture defaults; the `ambient` mode also
+# honors the fixture variables the unguarded tests drive through the
+# environment, while the pinned mode keeps the guarded cases from being
+# perturbed from outside. run_park asks for `ambient`; run_park_guarded stays
+# pinned.
 PARK_SEAM_ENV=()
-park_seam_env() {  # <home>
-  local home=$1
+park_seam_env() {  # <home> [ambient]
+  local home=$1 mode=${2:-pinned}
+  local crew_state='done' crew_source=run-step crew_detail=fixture axi_held=no
+  local hold_kind='' hold_reason=''
+  if [ "$mode" = ambient ]; then
+    crew_state=${FM_FAKE_CREW_STATE:-done}
+    crew_source=${FM_FAKE_CREW_SOURCE:-run-step}
+    crew_detail=${FM_FAKE_CREW_DETAIL:-fixture}
+    axi_held=${FAKE_AXI_HELD:-no}
+    hold_kind=${FAKE_AXI_HOLD_KIND:-}
+    hold_reason=${FAKE_AXI_HOLD_REASON:-}
+  fi
   PARK_SEAM_ENV=(
     "PATH=$home/fakebin:$PATH"
     "FM_HOME=$home"
@@ -117,23 +132,24 @@ park_seam_env() {  # <home>
     "FM_PARK_NOW_EPOCH=1700000000"
     "FM_TASKS_AXI_COMPATIBLE=1"
     "FM_FAKE_CONTROL_LOG=$home/control.log"
-    "FM_FAKE_CREW_STATE=${FM_FAKE_CREW_STATE:-done}"
-    "FM_FAKE_CREW_SOURCE=${FM_FAKE_CREW_SOURCE:-run-step}"
-    "FM_FAKE_CREW_DETAIL=${FM_FAKE_CREW_DETAIL:-fixture}"
+    "FM_FAKE_CREW_STATE=$crew_state"
+    "FM_FAKE_CREW_SOURCE=$crew_source"
+    "FM_FAKE_CREW_DETAIL=$crew_detail"
     "FAKE_AXI_LOG=$home/axi.log"
     "FAKE_AXI_BODY=$home/axi-body"
-    "FAKE_AXI_HELD=${FAKE_AXI_HELD:-no}"
-    "FAKE_AXI_HOLD_KIND=${FAKE_AXI_HOLD_KIND:-}"
-    "FAKE_AXI_HOLD_REASON=${FAKE_AXI_HOLD_REASON:-}"
+    "FAKE_AXI_HELD=$axi_held"
+    "FAKE_AXI_HOLD_KIND=$hold_kind"
+    "FAKE_AXI_HOLD_REASON=$hold_reason"
   )
 }
 
 # run_park <home> <args...>: invoke fm-park.sh against one fixture home with
-# every seam pointed at the fixture.
+# every seam pointed at the fixture, honoring the ambient fixture overrides the
+# unguarded tests drive through the environment.
 run_park() {  # <home> <args...>
   local home=$1
   shift
-  park_seam_env "$home"
+  park_seam_env "$home" ambient
   env "${PARK_SEAM_ENV[@]}" \
     "FM_PARK_CONTROL_BIN=$home/control.sh" \
     "FM_FAKE_CONTROL_RC=${FM_FAKE_CONTROL_RC:-0}" \
@@ -171,7 +187,8 @@ SH
 
 # run_park_guarded <home> <args...>: run fm-park in a Pi supervision context
 # with the REAL lease guard active, bounded so a guard deadlock fails the test
-# instead of hanging it.
+# instead of hanging it. It forces its own control-plane stub and a successful
+# exit, and takes the pinned fixture seams so the guarded cases stay hermetic.
 run_park_guarded() {  # <home> <args...>
   local home=$1
   shift

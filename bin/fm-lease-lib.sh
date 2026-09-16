@@ -62,11 +62,19 @@
 #     is entry-scoped - it lasts while the acquiring process holds the lock,
 #     so a descendant that keeps mutating after that release is outside the
 #     guard's coverage like any unguarded writer. The marker's revalidation
-#     deliberately keys on pid liveness plus owner equality, mirroring the
-#     lock's own staleness policy: once the lock would recycle a dead holder's
-#     claim, the inherited marker must stop matching too. A home without the
-#     current Pi session lock cannot have a live lease, so the guard is a
-#     no-op there - non-Pi behavior is unchanged by construction.
+#     deliberately keys on pid liveness plus owner equality, the same
+#     fm_pid_alive primitive the lock's own stale-owner reclaim uses: a dead
+#     recorded owner stops matching exactly when the lock would recycle the
+#     claim (the mid-acquire freshness window only covers torn empty-pid
+#     records, which a marker can never name). A recycled pid that makes a
+#     dead owner's stale lock record look live is a deliberate collision, out
+#     of scope under the confused-agent threat model, so the marker accepts
+#     the same pid-reuse residual as the lock's liveness check rather than
+#     adding an fm_pid_identity read to every guard; an owner-dir key would
+#     not close it either, because a dead owner's dir stays in place until the
+#     lock is reclaimed. A home without the current Pi session lock cannot
+#     have a live lease, so the guard is a no-op there - non-Pi behavior is
+#     unchanged by construction.
 #   - Role partition (fm_lease_forbid_branch): actions MAIN alone owns -
 #     merging a PR, landing local-only work, spawning workers - refuse the
 #     branch actor outright, lease or no lease.

@@ -522,16 +522,12 @@ fm_lock_link_owner() {
 }
 
 # Print the pid recorded as <lockdir>'s current owner, or nothing when the lock
-# is absent or unreadable. Handles the symlink-to-owner-dir format
-# fm_lock_try_create writes.
+# is absent or unreadable. The lock's pid file is reached through the symlink
+# to its owner dir that fm_lock_try_create writes. This is the cross-file
+# reader that keeps the record layout out of callers such as the lease guard;
+# the lock library's own internals keep reading the record directly.
 fm_lock_owner_pid() {
-  local lockdir=$1 ownerdir
-  if [ -L "$lockdir" ]; then
-    ownerdir=$(fm_lock_link_owner "$lockdir" 2>/dev/null) || return 1
-    cat "$ownerdir/pid" 2>/dev/null || return 1
-  else
-    cat "$lockdir/pid" 2>/dev/null || return 1
-  fi
+  cat "$1/pid" 2>/dev/null || return 1
 }
 
 fm_lock_points_to_owner() {
