@@ -363,6 +363,27 @@ test_kill_is_best_effort_close() {
   pass "fm_backend_orca_kill: calls terminal close and stays best-effort"
 }
 
+# The paired direction - an `orca` stub present, a close command that exits
+# nonzero, still 0 - is test_kill_is_best_effort_close above. This case is the
+# distinction that arm exists to make, so the two are read together.
+test_kill_refuses_when_the_orca_cli_is_absent() {
+  local out status orca_free
+  orca_case kill-no-cli
+  orca_free=$(fm_test_base_path_sans "$PATH" orca)
+  ! PATH="$orca_free" command -v orca >/dev/null 2>&1 \
+    || fail "the orca-free search path still resolved orca"
+  PATH="$orca_free" command -v bash >/dev/null 2>&1 \
+    || fail "the orca-free search path lost bash, so this case would pass vacuously"
+  out=$( PATH="$orca_free" FM_ORCA_LOG="$LOG" FM_ORCA_RESPONSES="$RESP" \
+    bash -c '. "$0/bin/backends/orca.sh"; fm_backend_orca_kill term-123' "$ROOT" 2>&1 )
+  status=$?
+  [ "$status" -ne 0 ] || fail "kill reported success for a close its missing CLI never attempted"
+  assert_contains "$out" "backend=orca selected but the 'orca' CLI is not installed" \
+    "kill did not name the missing CLI as the reason the close never happened"
+  [ ! -s "$LOG" ] || fail "kill invoked orca despite the CLI being absent"
+  pass "fm_backend_orca_kill: a close its missing CLI never attempted reports the failure instead of a success"
+}
+
 test_remove_worktree_refuses_empty_id() {
   local out status
   orca_case remove-empty
@@ -539,7 +560,7 @@ test_spawn_writes_orca_metadata_and_launches_harness() {
     "spawn should reuse the implicit terminal returned by Orca worktree creation"
   assert_contains "$(cat "$log")" $'orca\x1f''terminal'$'\x1f''send'$'\x1f''--terminal'$'\x1f''term-spawn'$'\x1f''--text'$'\x1f''export GOTMPDIR=/tmp/fm-orcaspawnz1/gotmp'$'\x1f''--enter'$'\x1f''--json' \
     "spawn did not export GOTMPDIR through the Orca terminal"
-  assert_contains "$(cat "$log")" "CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false CLAUDE_CODE_SEND_FEEDBACK=0 claude --dangerously-skip-permissions --settings '{\"feedbackDrafts\":\"off\"}'" \
+  assert_contains "$(cat "$log")" "CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false CLAUDE_CODE_SEND_FEEDBACK=0 claude --dangerously-skip-permissions --settings '{\"feedbackDrafts\":\"off\",\"attribution\":{\"commit\":\"\",\"pr\":\"\",\"sessionUrl\":false}}'" \
     "spawn did not send the selected harness launch command through Orca"
   rm -rf "/tmp/fm-$id"
   pass "fm-spawn.sh --backend orca: reuses implicit terminal, records metadata, launches harness"
@@ -1342,6 +1363,7 @@ test_send_key_enter_and_interrupt
 test_send_key_refuses_unknown_key
 test_send_key_refuses_escape_until_supported
 test_kill_is_best_effort_close
+test_kill_refuses_when_the_orca_cli_is_absent
 test_remove_worktree_refuses_empty_id
 test_remove_worktree_rejects_orca_error_json
 test_worktree_path_resolves_id

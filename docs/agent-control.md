@@ -43,13 +43,15 @@ An interrupt is not complete until the composer is empty.
 muse is the one verified adapter that restores the cancelled prompt back into its composer as real text, so its interrupt key is followed by a Ctrl+U clear; without it the next submitted line - including this plane's own exit command - would concatenate onto the restored prompt and submit both as one line.
 The clear is refused before anything is sent when the recorded backend cannot deliver it.
 
+`exit` reads the composer's state before typing the exit command and requires the exact `empty` verdict; a `pending` verdict refuses by naming the pending text, and any other verdict (`unknown`, `pending-unproven`, or an unreadable read) refuses as not proven empty, matching the fail-safe contract every other consumer that can overwrite composer input follows.
+
 **Teardown and discard are not verbs and will not become verbs.**
 `exit` stops an agent and preserves everything else.
 Removing a worktree, closing an endpoint, or discarding work stays with [`bin/fm-teardown.sh`](../bin/fm-teardown.sh), which owns the landed-work test.
 `bin/fm-park.sh` uses `exit` for a different purpose - releasing the slot of a task that is only waiting on a merge or a decision - and `relaunch` to bring it back later; [park-release.md](park-release.md) owns that mechanism.
 
 **`resume` is not a verb.**
-It is not deterministic across the verified adapters: codex, grok, and gemini resume only from a session id printed at exit, opencode continues the most recent session for the cwd, and claude, pi, pi-signed, omp, and kimi have no verified pane-resume contract.
+It is not deterministic across the verified adapters: codex, grok, and gemini resume only from a session id printed at exit, opencode continues the most recent session for the cwd, and claude, pi, pi-signed, omp, kimi, and agy have no verified pane-resume contract.
 `relaunch` covers the same need on every adapter, because the brief on disk - not a harness-private session - is the durable instruction.
 
 ## Transactional relaunch
@@ -106,6 +108,7 @@ Switching harness is therefore one ordinary relaunch rather than a separate mech
   zellij, orca, and cmux are refused rather than reported as successful blind.
 - An ambiguous or unreadable endpoint state refuses.
   Only a positively classified state acts.
+<<<<<<< HEAD
 - `fm-spawn --relaunch` independently refuses unless the recorded endpoint is positively agent-free and its shell is sitting in the recorded worktree; an authoritatively missing endpoint is recreated in the recorded worktree and re-proven agent-free before launch, while a session that still hosts a live agent in that worktree refuses the recreate, so a replacement can never join a live agent or start outside the copy holding the work.
 
 ## Stop verification (the honest stop)
@@ -132,6 +135,11 @@ The three captain requirements and how the helper satisfies them:
 3. **Honest event log.** Every transition appends a distinct line (`requested`, `confirmed`, `escalated`, `unconfirmed`, `cooldown`, `skipped`, `unverifiable`, `failed`) to the durable event log (`state/.stop-verify.log` by default). History never reads "stopped" for a request.
 
 Fail-closed boundaries: only recovery-grade dead/missing proves a stop; an unclassifiable endpoint is never interrupted; the request always goes through the verified control plane; a concurrent addressing of the same task is refused through a per-task lock; a no-mistakes gate agent is refused. Deterministic test seams are `FM_STOP_VERIFY_CONTROL` (the control-plane binary), `FM_STOP_VERIFY_STATE_BIN` (the agent-state reader), and the `FM_STOP_VERIFY_*` defaults.
+=======
+- `exit`'s composer-empty check, above, is itself a fail-closed boundary that `relaunch` inherits by stopping the old agent through `exit`.
+- `fm-spawn --relaunch` independently refuses unless the recorded endpoint is positively agent-free, so a replacement can never join a live agent.
+  It also requires the shell to be in the recorded worktree: tmux refuses immediately when it is not, while Herdr sends one `cd` to the recorded path and refuses unless a subsequent path read confirms the move.
+>>>>>>> upstream/main
 
 ## Capability matrix
 
@@ -145,12 +153,17 @@ Backend capability comes from each adapter's real surface, not from a policy cho
 | cmux | yes | yes | yes | yes | no |
 | orca | no | yes | yes | no | no |
 
-Per-harness interrupt keys, repeat counts, composer clears, exit commands, and supported task kinds live in `bin/fm-control-lib.sh` and are exercised for every verified harness by `tests/fm-control.test.sh`.
+Per-harness interrupt keys, repeat counts, composer clears, exit commands, and supported task kinds live in `bin/fm-control-lib.sh` and are exercised for every verified harness by `tests/fm-control.test.sh`, with adapters outside its lane pinning their control mechanics in their own harness suites.
 The empirical basis for each adapter's value is the `harness-adapters` skill's verification record for that adapter.
 
 ## Verification
 
+<<<<<<< HEAD
 - `tests/fm-control.test.sh` - the adapter contract for every verified harness, the backend capability matrix, exact-id scoping, the closed verb list, the busy, idle, dead, and idempotent lifecycle cases, and marker non-regression, all against a stubbed session provider.
 - `tests/fm-control-relaunch.test.sh` - the relaunch transaction: identity preservation, harness switching, the progress note, checkpoint refusals, missing-endpoint recreation on tmux and herdr with the missing-session restore and the renamed-window live-agent refusal, and rollback after a failed launch.
 - `tests/fm-stop-verify.test.sh` - the honest stop: request vs confirmation in the event log, verify-then-escalate with the hard interrupt, the victim cooldown and no-repeat rule, the cooldown-expired straight-to-interrupt path, non-candidate skips, the unverifiable fail-closed paths, the concurrent-refusal lock, and `--list`, all against deterministic seams.
+=======
+- `tests/fm-control.test.sh` - the adapter contract for its verified-harness lane (adapters outside the lane pin their control mechanics in their own harness suites), the backend capability matrix, exact-id scoping, the closed verb list, the busy, idle, dead, and idempotent lifecycle cases, and marker non-regression, all against a stubbed session provider.
+- `tests/fm-control-relaunch.test.sh` - the relaunch transaction: identity preservation, harness switching, the progress note, checkpoint refusals, and rollback after a failed launch.
+>>>>>>> upstream/main
 - `tests/fm-control-herdr-smoke.test.sh` - the second state-verified backend against the real herdr binary, on an isolated throwaway lab session.

@@ -11,9 +11,16 @@
 # no-mistakes run-step attributed under bin/fm-nm-run-lib.sh's contract, else
 # the pane busy-signature) and reconciles the possibly-stale log against it.
 #
-# The determinism lives entirely here - only run-step / pane / log reads plus
-# fixed mapping logic, no heuristics and no LLM. Output is one stable, parseable,
-# token-tight line firstmate can read every heartbeat:
+# The determinism lives entirely here - run-step / pane / log reads, fixed
+# mapping logic, and terminal passed-run PR detail from bounded evidence only,
+# with no heuristics and no LLM.
+# For a terminal passed no-mistakes run, a matching merge-poll retirement
+# receipt is local merged evidence; otherwise a 5s-bounded forge read is tried.
+# FM_CREW_STATE_NO_FORGE=1 keeps the receipt read but skips the forge fallback.
+# An absent or unreadable PR identity yields an honest unknown, never an
+# optimistic merged claim.
+# Output is one stable, parseable, token-tight line firstmate can read every
+# heartbeat:
 #
 #   state: <working|parked|done|blocked|paused|failed|unknown> · source: <run-step|pane|status-log|remote-endpoint|park-marker|none> · <detail>
 #
@@ -50,6 +57,10 @@
 #      before it having ended at exactly this worktree's head - so an active fix
 #      round never reads as an older failed run (rule owned by
 #      fm_nm_runs_status_for_worktree in bin/fm-nm-run-lib.sh).
+#      More than one recorded run can bind to this worktree at once, and
+#      bin/fm-nm-run-lib.sh also owns which of them wins: a LIVE run always
+#      outranks a terminal one, so a terminal answer here is provisional until
+#      the ledger has been asked whether a live sibling run exists.
 #      The run-step is AUTHORITATIVE: running/fixing -> working, ci -> working,
 #      awaiting_approval/fix_review -> parked (with gate findings), terminal
 #      passed/checks-passed -> done, failed/cancelled -> failed. EXCEPT: while
@@ -112,6 +123,10 @@ STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 . "$SCRIPT_DIR/fm-nm-run-lib.sh"
 # shellcheck source=bin/fm-park-lib.sh
 . "$SCRIPT_DIR/fm-park-lib.sh"
+# shellcheck source=bin/fm-pr-lib.sh
+. "$SCRIPT_DIR/fm-pr-lib.sh"
+# shellcheck source=bin/fm-timeout-lib.sh
+. "$SCRIPT_DIR/fm-timeout-lib.sh"
 
 ID=${1:-}
 [ -n "$ID" ] || { echo "usage: fm-crew-state.sh <id>" >&2; exit 2; }
@@ -122,10 +137,12 @@ META=${FM_CREW_STATE_META_OVERRIDE:-"$STATE/$ID.meta"}
 LOG=${FM_CREW_STATE_STATUS_OVERRIDE:-"$STATE/$ID.status"}
 NM_TIMEOUT=${FM_CREW_STATE_NM_TIMEOUT:-10}
 case "$NM_TIMEOUT" in ''|*[!0-9]*) NM_TIMEOUT=10 ;; esac
-# How many of the most recent `no-mistakes runs` rows the cross-branch fallback
-# (fm_nm_runs_status_for_worktree in bin/fm-nm-run-lib.sh) scans. Generous
-# enough to still find a branch's own run on a busy multi-crew fleet without
-# listing the entire history every call.
+# How many of the most recent `no-mistakes runs` rows each ledger read
+# (fm_nm_runs_status_for_worktree in bin/fm-nm-run-lib.sh) scans, whether it is
+# the cross-branch fallback or the live-sibling probe behind a terminal `axi
+# status` answer (docs/configuration.md owns the setting). Generous enough to
+# still find a branch's own run on a busy multi-crew fleet without listing the
+# entire history every call.
 FM_CREW_STATE_RUNS_LIMIT=${FM_CREW_STATE_RUNS_LIMIT:-200}
 case "$FM_CREW_STATE_RUNS_LIMIT" in ''|*[!0-9]*) FM_CREW_STATE_RUNS_LIMIT=200 ;; esac
 SEP=' · '
@@ -301,6 +318,116 @@ nm_run() {  # <args...>
 RUN_OUT=""
 nm_field() {  # <key>
   fm_nm_field "$RUN_OUT" "$1"
+}
+
+pr_read_record_bounded() {  # <owner> <repo> <number>
+  local record state merged
+  # shellcheck disable=SC2016  # The inner script expands after bash -c receives positional args.
+  if ! record=$(fm_run_timed 5 bash -c '
+    . "$1"
+    fm_pr_github_read_record "$2" "$3" "$4" || exit 1
+    printf "state=%s\nmerged=%s\n" "$FM_PR_RECORD_STATE" "$FM_PR_RECORD_MERGED"
+  ' _ "$SCRIPT_DIR/fm-pr-lib.sh" "$1" "$2" "$3" 2>/dev/null); then
+    return 1
+  fi
+  state=$(printf '%s\n' "$record" | sed -n 's/^state=//p' | head -1)
+  merged=$(printf '%s\n' "$record" | sed -n 's/^merged=//p' | head -1)
+  [ -n "$state" ] || return 1
+  [ "$merged" = true ] || [ "$merged" = false ] || return 1
+  FM_PR_RECORD_STATE=$state
+  FM_PR_RECORD_MERGED=$merged
+}
+
+mr_read_record_bounded() {  # <host> <path> <number>
+  local record state merged
+  # shellcheck disable=SC2016  # The inner script expands after bash -c receives positional args.
+  if ! record=$(fm_run_timed 5 bash -c '
+    . "$1"
+    fm_pr_gitlab_read_record "$2" "$3" "$4" || exit 1
+    printf "state=%s\nmerged=%s\n" "$FM_PR_RECORD_STATE" "$FM_PR_RECORD_MERGED"
+  ' _ "$SCRIPT_DIR/fm-pr-lib.sh" "$1" "$2" "$3" 2>/dev/null); then
+    return 1
+  fi
+  state=$(printf '%s\n' "$record" | sed -n 's/^state=//p' | head -1)
+  merged=$(printf '%s\n' "$record" | sed -n 's/^merged=//p' | head -1)
+  [ -n "$state" ] || return 1
+  [ "$merged" = true ] || [ "$merged" = false ] || return 1
+  FM_PR_RECORD_STATE=$state
+  FM_PR_RECORD_MERGED=$merged
+}
+
+passed_pr_detail() {
+  local provider url host path number owner repo raw_pr state_lc
+  raw_pr=$(strip_quotes "$(nm_field pr)")
+  if fm_pr_url_parse "$raw_pr"; then
+    provider=$FM_PR_PROVIDER
+    url=$FM_PR_URL
+    host=$FM_PR_HOST
+    path=$FM_PR_PATH
+    number=$FM_PR_NUMBER
+  elif fm_pr_metadata_identity_parse "$META"; then
+    provider=$FM_PR_META_PROVIDER
+    url=$FM_PR_META_URL
+    host=$FM_PR_META_HOST
+    path=$FM_PR_META_PATH
+    number=$FM_PR_META_NUMBER
+  else
+    printf 'run passed: PR state unknown (no PR identity)'
+    return
+  fi
+  if fm_pr_poll_retirement_receipt_valid "$STATE" "$ID" \
+    && [ "$FM_PR_RETIRE_PROVIDER" = "$provider" ] \
+    && [ "$FM_PR_RETIRE_URL" = "$url" ] \
+    && [ "$FM_PR_RETIRE_HOST" = "$host" ] \
+    && [ "$FM_PR_RETIRE_PATH" = "$path" ] \
+    && [ "$FM_PR_RETIRE_NUMBER" = "$number" ]; then
+    printf 'run passed: PR merged'
+    return
+  fi
+  if [ "${FM_CREW_STATE_NO_FORGE:-0}" = 1 ]; then
+    printf 'run passed: PR state unknown (forge read skipped)'
+    return
+  fi
+
+  case "$provider" in
+    github)
+      owner=${path%%/*}
+      repo=${path#*/}
+      if ! pr_read_record_bounded "$owner" "$repo" "$number"; then
+        printf 'run passed: PR state unknown (unreadable)'
+        return
+      fi
+      if [ "$FM_PR_RECORD_MERGED" = true ]; then
+        printf 'run passed: PR merged'
+        return
+      fi
+      state_lc=$(printf '%s' "$FM_PR_RECORD_STATE" | tr '[:upper:]' '[:lower:]')
+      case "$state_lc" in
+        open)   printf 'run passed: PR open' ;;
+        closed) printf 'run passed: PR closed' ;;
+        *)      printf 'run passed: PR state %s' "$state_lc" ;;
+      esac
+      ;;
+    gitlab)
+      if ! mr_read_record_bounded "$host" "$path" "$number"; then
+        printf 'run passed: PR state unknown (unreadable)'
+        return
+      fi
+      if [ "$FM_PR_RECORD_MERGED" = true ]; then
+        printf 'run passed: PR merged'
+        return
+      fi
+      state_lc=$(printf '%s' "$FM_PR_RECORD_STATE" | tr '[:upper:]' '[:lower:]')
+      case "$state_lc" in
+        open|opened) printf 'run passed: PR open' ;;
+        closed)      printf 'run passed: PR closed' ;;
+        *)           printf 'run passed: PR state %s' "$state_lc" ;;
+      esac
+      ;;
+    *)
+      printf 'run passed: PR state unknown (unreadable: %s)' "$url"
+      ;;
+  esac
 }
 # Finding count from a findings[N]{...} table header; empty when none.
 nm_findings_count() {
@@ -621,11 +748,13 @@ nm_ci_checks_state() {
 # has no runs-listing subcommand; tests/fm-crew-state.test.sh owns the
 # 2026-07-02 dead-code incident history this fallback replaced).
 # fm_nm_runs_status_for_worktree in bin/fm-nm-run-lib.sh is the ONE owner of
-# the ledger format, the newest-row-decides rule, and the anchored
-# pipeline-continuation recognition (model-routing-benchmark-hardening: an
-# active fix round whose head object the task copy never fetched used to be
-# rejected here, letting the older failed row answer as current), so both
-# attribution routes share one rule.
+# the ledger format, the newest-row-decides rule, its live-over-terminal
+# exception, and the anchored pipeline-continuation recognition
+# (model-routing-benchmark-hardening: an active fix round whose head object the
+# task copy never fetched used to be rejected here, letting the older failed row
+# answer as current), so both attribution routes share one rule.
+# The same reader is also consulted when `axi status` DID bind this branch's run
+# but that run is terminal, to find a live sibling run for this worktree.
 nm_runs_list() {
   nm_run runs --limit "$FM_CREW_STATE_RUNS_LIMIT"
 }
@@ -665,6 +794,21 @@ if [ "$KIND" = ship ] && [ -n "$CREW_BRANCH" ] && command -v no-mistakes >/dev/n
     if [ -n "$run_branch" ] && [ "$run_branch" = "$CREW_BRANCH" ] \
       && { nm_run_head_matches_worktree || fm_nm_run_is_pipeline_owned_active "$RUN_OUT"; }; then
       HAVE_RUN=1
+      # Live-over-terminal (bin/fm-nm-run-lib.sh). Bare `axi status` answers
+      # with the most-recently-touched run, which after a pipeline crash is the
+      # dead run sitting at this worktree's exact commit while the live run
+      # that replaced it validates a descendant commit on the same branch. Both
+      # bind, so a terminal answer is provisional until the ledger has been
+      # asked whether this worktree also has a live run. Only a live word
+      # displaces it: a terminal run with no live sibling keeps its full
+      # `axi status` step and gate detail rather than degrading to the ledger.
+      if ! fm_nm_run_is_active "$RUN_OUT"; then
+        live_status=$(fm_nm_runs_status_for_worktree "$WT" "$CREW_BRANCH" "$(nm_runs_list)")
+        if [ "$(fm_nm_run_status_class "$live_status")" = live ]; then
+          COARSE_STATUS=$live_status
+          RUN_SOURCE=coarse
+        fi
+      fi
     else
       # The active-or-most-recent run is for another branch, or it names this
       # branch with a head this copy cannot verify (a pipeline-advanced fix
@@ -731,7 +875,7 @@ if [ "$HAVE_RUN" = 1 ]; then
 
     if [ -n "$outcome" ]; then
       case "$outcome" in
-        passed)        RUN_STATE="done"; RUN_DETAIL="run passed: PR merged/closed" ;;
+        passed)        RUN_STATE="done"; RUN_DETAIL=$(passed_pr_detail) ;;
         checks-passed) RUN_STATE="done"; RUN_DETAIL="checks green: PR ready for review" ;;
         failed)
           if nm_reclassify_failed_run_as_held_green; then :; else
@@ -864,8 +1008,10 @@ if ! pane_readable "$BACKEND_TARGET"; then
   #             genuine server death - a socket-connection failure is NOT
   #             covered by the unknown-never-death rule above).
   #   dead    - the endpoint exists but confidently has no agent (herdr's agent
-  #             get answered agent_not_found; tmux's readable foreground process
-  #             group is nothing but shells), still positive death evidence.
+  #             get answered agent_not_found, or its registration lingers over a
+  #             pane whose processes are nothing but shells - issue #4115;
+  #             tmux's readable foreground process group is nothing but
+  #             shells), still positive death evidence.
   #   alive   - the endpoint and its agent answered and only the heavy
   #             scrollback read failed, so the live state is classified by the
   #             normal flow below instead of being discarded.
