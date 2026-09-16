@@ -14,7 +14,11 @@
 #   2. Otherwise the configured service-account token in the macOS keychain,
 #      service name "op-service-account-claude-code" (the same per-invocation
 #      token the captain's shell wrapper injects).
-#   3. Otherwise fail closed: no interactive sign-in, no fallback, non-zero exit
+#   3. Otherwise the headless service-account token file at $OP_SA_TOKEN_FILE,
+#      defaulting to ~/.config/op/sa-token. That is where the fleet's own `op`
+#      wrapper keeps it on a host with no keychain, so a Linux firstmate reads
+#      the same file its wrapper does rather than a second copy of the secret.
+#   4. Otherwise fail closed: no interactive sign-in, no fallback, non-zero exit
 #      with a message that names the missing service-account access.
 # The script never calls `op signin` and never reads a token the captain's
 # interactive session would have to unlock.
@@ -47,6 +51,9 @@
 #   OP_SERVICE_ACCOUNT_TOKEN   service-account token; used verbatim when present,
 #                     then unset so only `op` receives it - no other child process
 #                     of this script ever sees the service-account credential
+#   OP_SA_TOKEN_FILE  path of the headless service-account token file, used only
+#                     when neither the environment variable nor the macOS keychain
+#                     yields a token; default ~/.config/op/sa-token
 #
 # A non-200 search repeats a bounded excerpt of the server's own reason body, so
 # a rejected credential and a rejected request shape are told apart.
@@ -176,8 +183,13 @@ if [ -n "${OP_SERVICE_ACCOUNT_TOKEN:-}" ]; then
 elif command -v security >/dev/null 2>&1; then
   OP_TOKEN=$(security find-generic-password -a "${USER:-$(id -un)}" -s op-service-account-claude-code -w 2>/dev/null) || OP_TOKEN=
 fi
+# Headless fallback: the same file the fleet's `op` wrapper injects from.
+SA_TOKEN_FILE=${OP_SA_TOKEN_FILE:-$HOME/.config/op/sa-token}
+if [ -z "$OP_TOKEN" ] && [ -r "$SA_TOKEN_FILE" ]; then
+  OP_TOKEN=$(cat "$SA_TOKEN_FILE")
+fi
 if [ -z "$OP_TOKEN" ]; then
-  echo "error: no 1Password service-account token available (set OP_SERVICE_ACCOUNT_TOKEN or install the op-service-account-claude-code keychain item); refusing interactive sign-in" >&2
+  echo "error: no 1Password service-account token available (set OP_SERVICE_ACCOUNT_TOKEN, install the op-service-account-claude-code keychain item, or provide $SA_TOKEN_FILE); refusing interactive sign-in" >&2
   exit 1
 fi
 

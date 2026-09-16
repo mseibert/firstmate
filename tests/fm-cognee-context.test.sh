@@ -21,13 +21,21 @@ BASE_PATH=${FM_TEST_BASE_PATH:-/usr/bin:/bin:/usr/sbin:/sbin}
 # environment, so every invocation below strips them: otherwise a developer with
 # COGNEE_DATASET exported fails assertions for a reason unrelated to the change.
 CLEAN_ENV=(env -u COGNEE_URL -u COGNEE_DATASET -u COGNEE_OP_VAULT
-  -u COGNEE_OP_ITEM -u COGNEE_OP_FIELD -u COGNEE_TIMEOUT)
+  -u COGNEE_OP_ITEM -u COGNEE_OP_FIELD -u COGNEE_TIMEOUT
+  -u OP_SA_TOKEN_FILE)
 # The bridge uses the real python3 for JSON; make it resolvable regardless of
 # where it is installed, prepended after the fakebin so the fake op/security/curl
 # still win.
 PY_DIR=$(command -v python3 2>/dev/null) && PY_DIR=$(dirname "$PY_DIR") || PY_DIR=
 [ -n "$PY_DIR" ] && BASE_PATH="$PY_DIR:$BASE_PATH"
 TMP_ROOT=$(fm_test_tmproot fm-cognee-context)
+# Keep the headless token file out of the suite. The bridge's last fallback is
+# $OP_SA_TOKEN_FILE, defaulting to $HOME/.config/op/sa-token - a path that really
+# exists on a Linux firstmate, where the fail-closed case below would then pass
+# for the wrong reason. CLEAN_ENV unsets OP_SA_TOKEN_FILE, and this HOME makes the
+# default unresolvable; a test that wants the file names it explicitly.
+export HOME="$TMP_ROOT/home"
+mkdir -p "$HOME"
 
 # Fixture 1Password item as `op item get --format json --reveal` would emit it.
 OP_ITEM_FIXTURE='{
@@ -306,6 +314,20 @@ assert_contains "$OUT" "no 1Password service-account token available" \
 assert_contains "$OUT" "refusing interactive sign-in" \
   "no-token case refuses interactive sign-in"
 pass "missing service-account token fails closed without interactive sign-in"
+
+# ---------------------------------------------------------------------------
+# 7b. The headless service-account token file is the last fallback, so a Linux
+#     firstmate whose `op` wrapper injects from that file works unchanged.
+# ---------------------------------------------------------------------------
+fakebin=$(make_fake_bins "$TMP_ROOT/satoken")
+SA_TOKEN_FILE="$TMP_ROOT/satoken/sa-token"
+printf '%s\n' 'file-provided-svc-token' > "$SA_TOKEN_FILE"
+OUT=$(PATH="$fakebin:$BASE_PATH" "${CLEAN_ENV[@]}" -u OP_SERVICE_ACCOUNT_TOKEN \
+  -u SECURITY_STUB_TOKEN OP_SA_TOKEN_FILE="$SA_TOKEN_FILE" \
+  "$BRIDGE" --top-k 2 "firstmate")
+assert_contains "$OUT" "# Cognee memory context" \
+  "the headless token file renders context"
+pass "the headless service-account token file is honored when no keychain yields one"
 
 # ---------------------------------------------------------------------------
 # 8. OP_SERVICE_ACCOUNT_TOKEN env is honored verbatim (portable path).
