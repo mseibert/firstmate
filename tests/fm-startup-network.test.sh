@@ -38,47 +38,15 @@ FM_TEST_CLEANUP_DIRS+=("$TMP_ROOT")
 # worker's state directory disappears under it and its lock acquisition can
 # never succeed again. tests/lib.sh's own traps only remove directories, so this
 # file installs its own traps and still calls fm_test_cleanup from inside them.
-FIXTURE_WORKER_PIDS="$TMP_ROOT/fixture-worker-pids"
-: > "$FIXTURE_WORKER_PIDS"
-
-record_fixture_worker() {  # <home>
-  local pid
-  pid=$(sed -n 's/^pid=//p' "$1/state/.startup-network.status" 2>/dev/null | tail -1)
-  case "$pid" in ''|*[!0-9]*) return 0 ;; esac
-  [ "$pid" -gt 1 ] || return 0
-  printf '%s\n' "$pid" >> "$FIXTURE_WORKER_PIDS"
-}
-
-# Every worker pid this run knows about: the ones recorded at `start` time, plus
-# whatever the durable worker records still name. A signal can land between a
-# worker's spawn and its recording step, and the status record written before
-# `start` returned is the durable trace that still identifies it.
-fixture_worker_pids() {
-  local pid status
-  [ ! -s "$FIXTURE_WORKER_PIDS" ] || cat "$FIXTURE_WORKER_PIDS"
-  for status in "$TMP_ROOT"/*/home/state/.startup-network.status; do
-    [ -f "$status" ] || continue
-    pid=$(sed -n 's/^pid=//p' "$status" 2>/dev/null | tail -1)
-    case "$pid" in ''|*[!0-9]*) continue ;; esac
-    [ "$pid" -gt 1 ] || continue
-    printf '%s\n' "$pid"
-  done
-}
 
 # Every process group a fixture of this run owns. A fixture process is
 # identified by this run's temp root in its command line: the detached worker,
 # its bounded sweep, and its child shells all carry it, and no unrelated process
-# does. A known worker's own group is collected as well, so a worker whose
-# command line the snapshot cannot see is still reaped.
+# does.
 fixture_owned_groups() {
-  local snapshot pid
+  local snapshot
   snapshot=$(ps -axo pid=,pgid=,command= 2>/dev/null) || return 0
   printf '%s\n' "$snapshot" | awk -v root="$TMP_ROOT" 'index($0, root) { print $2 }'
-  fixture_worker_pids | while IFS= read -r pid; do
-    case "$pid" in ''|*[!0-9]*) continue ;; esac
-    printf '%s\n' "$snapshot" | awk -v p="$pid" \
-      '$1 == p && index($0, "fm-startup-network.sh") { print $2; exit }'
-  done
 }
 
 # TERM first, because a bounded sweep forwards the signal to its own child
@@ -206,12 +174,11 @@ EOF
 }
 
 run_stage() {  # <home> <root> <args...>
-  local home=$1 root=$2 mode=${3:-} rc
+  local home=$1 root=$2 rc
   shift 2
   PATH="$root/bin:$PATH" FM_FAKE_HARNESS_PID="${FM_FAKE_HARNESS_PID_OVERRIDE:-$$}" \
     FM_HOME="$home" FM_ROOT_OVERRIDE="$root" "$root/bin/fm-startup-network.sh" "$@"
   rc=$?
-  [ "$mode" = start ] && record_fixture_worker "$home"
   return "$rc"
 }
 

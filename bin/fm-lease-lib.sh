@@ -52,11 +52,21 @@
 #     bin/fm-control.sh, which guards the same task) inherits the exported hold
 #     marker - the lock path plus the acquiring pid - and skips only the
 #     re-acquisition of the non-reentrant lock while still performing the
-#     live-lease check; it never releases the parent's hold, and the marker
-#     stops matching once that pid is gone or the lock is held by anyone else,
-#     so a marker left in a long-lived descendant cannot bypass exclusion. A
-#     home without the current Pi session lock cannot have a live lease, so
-#     the guard is a no-op there - non-Pi behavior is unchanged by construction.
+#     live-lease check. Inheritance is ambient rather than a per-call opt-in,
+#     because every child spawned inside a guarded mutation must skip
+#     re-acquisition without knowing the parent's hold state, and an opt-in
+#     would require each intermediate call site to thread that flag through.
+#     A child never releases the parent's hold, and the marker stops matching
+#     once that pid is gone or the lock is held by anyone else, so a marker
+#     left in a long-lived descendant cannot bypass exclusion; that exclusion
+#     is entry-scoped - it lasts while the acquiring process holds the lock,
+#     so a descendant that keeps mutating after that release is outside the
+#     guard's coverage like any unguarded writer. The marker's revalidation
+#     deliberately keys on pid liveness plus owner equality, mirroring the
+#     lock's own staleness policy: once the lock would recycle a dead holder's
+#     claim, the inherited marker must stop matching too. A home without the
+#     current Pi session lock cannot have a live lease, so the guard is a
+#     no-op there - non-Pi behavior is unchanged by construction.
 #   - Role partition (fm_lease_forbid_branch): actions MAIN alone owns -
 #     merging a PR, landing local-only work, spawning workers - refuse the
 #     branch actor outright, lease or no lease.
@@ -75,11 +85,9 @@
 # this task right now - retry after the lease clears".
 FM_LEASE_REFUSE_EXIT=6
 FM_LEASE_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# The guard-hold marker is inherited across processes: fm_lease_guard records
-# the held lock path and the acquiring pid here and exports both, and a child
-# spawned inside the guarded mutation must keep the inherited pair across this
-# sourcing rather than clobber it. fm_lease_guard revalidates the pair against
-# the live lock before honoring it (see the guard semantics above).
+# The exported guard-hold marker (lock path plus acquiring pid); a child must
+# keep the inherited pair across this sourcing rather than clobber it. The
+# full contract is the guard-semantics header above.
 FM_LEASE_GUARD_LOCK=${FM_LEASE_GUARD_LOCK:-}
 FM_LEASE_GUARD_LOCK_PID=${FM_LEASE_GUARD_LOCK_PID:-}
 
@@ -173,20 +181,6 @@ fm_lease_clear_stale() {
   rm -f -- "$file"
 }
 
-# Print the pid recorded as <lockdir>'s current owner, or nothing when the lock
-# is absent or unreadable. Handles the symlink-to-owner-dir format
-# fm_lock_try_create writes; fm_lease_guard uses it to revalidate an inherited
-# hold marker against the live lock.
-fm_lease_guard_lock_owner_pid() {
-  local lockdir=$1 ownerdir
-  if [ -L "$lockdir" ]; then
-    ownerdir=$(fm_lock_link_owner "$lockdir" 2>/dev/null) || return 1
-    cat "$ownerdir/pid" 2>/dev/null || return 1
-  else
-    cat "$lockdir/pid" 2>/dev/null || return 1
-  fi
-}
-
 # fm_lease_guard <task> <action-label>: refuse (exit FM_LEASE_REFUSE_EXIT) when
 # a live lease held by the OTHER actor exists for <task>. In a Pi supervision
 # context, a successful guard retains the command lock across the caller's
@@ -203,16 +197,12 @@ fm_lease_guard() {
   [ "$active" = 1 ] || [ -e "$(fm_lease_path "$task")" ] || return 0
   fm_lease_lock_helpers
   lock="$STATE/.fm-lease-command.lock"
-  # A caller with more than one guarded phase already excludes claims until
-  # its shared cleanup; do not recursively acquire the non-reentrant lock. A
-  # child spawned inside the guarded mutation inherited the exported marker
-  # the same way, and must skip the re-acquisition too - but only while the
-  # marker still names a live pid that owns the live lock, so a stale marker in
-  # a long-lived descendant cannot bypass exclusion.
+  # An inherited marker (a child, or a caller in a later guarded phase) skips
+  # only the non-reentrant re-acquisition; see the guard-semantics header.
   inherited_pid=${FM_LEASE_GUARD_LOCK_PID:-}
   if [ "$FM_LEASE_GUARD_LOCK" = "$lock" ] && [ -n "$inherited_pid" ] \
     && fm_pid_alive "$inherited_pid" \
-    && [ "$(fm_lease_guard_lock_owner_pid "$lock" 2>/dev/null || true)" = "$inherited_pid" ]; then
+    && [ "$(fm_lock_owner_pid "$lock")" = "$inherited_pid" ]; then
     : # inherited hold: the parent keeps excluding other actors for this mutation
   else
     fm_lock_acquire_wait "$lock"
@@ -239,17 +229,14 @@ fm_lease_guard() {
 }
 
 # Release the claim/guard serialization lock retained by fm_lease_guard.
-# Idempotent so callers can use it unconditionally from existing EXIT cleanup.
-# Only the process that acquired the hold releases it: a child that inherited
-# its parent's marker clears its own copy and leaves the parent's lock alone.
+# Idempotent so callers can use it unconditionally from existing EXIT cleanup;
+# fm_lock_release's own owner check is what leaves a child's inherited copy of
+# the parent's hold alone (contract: the guard-semantics header above).
 fm_lease_guard_release() {
-  local lock=$FM_LEASE_GUARD_LOCK pid=${FM_LEASE_GUARD_LOCK_PID:-} current=
+  local lock=$FM_LEASE_GUARD_LOCK
   [ -n "$lock" ] || return 0
   FM_LEASE_GUARD_LOCK=
   FM_LEASE_GUARD_LOCK_PID=
-  if [ -n "$pid" ] && fm_current_pid current && [ "$pid" != "$current" ]; then
-    return 0
-  fi
   fm_lock_release "$lock"
 }
 
