@@ -3,15 +3,17 @@
 #
 # bin/fm-lint.sh must be the single owner that BOTH CI
 # (.github/workflows/ci.yml) and the pre-push gate (.no-mistakes.yaml
-# commands.lint) invoke, so the local lint can never diverge from CI again.
-# Regression origin: with no commands.lint configured, the local no-mistakes
-# lint step never ran the deterministic
+# commands.lint) invoke, so the local lint never silently falls back to a
+# different command, file set, config selection, or ShellCheck version. The
+# analysis posture deliberately differs by context; see the bin/fm-lint.sh
+# header. Regression origin: with no commands.lint
+# configured, the local no-mistakes lint step never ran the deterministic
 # `shellcheck bin/*.sh bin/backends/*.sh tests/*.sh`, so PRs passed local
 # validation yet failed that exact check in CI on info/warning findings such as
 # SC2015, SC1007, and SC2034. A second axis was tool-version skew: CI's
 # ShellCheck floated with the runner image and still emitted SC2015, which
 # ShellCheck retired in 0.11.0. fm-lint.sh now pins one exact version and both
-# gates resolve it, so command, file set, config, AND version all match.
+# gates resolve it.
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -323,7 +325,7 @@ SH
   chmod +x "$fixture"
   fm_lint_stub_shellcheck "$fakebin" "$log"
 
-  out=$(PATH="$fakebin:$PATH" CI=true GITHUB_ACTIONS=true FM_LINT_FAST=1 FM_LINT_JOBS=1 \
+  out=$(PATH="$fakebin:$PATH" CI=true GITHUB_ACTIONS=true FM_LINT_JOBS=1 \
     FM_TEST_MODE_LOG="$mode_log" "$LINT" "$fixture" 2>&1) \
     || fail "CI full lint mode failed"$'\n'"$out"
   [ "$(cat "$mode_log")" = on ] \
@@ -352,7 +354,18 @@ SH
   assert_contains "$out" "--fast is local-only" \
     "CI fast-mode rejection did not explain the policy"
   [ ! -s "$log" ] || fail "CI invoked ShellCheck after rejecting fast mode"
-  pass "fm-lint.sh rejects explicit --fast mode in CI"
+
+  # The generic CI=true convention alone also claims CI for the file set, so
+  # --fast is refused there too rather than silently linting the full set fast.
+  rc=0
+  out=$(PATH="$fakebin:$PATH" CI=true GITHUB_ACTIONS='' FM_LINT_JOBS=1 \
+    "$LINT" --fast "$fixture" 2>&1) || rc=$?
+  [ "$rc" -eq 2 ] \
+    || fail "CI=true alone accepted explicit fast lint mode (exit $rc)"$'\n'"$out"
+  assert_contains "$out" "--fast is local-only" \
+    "CI=true fast-mode rejection did not explain the policy"
+  [ ! -s "$log" ] || fail "CI=true invoked ShellCheck after rejecting fast mode"
+  pass "fm-lint.sh rejects explicit --fast mode under either CI signal"
 }
 
 test_fast_mode_catches_a_real_lint_defect() {
@@ -563,6 +576,25 @@ test_changed_mode_invokes_shellcheck_once_per_root() {
   pass "fm-lint.sh changed mode invokes ShellCheck once per root"
 }
 
+test_ci_env_alone_locally_drops_external_sources() {
+  # The generic CI=true convention is also exported by local shells and tools,
+  # so it must not re-enable the source-aware pass; only the GitHub Actions
+  # runner signal (GITHUB_ACTIONS=true) may.
+  local tmp fakebin log flag_log out target
+  tmp=$(fm_test_tmproot fm-lint-ci-env-local-safe)
+  fakebin=$(fm_fakebin "$tmp")
+  log="$tmp/shellcheck.log"
+  flag_log="$tmp/flags.log"
+  fm_lint_stub_shellcheck "$fakebin" "$log"
+  target="bin/fm-install-shellcheck.sh"
+
+  out=$(PATH="$fakebin:$PATH" CI=true GITHUB_ACTIONS='' FM_LINT_JOBS=1 \
+    FM_TEST_FLAG_LOG="$flag_log" "$LINT" "$target" 2>&1) \
+    || fail "CI=true-only lint failed"$'\n'"$out"
+  fm_lint_assert_flag_log "$flag_log" no "SC1091,SC2034,SC2153,SC2329"
+  pass "fm-lint.sh keeps the safe posture when only CI=true is set"
+}
+
 test_ci_keeps_external_sources_without_local_exclusions() {
   local tmp fakebin log flag_log mode_log fixture out
   tmp=$(fm_test_tmproot fm-lint-ci-follow)
@@ -622,14 +654,12 @@ test_merge_base_less_locally_drops_external_sources() {
 }
 
 test_explicit_path_locally_drops_external_sources() {
-  # The 2026-09-16 no-mistakes review ran `bin/fm-lint.sh <changed paths>`
-  # locally; explicit paths selected the full --external-sources pass and one
-  # root peaked at 2.6 GB RSS. A pipeline-style local invocation must never
-  # select that mode again, and it must stay one bounded process per root.
+  # Explicit paths select the local no-source-following posture: one bounded
+  # ShellCheck process per root, with source following reserved for the GitHub
+  # Actions runner.
   local tmp fakebin log flag_log out first second invocation_count
   tmp=$(fm_test_tmproot fm-lint-explicit-local-safe)
   fakebin=$(fm_fakebin "$tmp")
-  fm_lint_stub_git "$fakebin"
   log="$tmp/shellcheck.log"
   flag_log="$tmp/flags.log"
   fm_lint_stub_shellcheck "$fakebin" "$log"
@@ -637,7 +667,6 @@ test_explicit_path_locally_drops_external_sources() {
   second="bin/fm-lint-workflows.sh"
 
   out=$(PATH="$fakebin:$PATH" GITHUB_ACTIONS='' CI='' FM_LINT_JOBS=1 \
-    FM_TEST_GIT_BRANCH=feature \
     FM_TEST_FLAG_LOG="$flag_log" "$LINT" "$first" "$second" 2>&1) \
     || fail "explicit-path lint failed"$'\n'"$out"
   [ "$(LC_ALL=C sort "$log")" = "$first"$'\n'"$second" ] \
@@ -1329,6 +1358,7 @@ test_zero_changed_files_exits_clean
 test_list_files_respects_changed_mode
 test_changed_mode_drops_external_sources_and_excludes_cross_file_codes
 test_changed_mode_invokes_shellcheck_once_per_root
+test_ci_env_alone_locally_drops_external_sources
 test_ci_keeps_external_sources_without_local_exclusions
 test_main_branch_locally_drops_external_sources
 test_merge_base_less_locally_drops_external_sources
