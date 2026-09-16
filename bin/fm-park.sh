@@ -369,10 +369,7 @@ park_probe() {
   PARK_PR=
   PARK_INCARNATION=
   PARK_REFUSE=
-  local kind
-  kind=$(meta_get "$META" kind)
-  [ -n "$kind" ] || kind=ship
-  if [ "$kind" = secondmate ]; then
+  if [ "$KIND" = secondmate ]; then
     PARK_REFUSE="persistent secondmates are never parked; an idle secondmate is healthy"
     return 1
   fi
