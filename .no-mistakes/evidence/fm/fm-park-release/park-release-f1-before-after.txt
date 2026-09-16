@@ -1,0 +1,23 @@
+old revision : c6dd404
+new revision : cdd755d
+FIXTURE: a fix_review gate whose note text and finding both mention ask-user,
+a stale open key on the status log, and a recorded pr=. A fix_review gate is
+the pipeline's own fix round: the worker must answer it, so parking it is wrong.
+
+===== OLD (c6dd404) =====
+
+$ OLD/bin/fm-crew-state.sh t3
+state: parked · source: run-step · parked at review: 1 finding(s) (ask-user: authority decision)
+
+$ OLD/bin/fm-park.sh park t3
+parked t3 reason=decision pointer=key=nm-run-review
+[exit 0] [marker: yes] [worker stopped: yes]
+
+===== NEW (cdd755d) =====
+
+$ NEW/bin/fm-crew-state.sh t3
+state: parked · source: run-step · parked at review: 1 finding(s)
+
+$ NEW/bin/fm-park.sh park t3
+fm-park: a run is parked at a gate the worker must answer (parked at review: 1 finding(s)); it is not waiting on firstmate or the captain, and parking would stop the worker the gate waits on
+[exit 1] [marker: no] [worker stopped: no]

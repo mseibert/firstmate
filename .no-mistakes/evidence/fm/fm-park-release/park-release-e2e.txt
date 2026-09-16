@@ -1,0 +1,155 @@
+repo under test : /home/martin_seibert/.no-mistakes/worktrees/e36b903ea8f4/01M2KSE2TW5RA4XT3C3JN57HNP
+HEAD            : cdd755d36257e9ba66653c55372eb892d94cf616
+HEAD subject    : no-mistakes(review): fix(park): derive authority marker from gate finding actions
+walkthrough home: /tmp/fm-park-e2e
+
+===== 1. Worker reported done; only the merge remains (the captain's idle-slot case) =====
+
+$ bin/fm-crew-state.sh t1   # before park: the real reader sees the done crew
+state: done · source: run-step · checks green: PR ready for review
+
+$ git -C wt status --short   # uncommitted work that must survive the release
+?? UNCOMMITTED.txt
+
+$ bin/fm-park.sh park t1
+parked t1 reason=merge pointer=https://github.com/example/demo/pull/33
+
+$ cat state/t1.parked   # durable release marker
+schema=fm-park.v1
+task=t1
+reason=merge
+pointer=https://github.com/example/demo/pull/33
+branch=fm/demo
+pr=https://github.com/example/demo/pull/33
+epoch=1757970000
+incarnation=s-t1
+state=released
+
+$ cat state/t1.status   # the handoff status line was appended
+done: PR #33 checks green, waiting for merge
+paused [key=park-t1]: released awaiting merge - https://github.com/example/demo/pull/33
+
+$ cat axi-body   # the backlog note the real script recorded through tasks-axi
+### t1
+original backlog body
+
+Park release: awaiting merge - https://github.com/example/demo/pull/33
+Branch: fm/demo
+Remaining: after the merge, reconcile the branch head, rebase or fix only if needed, and report done for cleanup.
+
+$ cat control.log   # the worker was stopped through the control plane
+control: t1 exit
+
+===== 2. The slot is free: the operating point now sees parked, not a live crew =====
+
+$ bin/fm-crew-state.sh t1   # real reader reads the released marker
+state: parked · source: park-marker · released awaiting merge - https://github.com/example/demo/pull/33
+
+$ bin/fm-park.sh status t1
+parked t1 reason=merge pointer=https://github.com/example/demo/pull/33 branch=fm/demo pr=https://github.com/example/demo/pull/33 epoch=1757970000 incarnation=s-t1 state=released
+
+$ bin/fm-park.sh list
+t1	merge	https://github.com/example/demo/pull/33	fm/demo	https://github.com/example/demo/pull/33	1757970000	s-t1	released
+
+$ bin/fm-fleet-snapshot.sh --json | jq .occupancy   # dispatch-facing occupancy
+{
+  "schema": "fm-fleet-occupancy.v1",
+  "active": 0,
+  "parked": 1,
+  "paused": 0,
+  "blocked": 0,
+  "done": 0,
+  "failed": 0,
+  "unknown": 0,
+  "active_ids": [],
+  "parked_ids": [
+    "t1"
+  ]
+}
+
+$ git -C wt status --short   # worktree, branch and uncommitted work preserved
+?? UNCOMMITTED.txt
+fm/demo
+
+===== 3. The merge lands: resume is a short run on the same worktree =====
+
+$ bin/fm-park.sh resume t1 --reason merge
+resumed t1 reason=merge pointer=https://github.com/example/demo/pull/33
+
+$ cat control.log   # exit, then the short relaunch note
+control: t1 exit
+control: t1 relaunch --note PR merged at https://github.com/example/demo/pull/33. Reconcile the branch head with the merged result; rebase or fix only if needed, then report done for cleanup.
+
+$ ls state/t1.parked   # marker removed only after the relaunch succeeded
+ls: cannot access '/tmp/fm-park-e2e/state/t1.parked': No such file or directory
+
+$ bin/fm-crew-state.sh t1   # back to the ordinary current state
+state: done · source: run-step · checks green: PR ready for review
+
+$ git -C wt status --short   # uncommitted work still there
+?? UNCOMMITTED.txt
+
+===== 4. A real ask-user gate: real reader derives the authority marker from the findings' action column =====
+
+$ bin/fm-crew-state.sh t2   # the real reader over the realistic axi status TOON
+state: parked · source: run-step · parked at review: 2 finding(s) (ask-user: authority decision)
+
+$ bin/fm-park.sh park t2   # pr= is recorded, but the pending gate wins: decision, never merge
+parked t2 reason=decision pointer=key=nm-run-review
+
+$ cat state/t2.parked
+schema=fm-park.v1
+task=t2
+reason=decision
+pointer=key=nm-run-review
+branch=fm/demo2
+pr=https://github.com/example/demo/pull/77
+epoch=1757970000
+incarnation=s-t2
+state=released
+
+$ bin/fm-park.sh resume t2 --reason merge   # wrong trigger: a decision park is never resumed as a merge
+fm-park: task t2 is parked for reason=decision, not merge; refusing to resume it for the wrong trigger (clear it instead if the release no longer applies)
+
+$ bin/fm-park.sh resume t2 --reason decision --note 'Use option B; keep the old public API.'
+resumed t2 reason=decision pointer=key=nm-run-review
+
+$ cat control.log   # the captain's words ride the short relaunch note
+control: t2 exit
+control: t2 relaunch --note Use option B; keep the old public API.
+
+The decision above resolves key=nm-run-review. Finish the open work, then report done.
+
+$ ls state/t2.parked
+ls: cannot access '/tmp/fm-park-e2e/gate/state/t2.parked': No such file or directory
+
+===== 5. A fix_review gate is refused even though its note text mentions ask-user =====
+
+$ bin/fm-crew-state.sh t3   # no authority marker: the fix round is the worker's own step
+state: parked · source: run-step · parked at review: 1 finding(s)
+
+$ bin/fm-park.sh park t3   # refused, even with pr= recorded and a stale key on the log
+fm-park: a run is parked at a gate the worker must answer (parked at review: 1 finding(s)); it is not waiting on firstmate or the captain, and parking would stop the worker the gate waits on
+[park marker exists: no]
+[control log exists: no]
+
+===== 6. An unverified release is not claimed as a free slot =====
+
+$ bin/fm-park.sh status t4   # unverified release: leading token releasing, exit 1
+releasing t4 reason=merge pointer=https://github.com/example/demo/pull/9 branch=fm/demo4 pr=https://github.com/example/demo/pull/9 epoch=1757970000 incarnation=s-t4 state=releasing
+[exit 1]
+
+===== 7. A manual-backend sweep surfaces the exact backlog note owed =====
+
+$ bin/fm-park.sh sweep   # heartbeat housekeeping on a manual-backend home
+Backlog: add this note by hand to /tmp/fm-park-e2e/manual/data/backlog.md:
+  Park release: awaiting merge - https://github.com/example/demo/pull/55
+  Branch: fm/demo5
+  Remaining: after the merge, reconcile the branch head, rebase or fix only if needed, and report done for cleanup.
+[exit 0]
+
+$ bin/fm-park.sh status t5
+parked t5 reason=merge pointer=https://github.com/example/demo/pull/55 branch=fm/demo5 pr=https://github.com/example/demo/pull/55 epoch=1757970000 incarnation=s-t5 state=released
+[exit 0]
+
+===== done =====
