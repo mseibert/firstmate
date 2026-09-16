@@ -68,12 +68,12 @@
 # whose only remainder is a merge or a decision may have its slot released,
 # with the worktree and uncommitted work preserved and a short resume run later
 # (bin/fm-park.sh owns the mechanics).
-# Ship and scout briefs carry the machine constraints (heap cap on every node
-# step, heavy checks sequentially per workspace, build token for anything that
-# starts a node toolchain or runs longer than a few seconds) so a fresh worker
-# cannot repeat the memory-exhaustion incident class; the brief points at the
-# active home's data/captain.md and data/learnings.md, which keep the full
-# rules and their history.
+# Ship and scout briefs carry the machine constraints (heap cap on node steps
+# on a memory-tight host, heavy checks sequentially per workspace, build token
+# for anything that starts a node toolchain or runs longer than a few seconds)
+# so a fresh worker cannot repeat the memory-exhaustion incident class; the
+# inline bullets are authoritative and the pointer at the active home's
+# data/captain.md and data/learnings.md is conditional on that home keeping them.
 # Ship tasks include a project-memory section so durable project-intrinsic
 # learnings can be committed to AGENTS.md through the project's delivery path;
 # it carries the AGENTS.md authoring bar (widely useful knowledge only, pointers
@@ -241,18 +241,20 @@ EOF
 PARK_SECTION=${PARK_SECTION%$'\n'}
 
 # The machine constraints every ship and scout brief carries (Captain
-# 2026-09-12/16): short, non-negotiable rules for heavy node work on a small
-# build machine. The full rules and their history stay in the active home's
-# data/captain.md and data/learnings.md, so this section only states the rules
-# and points there instead of copying the detail.
+# 2026-09-12/16): short, non-negotiable rules for heavy node work, host-aware
+# because the fleet also runs on machines larger than the primary build host,
+# and with a conditional pointer because a secondmate home may keep neither the
+# home records nor a build token. The inline bullets are authoritative; the
+# home's data/captain.md and data/learnings.md only carry the detail and
+# history where the home provides them.
 IFS= read -r -d '' MACHINE_CONSTRAINTS_SECTION <<EOF || true
 # Machine constraints
-This build machine is small (about 3.8 GB RAM, 2 cores, no swap); heavy node steps have starved other lanes before.
-- Cap the heap of every node step: \`NODE_OPTIONS="--max-old-space-size=2048"\` (1536 when the machine is loaded), never 4096 or larger.
+The primary build host is small (about 3.8 GB RAM, 2 cores, no swap) and heavy node steps there have starved other lanes before; this fleet also runs on larger hosts, so check your own host's memory and cores before choosing limits.
+- On a memory-tight host, cap the heap of every node step: \`NODE_OPTIONS="--max-old-space-size=2048"\` (1536 when the machine is loaded), never 4096 or larger; a host with memory to spare sets its own capacity.
 - Run heavy checks - lint, tsc, test suites, builds - strictly sequentially per workspace; never two at once.
-- Take the machine-wide build token before anything that starts a node toolchain or runs longer than a few seconds: pnpm install, prisma generate, every build, every test suite, dev servers; wait while it is held.
+- If this home provides the machine-wide build token, take it before anything that starts a node toolchain or runs longer than a few seconds: pnpm install, prisma generate, every build, every test suite, dev servers; wait while it is held. Otherwise run one heavy step at a time.
 - Stop a dev server as soon as the step that needed it ends.
-The full machine rules and their history live in $DATA/captain.md and $DATA/learnings.md; read the relevant section before heavy work.
+The bullets above are the authoritative rules for your work; the full machine rules and their history are in $DATA/captain.md and $DATA/learnings.md where this home provides them.
 EOF
 MACHINE_CONSTRAINTS_SECTION=${MACHINE_CONSTRAINTS_SECTION%$'\n'}
 

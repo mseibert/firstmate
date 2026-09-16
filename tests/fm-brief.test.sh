@@ -711,8 +711,8 @@ test_done_plus_park_note_is_scaffolded() {
 # Machine constraints (Captain 2026-09-12/16): heavy node validation runs kept
 # exhausting the small build machine because the rules lived only in the
 # captain's home records, so every ship and scout brief must carry the short
-# version. The full rules stay in the home's data/captain.md and
-# data/learnings.md, which the brief points at rather than duplicating.
+# version. The brief states the rules authoritatively and points at the home's
+# data/captain.md and data/learnings.md only where that home keeps them.
 test_machine_constraints_in_standard_scaffold() {
   local home kind id brief
   home="$TMP_ROOT/machine-constraints-home"
@@ -729,20 +729,28 @@ test_machine_constraints_in_standard_scaffold() {
     assert_present "$brief" "$kind brief was not scaffolded"
     assert_grep "# Machine constraints" "$brief" \
       "$kind brief is missing the machine-constraints section"
+    assert_grep "check your own host's memory and cores" "$brief" \
+      "$kind brief presents the primary host profile without making it context-only"
     assert_grep 'NODE_OPTIONS="--max-old-space-size=2048"' "$brief" \
       "$kind brief is missing the heap cap on node steps"
     assert_grep "never 4096 or larger" "$brief" \
       "$kind brief does not forbid the 4 GB cap behind the incident class"
+    assert_grep "a host with memory to spare sets its own capacity" "$brief" \
+      "$kind brief does not scope the heap cap to memory-tight hosts"
     assert_grep "strictly sequentially per workspace" "$brief" \
       "$kind brief is missing the sequential heavy-check rule"
-    assert_grep "build token before anything that starts a node toolchain" "$brief" \
-      "$kind brief is missing the build-token discipline"
+    assert_grep "If this home provides the machine-wide build token" "$brief" \
+      "$kind brief does not condition the build-token rule on the home providing one"
+    assert_grep "Otherwise run one heavy step at a time" "$brief" \
+      "$kind brief is missing the no-token fallback"
     assert_grep "pnpm install, prisma generate" "$brief" \
       "$kind brief does not name the token-requiring steps"
     assert_grep "Stop a dev server as soon as the step that needed it ends" "$brief" \
       "$kind brief is missing the dev-server shutdown rule"
-    assert_grep "$home/data/captain.md and $home/data/learnings.md" "$brief" \
-      "$kind brief does not point at the home docs that own the full rules"
+    assert_grep "The bullets above are the authoritative rules" "$brief" \
+      "$kind brief does not make its inline rules authoritative"
+    assert_grep "$home/data/captain.md and $home/data/learnings.md where this home provides them" "$brief" \
+      "$kind brief does not point conditionally at the home docs that own the full rules"
   done
   pass "fm-brief.sh: ship and scout briefs carry the machine constraints"
 }
