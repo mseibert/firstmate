@@ -1,0 +1,33 @@
+ok - done plus PR parks with marker, status line, backlog note, and one verified exit
+ok - an already-released task is idempotent success without a second exit
+ok - an actively working crew is refused
+ok - a persistent secondmate is refused
+ok - a task with no provable handoff is refused
+ok - an unknown task id is refused
+ok - a releasing retry restores the status line and commits the verified release
+ok - a park release completes with the real lease guard active and the child cannot drop the parent's lock
+ok - the releasing retry a sweep runs completes with the real lease guard active and the child cannot drop the parent's lock
+Backlog: add this note by hand to /tmp/fm-park.ej56kC/guard-resume/data/backlog.md:
+  Park release: awaiting merge - https://github.com/example/demo/pull/7
+  Branch: fm/demo
+  Remaining: after the merge, reconcile the branch head, rebase or fix only if needed, and report done for cleanup.
+ok - a resume completes with the real lease guard active and the child cannot drop the parent's lock
+ok - a marker from an earlier incarnation is stale and a fresh park replaces it
+ok - resume passes the resolved adapter family for a raw launch command
+ok - a keyed decision parks and resume carries the decision into the short run
+ok - a captain-held backlog row is a documented wait
+ok - an ask-user-gated run parks as a decision wait with the gate key
+ok - a fix-review-gated run is refused because the worker must answer it
+ok - an ask-user gate without a recorded decision key refuses rather than guessing
+ok - resume refuses a reason that does not match the marker
+ok - resume refuses a task with no marker
+ok - clear resolves the marker without a worker relaunch
+ok - list and status report the parked set
+ok - a manual-backend home is told the exact note owed
+ok - the sweep parks eligible tasks only, bounded by --limit, and stays silent
+ok - the sweep surfaces the owed manual backlog note instead of discarding it
+fm-park: t1 could not be stopped, so it is NOT parked: 
+fm-park: the release intent stays recorded at /tmp/fm-park.ej56kC/sweep-failure/state/t1.parked (state=releasing); fix the stop and run park again
+ok - a failed release leaves a releasing marker, prints one PARK_SWEEP line, and status stays honest
+ok - the snapshot counts only working tasks as active and parked tasks separately
+all fm-park tests passed

@@ -1,0 +1,41 @@
+=== 1. guarded park: real lease guard held by the fm-park parent ===
+exit=0
+Backlog: add this note by hand to /tmp/fm-park-manual.Qa46nF/data/backlog.md:
+  Park release: awaiting merge - https://github.com/example/demo/pull/7
+  Branch: fm/demo
+  Remaining: after the merge, reconcile the branch head, rebase or fix only if needed, and report done for cleanup.
+parked t1 reason=merge pointer=https://github.com/example/demo/pull/7
+PASS: park exits 0
+PASS: park reported the release
+
+--- control.log (child ran with the parent lock held?) ---
+t1 exit lock=held
+PASS: child observed the parent lock still held after its own release attempt
+PASS: parent released the guard lock after park
+
+--- persisted marker after park ---
+schema=fm-park.v1
+task=t1
+reason=merge
+pointer=https://github.com/example/demo/pull/7
+branch=fm/demo
+pr=https://github.com/example/demo/pull/7
+epoch=1700000000
+incarnation=s-t1
+state=released
+PASS: marker committed state=released
+
+=== 2. guarded resume: same deadlock fix pinned for resume ===
+exit=0
+resumed t1 reason=merge pointer=https://github.com/example/demo/pull/7
+PASS: resume exits 0 (no guard deadlock)
+PASS: resume reported the task
+
+--- control.log (both guarded children) ---
+t1 exit lock=held
+t1 relaunch --note PR merged at https://github.com/example/demo/pull/7. Reconcile the branch head with the merged result; rebase or fix only if needed, then report done for cleanup. lock=held
+PASS: resume child ran under the parent lock and could not drop it
+PASS: resume removed the marker
+PASS: parent released the guard lock after resume
+
+=== result: ALL CHECKS PASSED ===
