@@ -252,6 +252,9 @@ wait_secs() {
 # globs. The posture names how that table reads - an allowlist's `autonomous`
 # rows are the merge authority, a denylist's `ask`/`deny` rows are the wait list
 # - and a missing or unrecognized posture is unparseable, never guessed.
+# A row is matched by exact name against the PR path after its owner segment,
+# the task's project name, and the full owner/repo path, so both a bare repo
+# row and a qualified owner/repo row land in either posture.
 # Anything unparseable leaves POLICY_OK=0 and every candidate is held by hard
 # stop 7.
 POLICY_OK=0
