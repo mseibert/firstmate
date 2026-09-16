@@ -10,6 +10,8 @@ set -u
 
 # shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+# shellcheck source=bin/fm-timeout-lib.sh
+. "$ROOT/bin/fm-timeout-lib.sh"
 
 TMP_ROOT=$(fm_test_tmproot fm-branch-supervision)
 fm_git_identity fmtest fmtest@example.invalid
@@ -764,6 +766,69 @@ test_guard_holds_exclusivity_through_mutation() {
   pass "lease guard excludes a concurrent actor for the complete mutation"
 }
 
+test_guard_hold_is_inheritable_without_weakening_exclusion() {
+  local home out child parent_pid child_pid holder
+  home="$TMP_ROOT/guard-inherit-home"
+  mkdir -p "$home/state"
+  printf '%s\n' "$$" > "$home/state/.lock"
+  # The release fm-park spawns (fm-control.sh) guards the same task. A child
+  # inside the parent's guarded mutation must skip the re-acquisition without
+  # dropping the parent's lock from its own cleanup, and a marker that no
+  # longer names the live lock owner must not bypass acquisition.
+  child="$home/child.sh"
+  cat > "$child" <<'SH'
+#!/usr/bin/env bash
+set -u
+. "$1"
+fm_lease_guard task-1 "child probe" || exit 1
+printf 'child-owner=%s child-pid=%s\n' "$(cat "$STATE/.fm-lease-command.lock/pid")" "$BASHPID"
+fm_lease_guard_release
+printf 'after-child-release=%s\n' "$([ -e "$STATE/.fm-lease-command.lock" ] && echo held || echo gone)"
+SH
+  chmod +x "$child"
+  cat > "$home/parent.sh" <<'SH'
+#!/usr/bin/env bash
+set -u
+. "$1"
+fm_lease_guard task-1 "parent probe" || exit 1
+printf 'parent-owner=%s parent-pid=%s\n' "$(cat "$STATE/.fm-lease-command.lock/pid")" "$BASHPID"
+"$2" "$1"
+fm_lease_guard_release
+printf 'after-parent-release=%s\n' "$([ -e "$STATE/.fm-lease-command.lock" ] && echo held || echo gone)"
+SH
+  chmod +x "$home/parent.sh"
+  out=$(fm_run_timed 15 env PI_CODING_AGENT=true STATE="$home/state" \
+    bash "$home/parent.sh" "$ROOT/bin/fm-lease-lib.sh" "$child")
+  parent_pid=$(printf '%s\n' "$out" | sed -n 's/^parent-owner=[0-9]* parent-pid=\([0-9]*\)$/\1/p')
+  child_pid=$(printf '%s\n' "$out" | sed -n 's/^child-owner=[0-9]* child-pid=\([0-9]*\)$/\1/p')
+  [ -n "$parent_pid" ] && [ -n "$child_pid" ] || fail "guard inheritance fixture did not report pids: $out"
+  assert_contains "$out" "parent-owner=$parent_pid parent-pid=$parent_pid" \
+    "the parent did not own its guard lock: $out"
+  assert_contains "$out" "child-owner=$parent_pid child-pid=$child_pid" \
+    "the child did not skip re-acquisition or displaced the parent's hold: $out"
+  assert_contains "$out" "after-child-release=held" "the child's cleanup dropped the parent's guard lock: $out"
+  assert_contains "$out" "after-parent-release=gone" "the parent did not release its guard lock: $out"
+
+  # A marker whose recorded owner is gone must re-acquire rather than skip.
+  cat > "$home/stale.sh" <<'SH'
+#!/usr/bin/env bash
+set -u
+. "$1"
+fm_lease_guard task-2 "stale marker probe" || exit 1
+printf 'stale-owner=%s holder-pid=%s\n' "$(cat "$STATE/.fm-lease-command.lock/pid")" "$BASHPID"
+fm_lease_guard_release
+SH
+  chmod +x "$home/stale.sh"
+  out=$(fm_run_timed 15 env PI_CODING_AGENT=true STATE="$home/state" \
+    FM_LEASE_GUARD_LOCK="$home/state/.fm-lease-command.lock" FM_LEASE_GUARD_LOCK_PID=999999 \
+    bash "$home/stale.sh" "$ROOT/bin/fm-lease-lib.sh")
+  holder=$(printf '%s\n' "$out" | sed -n 's/^stale-owner=[0-9]* holder-pid=\([0-9]*\)$/\1/p')
+  [ -n "$holder" ] || fail "stale-marker fixture did not report a holder pid: $out"
+  assert_contains "$out" "stale-owner=$holder holder-pid=$holder" \
+    "a marker naming a dead owner bypassed acquisition: $out"
+  pass "the guard hold is inherited by children without weakening exclusion or surviving its owner"
+}
+
 test_claim_refuses_the_other_actors_name_loudly() {
   local home out status
   home="$TMP_ROOT/claim-guard-home"
@@ -854,6 +919,7 @@ test_lease_liveness_binds_to_the_session_lock
 test_concurrent_stale_lease_claims_have_one_winner
 test_guard_stale_clear_cannot_delete_a_new_claim
 test_guard_holds_exclusivity_through_mutation
+test_guard_hold_is_inheritable_without_weakening_exclusion
 test_claim_refuses_the_other_actors_name_loudly
 test_release_actor_drops_only_that_actors_leases
 test_branch_cannot_force_teardown_or_directly_relaunch
