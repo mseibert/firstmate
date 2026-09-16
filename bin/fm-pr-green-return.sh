@@ -255,8 +255,9 @@ wait_secs() {
 # denylist data row outside `ask`/`deny` is unparseable too, so a table that
 # contradicts its posture holds every candidate instead of reading as
 # autonomous. A row is matched by exact name against the PR path after its
-# owner segment, the task's project name, and the full owner/repo path, so both
-# a bare repo row and a qualified owner/repo row land in either posture.
+# owner segment, its basename, the task's project name, and the full owner/repo
+# path, so a bare repo row and a qualified owner/repo row land in either
+# posture.
 # Anything unparseable leaves POLICY_OK=0 and every candidate is held by hard
 # stop 7.
 POLICY_OK=0
@@ -1359,7 +1360,7 @@ evaluate_task() {
   [ -n "$candidate" ] || candidate=${PR_PATH##*/}
   owner_name=$(field_of "$meta" project)
   [ -z "$owner_name" ] || owner_name=${owner_name##*/}
-  if ! policy_repo_allowed "$candidate" "$owner_name" "$PR_PATH"; then
+  if ! policy_repo_allowed "$candidate" "$owner_name" "${PR_PATH##*/}" "$PR_PATH"; then
     EV_CLASS=held
     if [ "$POLICY_POSTURE" = denylist ]; then
       EV_REASON="policy-wait: repo ${candidate:-unknown} is on the policy wait list"

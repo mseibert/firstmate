@@ -54,9 +54,9 @@
 #       persisted rotation, so the next scan evaluates the candidates behind it
 #   (w) an allowlist policy and a denylist policy each parse their posture, a
 #       denylist wait-list hit holds while an unlisted repo stays due, a
-#       qualified owner/repo row matches in both postures, a denylist row
-#       outside ask/deny fails closed under hard stop 7, and a missing or
-#       unrecognized posture holds every candidate under hard stop 7
+#       qualified owner/repo row and a nested-path basename row match, a
+#       denylist row outside ask/deny fails closed under hard stop 7, and a
+#       missing or unrecognized posture holds every candidate under hard stop 7
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -995,6 +995,21 @@ test_denylist_unrecognized_verdict_holds_hard_stop_7() {
     assert_not_contains "$rows" "merge it bound now" "a denylist row with a $verdict verdict queued a merge wake"
   done
   pass "a denylist table row outside ask/deny fails closed under hard stop 7"
+}
+
+test_denylist_matches_a_nested_path_basename() {
+  local dir keys rows
+  dir=$(make_case denylist-nested-basename)
+  write_denylist_policy "$dir" "Ask:project"
+  write_meta "$dir" t1 "https://gitlab.example/group/subgroup/project/-/merge_requests/7" other-name
+  glab_green "$dir"
+  scan_hold_wake "$dir" "$NOW_LATE" >/dev/null
+  keys=$(queue_keys "$dir")
+  rows=$(queue_rows "$dir")
+  assert_contains "$keys" "pr-green-return:t1" "a nested GitLab basename row did not hold the merge request"
+  assert_contains "$rows" "the policy wait list" "the nested basename hold did not name the wait list"
+  assert_not_contains "$rows" "merge it bound now" "a nested GitLab basename row queued a merge wake"
+  pass "a denylist row naming a nested GitLab project basename is held"
 }
 
 test_denylist_unlisted_repo_is_due() {
@@ -2000,6 +2015,7 @@ test_unreadable_policy_holds_hard_stop_7
 test_allowlist_default_ask_holds
 test_denylist_wait_list_holds_listed_repos
 test_denylist_unrecognized_verdict_holds_hard_stop_7
+test_denylist_matches_a_nested_path_basename
 test_denylist_unlisted_repo_is_due
 test_qualified_policy_rows_match_the_full_path
 test_missing_or_unknown_posture_holds_hard_stop_7
