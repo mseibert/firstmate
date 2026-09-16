@@ -17,6 +17,9 @@
 #     staying "in progress" forever
 #   - phase-aware single-flight: a covering worker is reused, while a later
 #     locked request supersedes an in-flight probe-only worker
+#   - every fixture worker the suite detaches is reaped with its process group,
+#     so neither a successful nor an aborted run leaves a scenario process or
+#     its child shells behind
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -25,7 +28,96 @@ set -u
 TMP_ROOT=$(fm_test_tmproot fm-startup-network-tests)
 DRAIN="$ROOT/bin/fm-wake-drain.sh"
 FM_TEST_CLEANUP_DIRS+=("$TMP_ROOT")
-trap fm_test_cleanup EXIT
+
+# `start` detaches each fixture worker into its own process group, and that
+# worker's bounded sweep then runs in a second group of its own. Those processes
+# deliberately outlive the command that launched them, so this suite owns their
+# lifetime: the cleanup below signals every group they own and never removes the
+# fixture root until they are gone. Without it a run that ends while a worker is
+# still polling leaves the worker and its child shells behind, because the
+# worker's state directory disappears under it and its lock acquisition can
+# never succeed again. tests/lib.sh's own traps only remove directories, so this
+# file installs its own traps and still calls fm_test_cleanup from inside them.
+FIXTURE_WORKER_PIDS="$TMP_ROOT/fixture-worker-pids"
+: > "$FIXTURE_WORKER_PIDS"
+
+record_fixture_worker() {  # <home>
+  local pid
+  pid=$(sed -n 's/^pid=//p' "$1/state/.startup-network.status" 2>/dev/null | tail -1)
+  case "$pid" in ''|*[!0-9]*) return 0 ;; esac
+  [ "$pid" -gt 1 ] || return 0
+  printf '%s\n' "$pid" >> "$FIXTURE_WORKER_PIDS"
+}
+
+# Every worker pid this run knows about: the ones recorded at `start` time, plus
+# whatever the durable worker records still name. A signal can land between a
+# worker's spawn and its recording step, and the status record written before
+# `start` returned is the durable trace that still identifies it.
+fixture_worker_pids() {
+  local pid status
+  [ ! -s "$FIXTURE_WORKER_PIDS" ] || cat "$FIXTURE_WORKER_PIDS"
+  for status in "$TMP_ROOT"/*/home/state/.startup-network.status; do
+    [ -f "$status" ] || continue
+    pid=$(sed -n 's/^pid=//p' "$status" 2>/dev/null | tail -1)
+    case "$pid" in ''|*[!0-9]*) continue ;; esac
+    [ "$pid" -gt 1 ] || continue
+    printf '%s\n' "$pid"
+  done
+}
+
+# Every process group a fixture of this run owns. A fixture process is
+# identified by this run's temp root in its command line: the detached worker,
+# its bounded sweep, and its child shells all carry it, and no unrelated process
+# does. A known worker's own group is collected as well, so a worker whose
+# command line the snapshot cannot see is still reaped.
+fixture_owned_groups() {
+  local snapshot pid
+  snapshot=$(ps -axo pid=,pgid=,command= 2>/dev/null) || return 0
+  printf '%s\n' "$snapshot" | awk -v root="$TMP_ROOT" 'index($0, root) { print $2 }'
+  fixture_worker_pids | while IFS= read -r pid; do
+    case "$pid" in ''|*[!0-9]*) continue ;; esac
+    printf '%s\n' "$snapshot" | awk -v p="$pid" \
+      '$1 == p && index($0, "fm-startup-network.sh") { print $2; exit }'
+  done
+}
+
+# TERM first, because a bounded sweep forwards the signal to its own child
+# group; KILL only a group that ignored it. Re-discovering each round catches a
+# fixture forked while the previous round was signalling. The suite's own
+# process group is never signalled.
+reap_fixture_workers() {
+  local own_pgid pgids pgid waited alive
+  own_pgid=$(ps -o pgid= -p $$ 2>/dev/null | tr -d '[:space:]')
+  waited=0
+  while [ "$waited" -lt 30 ]; do
+    pgids=$(fixture_owned_groups | sort -u)
+    alive=0
+    for pgid in $pgids; do
+      case "$pgid" in ''|*[!0-9]*) continue ;; esac
+      [ "$pgid" = "$own_pgid" ] && continue
+      kill -TERM -- "-$pgid" 2>/dev/null || true
+      kill -0 -- "-$pgid" 2>/dev/null && alive=1
+    done
+    [ "$alive" -eq 0 ] && return 0
+    sleep 0.1
+    waited=$((waited + 1))
+  done
+  pgids=$(fixture_owned_groups | sort -u)
+  for pgid in $pgids; do
+    case "$pgid" in ''|*[!0-9]*) continue ;; esac
+    [ "$pgid" = "$own_pgid" ] && continue
+    kill -KILL -- "-$pgid" 2>/dev/null || true
+  done
+  return 0
+}
+
+fm_startup_network_cleanup() {
+  reap_fixture_workers
+  fm_test_cleanup
+}
+trap fm_startup_network_cleanup EXIT
+trap 'fm_startup_network_cleanup; exit 130' INT
+trap 'fm_startup_network_cleanup; exit 143' TERM
 
 # new_world <name>: an FM_HOME plus a fake code root whose bin/ is a real
 # firstmate bin/ except for fm-bootstrap.sh, which is replaced by a scriptable
@@ -114,10 +206,13 @@ EOF
 }
 
 run_stage() {  # <home> <root> <args...>
-  local home=$1 root=$2
+  local home=$1 root=$2 mode=${3:-} rc
   shift 2
   PATH="$root/bin:$PATH" FM_FAKE_HARNESS_PID="${FM_FAKE_HARNESS_PID_OVERRIDE:-$$}" \
     FM_HOME="$home" FM_ROOT_OVERRIDE="$root" "$root/bin/fm-startup-network.sh" "$@"
+  rc=$?
+  [ "$mode" = start ] && record_fixture_worker "$home"
+  return "$rc"
 }
 
 wait_for_startup_network_wake() {  # <home> [tenths]
@@ -759,6 +854,117 @@ GITHUB_TOKEN=ghp_supersecretvalue" \
   pass "fm-startup-network: the timing artifact cannot carry a command line or forge records"
 }
 
+# --- fixture lifetime --------------------------------------------------------
+
+# Both regressions below run this suite nested, so the nested run's own cleanup
+# is what must reap its fixtures: one nested run ends normally and one is
+# aborted while its worker is still sweeping. This scenario is the fixture both
+# observe.
+test_nested_reap_fixture_starts_a_detached_worker() {
+  local rec home root log waited=0 worker_pid worker_pgid
+  rec=$(new_world nested-reap)
+  IFS='|' read -r home root log <<EOF
+$rec
+EOF
+  printf '%s\n' $$ > "$home/state/.lock"
+  FM_FAKE_BOOTSTRAP_LOG="$log" FM_FAKE_BOOTSTRAP_SLEEP=30 \
+    run_stage "$home" "$root" start --locked 1 --harvest-pid $$
+  await_worker_record "$home"
+  # The cleanup signals the fixture by process group, so pin the isolation the
+  # detached worker is supposed to have rather than assuming it.
+  worker_pid=$(sed -n 's/^pid=//p' "$home/state/.startup-network.status" | tail -1)
+  worker_pgid=$(ps -o pgid= -p "$worker_pid" 2>/dev/null | tr -d '[:space:]')
+  [ "$worker_pgid" = "$worker_pid" ] \
+    || fail "the detached fixture worker did not lead its own process group"
+  pass "fm-startup-network: nested reap fixture started a detached worker"
+  # The abort regression signals this run while its worker is still sweeping,
+  # so it asks the scenario for a bounded hold. The hold loops in tenths rather
+  # than sleeping once, so the TERM trap runs within a tenth of the signal.
+  while [ "$waited" -lt "${FM_NESTED_REAP_HOLD_TENTHS:-0}" ]; do
+    sleep 0.1
+    waited=$((waited + 1))
+  done
+}
+
+start_nested_suite() {  # <nested-tmpdir> <output-file> [hold-tenths]
+  mkdir -p "$1"
+  TMPDIR="$1" FM_STARTUP_NETWORK_TEST_ONLY=test_nested_reap_fixture_starts_a_detached_worker \
+    FM_NESTED_REAP_HOLD_TENTHS="${3:-0}" \
+    LC_ALL=C bash "$ROOT/tests/fm-startup-network.test.sh" >"$2" 2>&1 &
+  NESTED_SUITE_PID=$!
+}
+
+await_nested_worker() {  # <nested-tmpdir> <output-file>
+  local status pid waited=0
+  while [ "$waited" -lt 100 ]; do
+    # The pass line proves the nested run reached its recording step, and the
+    # live pid proves the worker it recorded is still sweeping when this run is
+    # signalled - the two together are what makes the abort case deterministic.
+    if grep -Fq 'nested reap fixture started a detached worker' "$2" 2>/dev/null; then
+      for status in "$1"/fm-startup-network-tests.*/*/home/state/.startup-network.status; do
+        [ -f "$status" ] || continue
+        pid=$(sed -n 's/^pid=//p' "$status" 2>/dev/null | tail -1)
+        case "$pid" in ''|*[!0-9]*) continue ;; esac
+        [ "$pid" -gt 1 ] || continue
+        kill -0 "$pid" 2>/dev/null && return 0
+      done
+    fi
+    sleep 0.1
+    waited=$((waited + 1))
+  done
+  return 1
+}
+
+nested_fixture_processes() {  # <nested-tmpdir>
+  local snapshot
+  snapshot=$(ps -axo pid=,command= 2>/dev/null) || snapshot=
+  printf '%s\n' "$snapshot" | awk -v root="$1" 'index($0, root) { print }'
+}
+
+test_a_successful_run_reaps_its_fixture_workers() {
+  local nested_tmp out orphans
+  nested_tmp="$TMP_ROOT/nested-success"
+  out="$TMP_ROOT/nested-success.out"
+  start_nested_suite "$nested_tmp" "$out"
+  wait "$NESTED_SUITE_PID" || fail "the nested run failed: $(cat "$out")"
+  assert_grep 'all assertions passed' "$out" "the nested run did not complete its assertions"
+  assert_grep 'nested reap fixture started a detached worker' "$out" \
+    "the nested run did not start the fixture worker this case observes"
+  orphans=$(nested_fixture_processes "$nested_tmp")
+  [ -z "$orphans" ] \
+    || fail "a successful run left fixture processes behind: $orphans"
+  pass "fm-startup-network: a successful run reaps its fixture workers"
+}
+
+test_an_aborted_run_reaps_its_fixture_workers() {
+  local nested_tmp out orphans
+  nested_tmp="$TMP_ROOT/nested-abort"
+  out="$TMP_ROOT/nested-abort.out"
+  start_nested_suite "$nested_tmp" "$out" 200
+  if ! await_nested_worker "$nested_tmp" "$out"; then
+    kill -TERM "$NESTED_SUITE_PID" 2>/dev/null || true
+    wait "$NESTED_SUITE_PID" 2>/dev/null || true
+    fail "the nested run never started its fixture worker: $(cat "$out" 2>/dev/null)"
+  fi
+  kill -TERM "$NESTED_SUITE_PID" 2>/dev/null || true
+  wait "$NESTED_SUITE_PID" 2>/dev/null || true
+  assert_grep 'nested reap fixture started a detached worker' "$out" \
+    "the nested run did not start the fixture worker this case observes"
+  orphans=$(nested_fixture_processes "$nested_tmp")
+  [ -z "$orphans" ] \
+    || fail "an aborted run left fixture processes behind: $orphans"
+  pass "fm-startup-network: an aborted run reaps its fixture workers"
+}
+
+# The fixture-lifetime regressions above run this suite nested through this
+# selector, so a child run can be ended or aborted while its worker is still
+# sweeping without recursing into the regressions themselves.
+if [ -n "${FM_STARTUP_NETWORK_TEST_ONLY:-}" ]; then
+  "$FM_STARTUP_NETWORK_TEST_ONLY"
+  echo "# fm-startup-network.test.sh: all assertions passed"
+  exit 0
+fi
+
 test_wait_fails_without_a_published_stage
 test_start_returns_without_holding_the_callers_stdout
 test_harvest_acknowledgement_suppresses_the_wake_and_no_claim_produces_it
@@ -779,4 +985,6 @@ test_records_share_one_origin_so_offsets_form_a_timeline
 test_timings_are_published_and_only_the_on_demand_report_prints_them
 test_a_bounded_run_still_publishes_the_timings_it_managed_to_record
 test_the_timing_artifact_cannot_carry_a_command_line_or_forge_records
+test_a_successful_run_reaps_its_fixture_workers
+test_an_aborted_run_reaps_its_fixture_workers
 echo "# fm-startup-network.test.sh: all assertions passed"
