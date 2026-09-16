@@ -5,37 +5,38 @@
 # ambient configuration disabled, and one exact ShellCheck version. CI and
 # no-mistakes both invoke this script with no arguments, so this owner selects
 # the context-appropriate rule set without duplicating lint configuration.
-# The explicit --fast mode is local-only and disables ShellCheck's extended
-# dataflow analysis while preserving ordinary shell lint checks and source
-# following. CI, main, and merge-base-less runs keep --norc --external-sources
-# with full dataflow over the whole canonical set. An ordinary local branch
-# (changed-file mode, including the no-mistakes lint step) drops
-# --external-sources, keeps dataflow, and excludes SC1091, SC2034, SC2153,
-# and SC2329, the codes that need library context. Those codes still run in
-# CI over the whole set. Explicit paths keep --external-sources with the
-# selected dataflow mode.
+# Source following (--external-sources) is CI-only: local ShellCheck has
+# repeatedly ballooned past 2 GB RSS on a single root while inlining library
+# closures, so every local invocation - changed-file, explicit-path, main, or
+# merge-base-less - drops --external-sources, keeps dataflow, and excludes
+# SC1091, SC2034, SC2153, and SC2329, the codes that need library context.
+# Those codes still run in CI over the whole set, and CI is the lint signal
+# for cross-file analysis. The explicit --fast mode is local-only and
+# additionally disables ShellCheck's extended dataflow analysis while
+# preserving ordinary shell lint checks.
 # Tests stop source analysis at imported production modules because CI analyzes
 # every production shell separately as a canonical, source-aware root.
 # The default (no explicit-path) path also runs bin/fm-lint-workflows.sh so a
 # malformed GitHub workflow, including a self-broken ci.yml, fails locally
 # before merge instead of only failing to run as CI.
 #
-# With no explicit paths, the file set and source-following posture depend
-# on context:
-#   - In CI (GITHUB_ACTIONS=true or CI=true), on the main branch, or when no
-#     merge-base against origin/main (or local main) can be found, it lints
-#     the full canonical set: bin/*.sh bin/backends/*.sh tests/*.sh, with
-#     --external-sources and full dataflow. This is what CI always runs, so
-#     CI coverage never depends on a local diff.
+# With no explicit paths, the file set depends on context:
+#   - In CI (GITHUB_ACTIONS=true or CI=true) it lints the full canonical set:
+#     bin/*.sh bin/backends/*.sh tests/*.sh, with --external-sources and full
+#     dataflow. This is what CI always runs, so CI coverage never depends on a
+#     local diff.
 #   - Otherwise (an ordinary local branch with a real merge-base) it lints
 #     only the canonical-set files changed since that merge-base, including
 #     uncommitted local edits, via plain local `git diff` (no network, no
-#     `gh`). That local pass drops --external-sources and excludes SC1091,
-#     SC2034, SC2153, and SC2329. A branch with zero matching changed files
-#     skips ShellCheck and prints a "no changed lint targets" note, then
-#     still validates workflows.
+#     `gh`), in the local no-source-following posture. A branch with zero
+#     matching changed files skips ShellCheck and prints a "no changed lint
+#     targets" note, then still validates workflows.
+#   - Locally on main or with no merge-base it lints the full canonical set in
+#     the same local no-source-following posture.
 # Explicit paths always bypass this file-set selection and lint exactly the
 # given paths, matching the same config, without the workflow YAML check.
+# They too use the local no-source-following posture; only CI runs the full
+# source-aware pass over explicit paths.
 #
 # Canonical lint defaults to two bounded workers over two stable logical shards.
 # Each shard writes separate diagnostics, and the parent replays those outputs in
@@ -57,8 +58,8 @@
 set -u
 
 REQUIRED_SHELLCHECK=0.11.0
-# Cross-file codes that need --external-sources. Local changed-file mode
-# cannot judge them, so they stay CI-only.
+# Cross-file codes that need --external-sources. Local runs cannot judge
+# them, so they stay CI-only.
 LOCAL_NOX_EXCLUDE=SC1091,SC2034,SC2153,SC2329
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SELF="$SELF_DIR/fm-lint.sh"
@@ -206,7 +207,13 @@ case "$JOBS" in
   *) printf 'fm-lint.sh: jobs must be 1 or 2, got %s.\n' "$JOBS" >&2; exit 2 ;;
 esac
 
-if [ "$FAST" -eq 1 ] && { [ "${GITHUB_ACTIONS:-}" = true ] || [ "${CI:-}" = true ]; }; then
+# fm_lint_in_ci reports the ambient CI signal both the --fast refusal and the
+# source-following posture key off: GITHUB_ACTIONS=true or CI=true.
+fm_lint_in_ci() {
+  [ "${GITHUB_ACTIONS:-}" = true ] || [ "${CI:-}" = true ]
+}
+
+if [ "$FAST" -eq 1 ] && fm_lint_in_ci; then
   printf 'fm-lint.sh: --fast is local-only; CI uses full ShellCheck analysis.\n' >&2
   exit 2
 fi
@@ -255,7 +262,7 @@ if [ "$#" -gt 0 ]; then
   ROOTS=("$@")
 else
   full_lint=1
-  if [ "${GITHUB_ACTIONS:-}" != true ] && [ "${CI:-}" != true ] \
+  if ! fm_lint_in_ci \
     && command -v git >/dev/null 2>&1 \
     && git rev-parse --is-inside-work-tree >/dev/null 2>&1 \
     && [ "$(git rev-parse --abbrev-ref HEAD 2>/dev/null)" != main ]; then
@@ -277,10 +284,20 @@ else
     done < <(git diff --name-only --diff-filter=ACMR -z "$merge_base" -- 2>/dev/null | LC_ALL=C sort -z)
   fi
 fi
-if [ "$CHANGED_MODE" -eq 1 ] && [ "$FAST" -eq 0 ]; then
+# --external-sources stays CI-only; see the header. Locally the no-source-
+# following posture applies to every file-set selection, including explicit
+# paths, main, and merge-base-less runs.
+if fm_lint_in_ci; then
+  FOLLOW_SOURCES=1
+  EXCLUDE_CODES=
+else
   FOLLOW_SOURCES=0
   EXCLUDE_CODES=$LOCAL_NOX_EXCLUDE
-  ANALYSIS_MODE=local
+  if [ "$FAST" -eq 1 ]; then
+    ANALYSIS_MODE=fast
+  else
+    ANALYSIS_MODE=local
+  fi
 fi
 ROOT_COUNT=${#ROOTS[@]}
 
@@ -314,7 +331,11 @@ fi
 if [ "$FAST" -eq 1 ]; then
   printf 'fm-lint.sh: fast local mode; ShellCheck extended analysis disabled\n' >&2
 elif [ "$FOLLOW_SOURCES" -eq 0 ]; then
-  printf 'fm-lint.sh: local changed-file mode; ShellCheck source following disabled\n' >&2
+  if [ "$CHANGED_MODE" -eq 1 ]; then
+    printf 'fm-lint.sh: local changed-file mode; ShellCheck source following disabled\n' >&2
+  else
+    printf 'fm-lint.sh: local mode; ShellCheck source following disabled (CI runs the full source-aware pass)\n' >&2
+  fi
 else
   printf 'fm-lint.sh: full ShellCheck extended analysis enabled\n' >&2
 fi
