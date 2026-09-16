@@ -1342,7 +1342,7 @@ evaluate_task() {
   [ -n "$candidate" ] || candidate=${PR_PATH##*/}
   owner_name=$(field_of "$meta" project)
   [ -z "$owner_name" ] || owner_name=${owner_name##*/}
-  if ! policy_repo_allowlisted "$candidate" "$owner_name"; then
+  if ! policy_repo_allowlisted "$candidate" "$owner_name" "$PR_PATH"; then
     EV_CLASS=held
     if [ "$POLICY_POSTURE" = denylist ]; then
       EV_REASON="policy-ask: repo ${candidate:-unknown} is on the policy wait list"

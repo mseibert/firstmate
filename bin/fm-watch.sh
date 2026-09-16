@@ -103,7 +103,7 @@
 #                          own-task PR: either the bound-merge mandate for a
 #                          green, mergeable, policy-clean PR past the wait, or
 #                          the hold report naming the merge-policy hard stop,
-#                          the allowlist default ask, or the GitHub merge
+#                          the policy default ask, or the GitHub merge
 #                          path's inability to bind the head
 #   check: secondmate wake-loop stalled: mate=<id> row=<seq> age=<seconds>s
 #                          the oldest valid row in an endpoint-recorded local

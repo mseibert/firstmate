@@ -53,8 +53,9 @@
 #   (v) a candidate killed inside a slow provider call still advances the
 #       persisted rotation, so the next scan evaluates the candidates behind it
 #   (w) an allowlist policy and a denylist policy each parse their posture, a
-#       denylist wait-list hit holds while an unlisted repo stays due, and a
-#       missing or unrecognized posture holds every candidate under hard stop 7
+#       denylist wait-list hit holds while an unlisted repo stays due, a
+#       qualified owner/repo row matches in both postures, and a missing or
+#       unrecognized posture holds every candidate under hard stop 7
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -992,6 +993,32 @@ test_denylist_unlisted_repo_is_due() {
   assert_contains "$rows" "bin/fm-pr-merge.sh t1 https://forgejo.example/seibert.group/programmieren-community/pulls/365 --expected-head $HEAD" "the denylist due payload is missing the head-bound merge command"
   assert_not_contains "$rows" "hard stop 7" "the denylist policy was not read"
   pass "a repo off the denylist wait list is due under the bound merge"
+}
+
+test_qualified_policy_rows_match_the_full_path() {
+  local dir keys rows
+  dir=$(make_case denylist-qualified-hit)
+  write_denylist_policy "$dir" "Ask:seibert.group/programmieren-community"
+  write_meta "$dir" t1 "https://forgejo.example/seibert.group/programmieren-community/pulls/365" programmieren-community
+  tea_green "$dir"
+  scan_hold_wake "$dir" "$NOW_LATE" >/dev/null
+  keys=$(queue_keys "$dir")
+  rows=$(queue_rows "$dir")
+  assert_contains "$keys" "pr-green-return:t1" "a qualified denylist row did not hold the repo"
+  assert_contains "$rows" "wait list" "a qualified denylist hold did not name the wait list"
+  assert_not_contains "$rows" "merge it bound now" "a qualified denylist row queued a merge wake"
+
+  dir=$(make_case allowlist-qualified-hit)
+  write_policy "$dir" seibert.group/programmieren-community
+  write_meta "$dir" t1 "https://forgejo.example/seibert.group/programmieren-community/pulls/365" programmieren-community
+  tea_green "$dir"
+  scan_case "$dir" "$NOW_LATE" >/dev/null
+  keys=$(queue_keys "$dir")
+  rows=$(queue_rows "$dir")
+  assert_contains "$keys" "pr-green-return:t1" "a qualified allowlist row was not autonomous"
+  assert_contains "$rows" "merge it bound now" "a qualified allowlist row queued no bound-merge mandate"
+  assert_not_contains "$rows" "hard stop 7" "the qualified allowlist policy was not read"
+  pass "a qualified owner/repo policy row matches in both postures"
 }
 
 test_missing_or_unknown_posture_holds_hard_stop_7() {
@@ -1955,6 +1982,7 @@ test_unreadable_policy_holds_hard_stop_7
 test_allowlist_default_ask_holds
 test_denylist_wait_list_holds_listed_repos
 test_denylist_unlisted_repo_is_due
+test_qualified_policy_rows_match_the_full_path
 test_missing_or_unknown_posture_holds_hard_stop_7
 test_merged_pr_leaves_no_wake_or_record
 test_forgejo_due_with_fresh_crabd_verdict
