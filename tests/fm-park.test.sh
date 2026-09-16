@@ -398,8 +398,11 @@ test_fix_review_gate_refuses() {
   home=$(make_case fix-review-gate)
   write_task "$home" t1 "pr=https://github.com/example/demo/pull/7"
   printf 'working: at the fix-review gate\n' > "$home/state/t1.status"
+  # The real reader emits the gate's step name, never its status, and omits the
+  # authority marker for a fix_review gate even when its findings carry an
+  # ask-user action: the pipeline's fix round is in flight.
   out=$(FM_FAKE_CREW_STATE=parked FM_FAKE_CREW_SOURCE=run-step \
-    FM_FAKE_CREW_DETAIL='parked at fix_review: 2 finding(s)' \
+    FM_FAKE_CREW_DETAIL='parked at review: 2 finding(s)' \
     run_park "$home" park t1 2>&1); rc=$?
   expect_code 1 "$rc" "a fix-review-gated run must refuse parking"
   assert_contains "$out" "gate the worker must answer" "the refusal did not name the worker-owned gate"

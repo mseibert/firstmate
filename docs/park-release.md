@@ -12,9 +12,9 @@ A task is parked when firstmate handles a wake that shows a worker waiting, or w
 
 - A `done:` report whose only remainder is a merge: the task has a recorded `pr=` and the crew reads `done` or `parked`.
 - A documented decision wait: the status log holds an open keyed `needs-decision` or `blocked` event, or the backlog row is captain-held (`hold_kind: captain`).
-- A no-mistakes run parked at an ask-user/authority gate: the canonical current-state line reads `parked` from the run step and carries the `ask-user` marker, and the pointer is the gate's open keyed status decision.
-- A run parked at any other gate (fix-review) is refused: that gate waits on the worker, so the worker must answer it and parking would stop the process the gate is waiting on.
-- A run parked at a gate whose decision key is not recorded refuses rather than guessing.
+- A no-mistakes run parked at an ask-user/authority gate: the canonical current-state line reads `parked` from the run step and carries the `(ask-user: authority decision)` marker, which `bin/fm-crew-state.sh` derives from the gate findings' `action` column (a finding whose action is `ask-user`) - never from the gate's own note text, which mentions ask-user on every review-step gate. The pointer is the gate's open keyed status decision.
+- A run parked at any other gate is refused: a `fix_review` gate is the pipeline's own fix round, and a gate whose findings carry no `ask-user` action waits on the worker, so the worker must answer it and parking would stop the process the gate is waiting on.
+- A run parked at an ask-user gate whose decision key is not recorded refuses rather than guessing.
 
 The sweep (`bin/fm-park.sh sweep`) is the bounded session-start and heartbeat housekeeping pass: the locked startup child of `bin/fm-startup-network.sh` runs it after the network sweeps, and heartbeat review runs it by hand.
 It is silent on success, bounded by `FM_PARK_SWEEP_LIMIT` (default 2) and `FM_PARK_SWEEP_BUDGET_SECS` (default 20), and prints one `PARK_SWEEP:` line per release it could not complete.

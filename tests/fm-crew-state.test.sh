@@ -312,14 +312,40 @@ run_parked() {  # <branch>
 run:
   id: "01RUN"
   branch: $1
-  status: awaiting_approval
+  status: running
   awaiting_agent: parked 2m10s
   head: "${FM_FAKE_RUN_HEAD:-abc1234}"
   pr: ""
-  findings[2]{id,severity,file,line,action,description}:
-    r1,warning,a.go,,auto-fix,ignored error
-    r2,error,b.go,,ask-user,changes product behavior
-gate: review
+  findings: 1 awaiting, 1 auto-fix
+gate:
+  step: review
+  status: awaiting_approval
+  note: "Review auto-fix is disabled by default (\`auto_fix.review: 0\`), so blocking and ask-user review findings park for your decision rather than being silently self-fixed."
+  findings[2]{id,severity,file,action,description}:
+    r1,warning,a.go,auto-fix,ignored error
+    r2,error,b.go,ask-user,"changes product behavior"
+EOF
+}
+
+# A review gate whose note text names ask-user but whose findings carry only the
+# auto-fix action: the authority marker must not come from a whole-document text
+# match.
+run_parked_auto_fix_only() {  # <branch>
+  cat <<EOF
+run:
+  id: "01RUN"
+  branch: $1
+  status: running
+  awaiting_agent: parked 1m2s
+  head: "${FM_FAKE_RUN_HEAD:-abc1234}"
+  pr: ""
+  findings: 1 auto-fix
+gate:
+  step: review
+  status: awaiting_approval
+  note: "Review auto-fix is disabled by default (\`auto_fix.review: 0\`), so blocking and ask-user review findings park for your decision rather than being silently self-fixed."
+  findings[1]{id,severity,file,action,description}:
+    r1,warning,a.go,auto-fix,"a description that mentions ,ask-user, inline"
 EOF
 }
 
@@ -345,11 +371,13 @@ run:
   status: running
   head: "${FM_FAKE_RUN_HEAD:-abc1234}"
   pr: ""
-  findings[1]{id,severity,file,line,action,description}:
-    r1,error,b.go,,ask-user,changes product behavior
+  findings: 1 awaiting
 gate:
   step: review
   status: fix_review
+  note: "Review auto-fix is disabled by default (\`auto_fix.review: 0\`), so blocking and ask-user review findings park for your decision rather than being silently self-fixed."
+  findings[1]{id,severity,file,action,description}:
+    r1,error,b.go,ask-user,"changes product behavior"
 steps[3]{step,status,findings,duration_ms}:
   intent,completed,0,0
   review,fix_review,1,0
@@ -713,8 +741,25 @@ test_gate_block_parked_not_superseded() {
   assert_contains "$out" "source: run-step" "gate block wait -> run-step source"
   assert_contains "$out" "parked at review" "gate block wait names the gate"
   assert_contains "$out" "1 finding(s)" "gate block wait includes finding count"
+  assert_not_contains "$out" "ask-user" "a fix_review gate is the pipeline's fix round, not an authority wait"
   assert_not_contains "$out" "superseded" "gate block wait not flagged stale"
   pass "gate block parked run is not flagged superseded"
+}
+
+test_review_gate_without_ask_user_action_has_no_marker() {
+  reset_fakes
+  local d out
+  d=$(new_case parked-auto-fix-only)
+  make_repo_on_branch "$d/wt" fm/feat-af
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/af.meta" "window=fm:fm-af" "worktree=$d/wt" "kind=ship"
+  printf 'needs-decision: review gate\n' > "$d/state/af.status"
+  FM_FAKE_AXI_STATUS="$(run_parked_auto_fix_only fm/feat-af)"
+  out=$(run_crew_state "$d" af)
+  assert_contains "$out" "state: parked" "auto-fix-only review gate -> parked"
+  assert_contains "$out" "1 finding(s)" "auto-fix-only review gate keeps its finding count"
+  assert_not_contains "$out" "ask-user" "the gate note text and a description mention must not become the authority marker"
+  pass "an auto-fix-only review gate carries no authority marker"
 }
 
 test_ci_ready_done_log_beats_monitoring_run() {
@@ -2337,6 +2382,7 @@ test_genuine_daemon_down_reports_blocked
 test_genuine_parked_not_superseded
 test_scalar_gate_parked_not_superseded
 test_gate_block_parked_not_superseded
+test_review_gate_without_ask_user_action_has_no_marker
 test_ci_ready_done_log_beats_monitoring_run
 test_ci_monitoring_checks_green_surfaces_done
 test_top_level_ci_checks_green_surfaces_done

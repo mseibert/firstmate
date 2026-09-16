@@ -303,6 +303,57 @@ nm_field() {  # <key>
 nm_findings_count() {
   printf '%s\n' "$RUN_OUT" | grep -oE 'findings\[[0-9]+\]' | head -1 | grep -oE '[0-9]+'
 }
+# 0 when the active gate's findings table has a row whose action column is
+# `ask-user` - the canonical authority marker. The gate note text mentions
+# ask-user on every review-step gate, so the action column is the only
+# evidence; a description that merely mentions ask-user is not.
+nm_gate_has_ask_user_finding() {
+  printf '%s\n' "$RUN_OUT" | awk '
+    function split_row(line, out,    i, c, n, quoted, field) {
+      n = 0; quoted = 0; field = ""
+      for (i = 1; i <= length(line); i++) {
+        c = substr(line, i, 1)
+        if (quoted) {
+          if (c == "\\") { i++; field = field substr(line, i, 1) }
+          else if (c == "\"") { quoted = 0 }
+          else { field = field c }
+        } else if (c == "\"") {
+          quoted = 1
+        } else if (c == ",") {
+          out[++n] = field; field = ""
+        } else {
+          field = field c
+        }
+      }
+      out[++n] = field
+      return n
+    }
+    /^[[:space:]]*findings\[[0-9]+\]\{/ {
+      header = $0
+      sub(/^[^{]*\{/, "", header)
+      sub(/\}.*$/, "", header)
+      ncols = split(header, cols, ",")
+      action_col = 0
+      for (i = 1; i <= ncols; i++) {
+        gsub(/^[[:space:]]+|[[:space:]]+$/, "", cols[i])
+        if (cols[i] == "action") action_col = i
+      }
+      in_table = 1
+      next
+    }
+    in_table {
+      if ($0 !~ /^[[:space:]]+[^[:space:]]/) exit
+      nf = split_row($0, row)
+      if (action_col > 0 && action_col <= nf) {
+        value = row[action_col]
+        gsub(/^[[:space:]]+|[[:space:]]+$/, "", value)
+        if (value == "ask-user") { found = 1; exit }
+      }
+      next
+    }
+    END { exit found ? 0 : 1 }
+  '
+}
 nm_gate_step_row() {
   local row step rest status findings
   row=$(printf '%s\n' "$RUN_OUT" | grep -E '^[[:space:]]*[^,]+,[[:space:]]*"?(awaiting_approval|fix_review)"?[[:space:]]*,' | head -1)
@@ -692,7 +743,7 @@ if [ "$HAVE_RUN" = 1 ]; then
       RUN_DETAIL="parked at $gate"
       fcount=$(nm_gate_findings_count)
       [ -n "$fcount" ] && RUN_DETAIL="$RUN_DETAIL: $fcount finding(s)"
-      if printf '%s\n' "$RUN_OUT" | grep -q 'ask-user'; then
+      if [ "$gate_status" != fix_review ] && nm_gate_has_ask_user_finding; then
         RUN_DETAIL="$RUN_DETAIL (ask-user: authority decision)"
       fi
     else

@@ -27,10 +27,13 @@
 #   park    Check eligibility and release the task's slot. Eligibility is: not
 #           a secondmate, no actively working pipeline run, and a provable
 #           handoff. A no-mistakes run parked at an ask-user/authority gate is a
-#           decision wait whose pointer is the gate's open keyed decision; a run
-#           parked at any other gate (fix-review) is refused because the worker
-#           must answer that gate, so it is not waiting on firstmate or the
-#           captain; a gate-free task uses an open keyed
+#           decision wait whose pointer is the gate's open keyed decision; the
+#           gate's canonical current-state detail carries the
+#           `(ask-user: authority decision)` marker only when a gate finding's
+#           action column is ask-user, and a run parked at any other gate
+#           (fix-review) is refused because the worker must answer that gate, so
+#           it is not waiting on firstmate or the captain; a gate-free task uses
+#           an open keyed
 #           `needs-decision`/`blocked` status decision, a captain-held backlog
 #           row, or a recorded `pr=` on a `done`/`parked` crew. The run-step gate
 #           facts come from the canonical current-state line, never from a
@@ -267,10 +270,11 @@ load_marker() {  # <marker-file>
 
 # Parse the canonical current-state line into CREW_STATE, CREW_SOURCE, and
 # CREW_DETAIL. The line is owned by bin/fm-crew-state.sh; park_probe needs the
-# run-step gate facts it carries (a run parked at a gate reports
-# source=run-step with the gate name and, for an authority gate, the
-# `ask-user` marker), so this is the same run-step source read through its one
-# owner rather than a second attribution of no-mistakes records.
+# run-step gate facts it carries (a run parked at a gate reports source=run-step
+# with the gate name and, for an authority gate, the canonical
+# `(ask-user: authority decision)` marker derived from the gate findings' action
+# column), so this is the same run-step source read through its one owner rather
+# than a second attribution of no-mistakes records.
 CREW_STATE=unknown
 CREW_SOURCE=none
 CREW_DETAIL=
@@ -367,9 +371,10 @@ park_probe() {
   esac
   if [ "$state" = parked ] && [ "$source" = run-step ]; then
     # A no-mistakes run parked at a gate. The gate decides: an authority gate
-    # waits on firstmate/captain, every other gate waits on the worker.
+    # carries the canonical ask-user marker and waits on firstmate/captain,
+    # every other gate waits on the worker.
     case "$detail" in
-      *ask-user*)
+      *'(ask-user: authority decision)'*)
         key=$(open_decision_key)
         if [ -z "$key" ]; then
           PARK_REFUSE="a run is parked at an ask-user gate but no keyed decision is recorded on the status log; record the gate decision before parking"
