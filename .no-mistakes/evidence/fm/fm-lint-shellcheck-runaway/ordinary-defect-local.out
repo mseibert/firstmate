@@ -1,0 +1,9 @@
+fm-lint.sh: ShellCheck 0.11.0 (pinned 0.11.0)
+fm-lint.sh: local mode; ShellCheck source following disabled (CI runs the full source-aware pass)
+
+In /home/martin_seibert/.no-mistakes/evidence/01M2N5KHJ24PW7EG1WDGB44066/ordinary-defect-fixture.sh line 3:
+  local a= b=
+          ^-- SC1007 (warning): Remove space after = if trying to assign a value (for empty string, use var='' ... ).
+
+For more information:
+  https://www.shellcheck.net/wiki/SC1007 -- Remove space after = if trying to...

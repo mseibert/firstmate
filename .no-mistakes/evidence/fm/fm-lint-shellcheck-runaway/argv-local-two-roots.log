@@ -1,0 +1,3 @@
+argv: --version
+argv: --norc --exclude=SC1091\,SC2034\,SC2153\,SC2329 -- bin/fm-lint-workflows.sh
+argv: --norc --exclude=SC1091\,SC2034\,SC2153\,SC2329 -- bin/fm-install-shellcheck.sh

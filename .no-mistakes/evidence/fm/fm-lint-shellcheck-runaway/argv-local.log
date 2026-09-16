@@ -1,0 +1,2 @@
+argv: --version
+argv: --norc --exclude=SC1091\,SC2034\,SC2153\,SC2329 -- bin/fm-watch.sh

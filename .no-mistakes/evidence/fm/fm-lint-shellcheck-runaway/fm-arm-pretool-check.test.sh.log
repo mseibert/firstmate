@@ -1,0 +1,146 @@
+ok - matrix A01: allow through all five entry forms
+ok - matrix A02: allow through all five entry forms
+ok - matrix A03: allow through all five entry forms
+ok - matrix A04: allow through all five entry forms
+ok - matrix A05: allow through all five entry forms
+ok - matrix A06: allow through all five entry forms
+ok - matrix A07: allow through all five entry forms
+ok - matrix A08: allow through all five entry forms
+ok - matrix A09: allow through all five entry forms
+ok - matrix A10: allow through all five entry forms
+ok - matrix A11: allow through all five entry forms
+ok - matrix A12: allow through all five entry forms
+ok - matrix A13: allow through all five entry forms
+ok - matrix A14: allow through all five entry forms
+ok - matrix A15: allow through all five entry forms
+ok - matrix A16: allow through all five entry forms
+ok - matrix A17: allow through all five entry forms
+ok - matrix R01: allow through all five entry forms
+ok - matrix R02: allow through all five entry forms
+ok - matrix R03: allow through all five entry forms
+ok - matrix R04: allow through all five entry forms
+ok - matrix R05: allow through all five entry forms
+ok - matrix R06: allow through all five entry forms
+ok - matrix R07: allow through all five entry forms
+ok - matrix R08: allow through all five entry forms
+ok - matrix R09: allow through all five entry forms
+ok - matrix R10: allow through all five entry forms
+ok - matrix R11: allow through all five entry forms
+ok - matrix R12: allow through all five entry forms
+ok - matrix R13: allow through all five entry forms
+ok - matrix R14: allow through all five entry forms
+ok - matrix R15: allow through all five entry forms
+ok - matrix R16: allow through all five entry forms
+ok - matrix R17: allow through all five entry forms
+ok - matrix R18: allow through all five entry forms
+ok - matrix R19: allow through all five entry forms
+ok - matrix D01: deny through all five entry forms
+ok - matrix D02: deny through all five entry forms
+ok - matrix D03: deny through all five entry forms
+ok - matrix D04: deny through all five entry forms
+ok - matrix D05: deny through all five entry forms
+ok - matrix D06: deny through all five entry forms
+ok - matrix D07: deny through all five entry forms
+ok - matrix D08: deny through all five entry forms
+ok - matrix D09: deny through all five entry forms
+ok - matrix D10: deny through all five entry forms
+ok - matrix D11: deny through all five entry forms
+ok - matrix D12: deny through all five entry forms
+ok - matrix D13: deny through all five entry forms
+ok - matrix D14: deny through all five entry forms
+ok - matrix D15: deny through all five entry forms
+ok - matrix D16: deny through all five entry forms
+ok - matrix D17: deny through all five entry forms
+ok - matrix D18: deny through all five entry forms
+ok - matrix D19: deny through all five entry forms
+ok - matrix D20: deny through all five entry forms
+ok - matrix D21: deny through all five entry forms
+ok - matrix D22: deny through all five entry forms
+ok - matrix D23: deny through all five entry forms
+ok - matrix D24: deny through all five entry forms
+ok - matrix D25: deny through all five entry forms
+ok - matrix D26: deny through all five entry forms
+ok - matrix D27: deny through all five entry forms
+ok - matrix D28: deny through all five entry forms
+ok - matrix D29: deny through all five entry forms
+ok - matrix D30: deny through all five entry forms
+ok - matrix D31: deny through all five entry forms
+ok - matrix D32: deny through all five entry forms
+ok - matrix D33: deny through all five entry forms
+ok - matrix D34: deny through all five entry forms
+ok - matrix D35: deny through all five entry forms
+ok - matrix D36: deny through all five entry forms
+ok - matrix D37: deny through all five entry forms
+ok - matrix D38: deny through all five entry forms
+ok - matrix D39: deny through all five entry forms
+ok - matrix D40: deny through all five entry forms
+ok - matrix D41: deny through all five entry forms
+ok - matrix D42: deny through all five entry forms
+ok - matrix D43: deny through all five entry forms
+ok - matrix D44: deny through all five entry forms
+ok - matrix D45: deny through all five entry forms
+ok - matrix D46: deny through all five entry forms
+ok - matrix D47: deny through all five entry forms
+ok - matrix D48: deny through all five entry forms
+ok - matrix D49: deny through all five entry forms
+ok - matrix D50: deny through all five entry forms
+ok - matrix D51: deny through all five entry forms
+ok - matrix D52: deny through all five entry forms
+ok - matrix D53: deny through all five entry forms
+ok - matrix D54: deny through all five entry forms
+ok - matrix D55: deny through all five entry forms
+ok - matrix D56: deny through all five entry forms
+ok - matrix D57: deny through all five entry forms
+ok - matrix D58: deny through all five entry forms
+ok - matrix E01: allow through all five entry forms
+ok - matrix E02: allow through all five entry forms
+ok - matrix E03: allow through all five entry forms
+ok - matrix E04: allow through all five entry forms
+ok - matrix E05: deny through all five entry forms
+ok - matrix E06: deny through all five entry forms
+ok - matrix E07: deny through all five entry forms
+ok - matrix E08: deny through all five entry forms
+ok - matrix E09: deny through all five entry forms
+ok - matrix E10: deny through all five entry forms
+ok - matrix E11: deny through all five entry forms
+ok - matrix E12: allow through all five entry forms
+ok - matrix E13: allow through all five entry forms
+ok - matrix E14: allow through all five entry forms
+ok - matrix E15: allow through all five entry forms
+ok - matrix E16: allow through all five entry forms
+ok - matrix E17: allow through all five entry forms
+ok - direct policy direct-data-pkill: allow
+ok - direct policy direct-broad-pkill: deny	broad-watcher-kill
+ok - direct policy direct-loop-broad-pkill: deny	broad-watcher-kill
+ok - direct policy direct-loop-broad-kill-pgrep: deny	broad-watcher-kill
+ok - direct policy direct-loop-no-kill-allowed: allow
+ok - direct policy direct-pipeline: deny	watcher-pipeline
+ok - direct policy direct-leading-redirection: deny	watcher-redirection
+ok - direct policy direct-unclassifiable: deny	unclassifiable-protected-command
+ok - direct policy direct-unsupported: deny	unclassifiable-protected-command
+ok - direct policy direct-constructed-payload: deny	watcher-nested
+ok - direct policy direct-parameter-export: allow
+ok - direct policy direct-expanded-arm-blessed: allow
+ok - direct policy direct-expanded-arm-background: deny	watcher-background
+ok - direct policy direct-expanded-arm-pipeline: deny	watcher-pipeline
+ok - direct policy direct-watch-not-blessed: deny	watcher-direct
+ok - direct policy direct-watch-expanded: deny	watcher-direct
+ok - direct policy direct-watch-safe-shape: deny	watcher-direct
+ok - direct policy direct-heredoc-data: allow
+ok - direct policy direct-heredoc-watcher: deny	watcher-redirection
+ok - --command=<val> equals-form parses correctly
+ok - --background is accepted for interface parity and is never itself a deny signal
+ok - unknown CLI flag is rejected
+ok - stdin grok schema (toolInput.command): denied with Grok-shaped stdout JSON
+ok - stdin claude/codex schema (tool_input.command): blessed shape allowed
+ok - stdin claude/codex schema (tool_input.command): backgrounded shape denied
+ok - stdin: unrelated command is a fast allow
+ok - transport prefilter is a strict superset: non-fm-watch fast-allows, every fm-watch and quoting-decoder-marker command reaches the classifier
+ok - fail-open: empty stdin
+ok - fail-open: unparseable JSON on stdin
+ok - fail-open: missing jq on stdin path
+ok - fail-open: missing classifier runtime
+ok - --claude: stdout empty, stderr carries hookSpecificOutput deny JSON
+ok - default mode: stdout carries Grok-shaped decision JSON on deny
+ok - allow is silent on both stdout and stderr in default and --claude mode
+ok - bin/fm-arm-pretool-check.sh is clean under bin/fm-lint.sh

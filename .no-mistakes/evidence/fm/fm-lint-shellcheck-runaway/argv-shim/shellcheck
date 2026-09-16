@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+{
+  printf 'argv:'
+  printf ' %q' "$@"
+  printf '\n'
+} >> "${FM_EVIDENCE_ARGV_LOG:?}"
+exec "$FM_EVIDENCE_REAL_SHELLCHECK" "$@"

@@ -1,0 +1,2 @@
+fm-lint.sh: ShellCheck 0.11.0 (pinned 0.11.0)
+fm-lint.sh: local mode; ShellCheck source following disabled (CI runs the full source-aware pass)

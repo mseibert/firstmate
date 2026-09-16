@@ -1,0 +1,13 @@
+ok - cd-guard acceptance matrix: 63 cases x 5 harness entry forms, block/allow all correct
+ok - cd-guard: fires in a secondmate home (its own primary session is a primary)
+ok - cd-guard: inert in a crewmate/scout task worktree (linked git worktree)
+ok - cd-guard: inert in a non-firstmate repo (no AGENTS.md)
+ok - cd-guard: inert when not inside a git repo
+ok - cd-guard: reproduces the cwd leak and denies the exact command that causes it
+ok - cd-guard: fails open on empty stdin
+ok - cd-guard: fails open on unparseable stdin JSON
+ok - cd-guard: fails open (never blocks) when node is missing
+ok - cd-guard: fails open on the stdin path when jq is missing
+ok - cd-guard: prefilter fast-allows (skips node) when no cd/pushd/popd substring is present
+ok - cd-guard: fm-cd-command-policy.mjs CLI honors the deny/allow output contract
+ok - bin/fm-cd-pretool-check.sh is clean under bin/fm-lint.sh
