@@ -14,10 +14,11 @@ A task is parked when firstmate handles a wake that shows a worker waiting, or w
 - A documented decision wait: the status log holds an open keyed `needs-decision` or `blocked` event, or the backlog row is captain-held (`hold_kind: captain`).
 - A no-mistakes run parked at an ask-user/authority gate: the canonical current-state line reads `parked` from the run step and carries the `(ask-user: authority decision)` marker, which `bin/fm-crew-state.sh` derives from the gate findings' `action` column (a finding whose action is `ask-user`) - never from the gate's own note text, which mentions ask-user on every review-step gate. The pointer is the gate's open keyed status decision.
 - A run parked at any other gate is refused: a `fix_review` gate is the pipeline's own fix round, and a gate whose findings carry no `ask-user` action waits on the worker, so the worker must answer it and parking would stop the process the gate is waiting on.
+  `bin/fm-crew-state.sh` never adds the authority marker to a `fix_review` gate, so even a fix-review finding with an `ask-user` action leaves that run refused.
 - A run parked at an ask-user gate whose decision key is not recorded refuses rather than guessing.
 
 The sweep (`bin/fm-park.sh sweep`) is the bounded session-start and heartbeat housekeeping pass: the locked startup child of `bin/fm-startup-network.sh` runs it after the network sweeps, and heartbeat review runs it by hand.
-It is silent on success, bounded by `FM_PARK_SWEEP_LIMIT` (default 2) and `FM_PARK_SWEEP_BUDGET_SECS` (default 20), and prints one `PARK_SWEEP:` line per release it could not complete.
+It is silent on success apart from a manual-backend home's owed backlog note on stderr, bounded by `FM_PARK_SWEEP_LIMIT` (default 2) and `FM_PARK_SWEEP_BUDGET_SECS` (default 20), and prints one `PARK_SWEEP:` line per release it could not complete.
 
 ## Eligibility
 
@@ -32,12 +33,12 @@ It is silent on success, bounded by `FM_PARK_SWEEP_LIMIT` (default 2) and `FM_PA
 
 1. Write `state/<id>.parked` (schema `fm-park.v1`) with `state=releasing` as the durable intent.
 2. Append one status line: `<paused-verb> [key=park-<id>]: released awaiting <merge|decision> - <pointer>`, where `<paused-verb>` is the configured `FM_CLASSIFY_PAUSED_VERB` (default `paused`).
-3. Record the handoff note in the task's backlog row under the same gate rules as every other lifecycle mutation: with an automatic backend and compatible tasks-axi the note is written through `tasks-axi update --body-file --archive-body`, a manual-backend home prints the exact note owed on stderr, and an automatic-backend home whose backend cannot be read is refused before any mutation.
+3. Record the handoff note in the task's backlog row under the same gate rules as every other lifecycle mutation: with an automatic backend and compatible tasks-axi the note is written through `tasks-axi update --body-file --archive-body`, a manual-backend home prints the exact note owed on stderr, and an automatic-backend home whose backend cannot be read is refused before the backlog mutation and before the worker is stopped.
 4. Stop the worker through `bin/fm-control.sh <id> exit`, which preserves the endpoint, the worktree, the branch, and every uncommitted change, and which verifies through the backend's recovery-grade classifier that the agent actually stopped.
 5. Rewrite the marker with `state=released` only after that stop is verified.
 
 `state=releasing` means the intent is durable but the stop is not verified, so the task is not parked and its slot is not claimed free.
-A failed or interrupted release stays at `releasing`; running `park` again retries the note and the stop and commits `released`.
+A failed or interrupted release stays at `releasing`; running `park` again restores the status line, retries the note and the stop, and commits `released`.
 An already-released task is idempotent success with no second exit.
 
 ## Marker schema
@@ -49,7 +50,7 @@ An already-released task is idempotent success with no second exit.
 | `schema` | `fm-park.v1`; any other value is refused rather than trusted. |
 | `task` | The exact task id; a marker naming another task is refused. |
 | `reason` | `merge` or `decision`. |
-| `pointer` | The PR URL, `key=<decision-key>`, or `captain-hold: <reason>`. |
+| `pointer` | The PR URL, `key=<decision-key>`, `captain-hold`, or `captain-hold: <reason>`. |
 | `branch` | The released work branch, or `-`. |
 | `pr` | The recorded PR URL, or `-`. |
 | `epoch` | Unix seconds at park time. |
@@ -58,7 +59,8 @@ An already-released task is idempotent success with no second exit.
 
 The marker is a regular file under this home's `state/`; a symlink there is refused.
 `bin/fm-crew-state.sh` reads a `released` marker as authoritative current state (`state: parked`, source `park-marker`), so the operating point sees the release without a second state source.
-`bin/fm-fleet-snapshot.sh` projects the same read into its `occupancy` field, where `active` counts only `working` tasks and `parked` counts the released ones.
+`bin/fm-fleet-snapshot.sh` projects the same read into its `occupancy` field, where `active` counts only `working` tasks and `parked` counts every task whose canonical state is `parked`.
+`bin/fm-watch.sh` treats a `released` marker as an expected-stopped worker, so a release never escalates as a dead worker ([architecture.md](architecture.md) owns that rule).
 `bin/fm-teardown.sh` removes the marker with the rest of the task record.
 
 ## Resume
@@ -90,5 +92,5 @@ An automatic-backend home with an unreadable backlog refuses the release before 
 
 ## Tests
 
-`tests/fm-park.test.sh` pins eligibility (done plus PR parks, working refuses, secondmate refuses, no pointer refuses), idempotency, the marker contents, the status line, resume notes and marker removal, clear, list/status, the backlog note through the gate library, the manual fallback, the sweep, and the snapshot's active-versus-parked occupancy projection.
-`tests/fm-crew-state.test.sh` pins the marker read and `tests/fm-brief.test.sh` pins the generated ship/scout release note.
+`tests/fm-park.test.sh` pins eligibility (done plus PR parks, working refuses, secondmate refuses, no pointer refuses), the run-step gate rules (an ask-user gate parks as a decision, a fix-review gate and a keyless ask-user gate refuse), idempotency, the releasing retry's restored status line, the marker contents, the status line, resume notes and marker removal, clear, list/status, the backlog note through the gate library, the manual fallback, the sweep, and the snapshot's active-versus-parked occupancy projection.
+`tests/fm-crew-state.test.sh` pins the marker read, `tests/fm-watch-dead-worker.test.sh` pins the expected-stopped predicate, and `tests/fm-brief.test.sh` pins the generated ship/scout release note.

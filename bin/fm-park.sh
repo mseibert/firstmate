@@ -29,11 +29,11 @@
 #           handoff. A no-mistakes run parked at an ask-user/authority gate is a
 #           decision wait whose pointer is the gate's open keyed decision; the
 #           gate's canonical current-state detail carries the
-#           `(ask-user: authority decision)` marker only when a gate finding's
-#           action column is ask-user, and a run parked at any other gate
-#           (fix-review) is refused because the worker must answer that gate, so
-#           it is not waiting on firstmate or the captain; a gate-free task uses
-#           an open keyed
+#           `(ask-user: authority decision)` marker only for a non-fix_review
+#           gate whose findings table has an ask-user action, and a run parked
+#           at any other gate (fix-review) is refused because the worker must
+#           answer that gate, so it is not waiting on firstmate or the captain;
+#           a gate-free task uses an open keyed
 #           `needs-decision`/`blocked` status decision, a captain-held backlog
 #           row, or a recorded `pr=` on a `done`/`parked` crew. The run-step gate
 #           facts come from the canonical current-state line, never from a
@@ -57,8 +57,9 @@
 #           released marker, `releasing <id> reason=... ...` (exit 1) for a
 #           recorded but unverified release, or `not-parked <id>` (exit 1).
 #   sweep   Bounded session-start/heartbeat housekeeping: find eligible but
-#           unmarked tasks and park them. Silent on success; a failed release
-#           prints one PARK_SWEEP line so the caller can surface it. Bounded by
+#           unmarked tasks and park them. Silent on success apart from a manual
+#           home's owed backlog note on stderr; a failed release prints one
+#           PARK_SWEEP line so the caller can surface it. Bounded by
 #           --limit (default FM_PARK_SWEEP_LIMIT, 2) and by
 #           FM_PARK_SWEEP_BUDGET_SECS (default 20) of wall clock.
 #
@@ -66,7 +67,7 @@
 #   schema=fm-park.v1
 #   task=<task-id>
 #   reason=merge|decision
-#   pointer=<PR URL, key=<decision-key>, or captain-hold:<reason>>
+#   pointer=<PR URL, key=<decision-key>, captain-hold, or captain-hold:<reason>>
 #   branch=<work branch, or ->
 #   pr=<PR URL, or ->
 #   epoch=<unix seconds at park time>
