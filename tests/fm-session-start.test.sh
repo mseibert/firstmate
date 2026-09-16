@@ -1367,12 +1367,22 @@ EOF
 
   printf 'window=fm-sess:live-window\nkind=ship\n' > "$home/state/task-live.meta"
   printf 'window=fm-sess:dead-window\nkind=ship\n' > "$home/state/task-dead.meta"
+  # A released park marker (bin/fm-park.sh) stops its worker by design, so the
+  # digest must label the endpoint parked rather than dead; dead would match the
+  # stuck-worker trigger for every released task.
+  printf 'window=fm-sess:parked-window\nkind=ship\n' > "$home/state/task-parked.meta"
+  printf 'schema=fm-park.v1\ntask=task-parked\nreason=merge\npointer=https://example.invalid/1\nbranch=fm/x\npr=https://example.invalid/1\nepoch=1\nincarnation=-\nstate=released\n' \
+    > "$home/state/task-parked.parked"
 
   out=$(run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
   assert_contains "$out" "endpoint: alive (backend=tmux window=fm-sess:live-window)" "live tmux endpoint not reported alive"
   assert_contains "$out" "endpoint: dead (backend=tmux window=fm-sess:dead-window)" "dead tmux endpoint not reported dead"
+  assert_contains "$out" "endpoint: parked (released, backend=tmux window=fm-sess:parked-window)" \
+    "a released park marker was not reported as a parked endpoint"
+  assert_not_contains "$out" "endpoint: dead (backend=tmux window=fm-sess:parked-window)" \
+    "a released park marker must not be reported as a dead endpoint"
 
-  pass "tmux endpoint liveness is reported per task: alive for a live window, dead for a gone one"
+  pass "tmux endpoint liveness is reported per task: alive for a live window, dead for a gone one, parked for a released one"
 }
 
 test_endpoint_liveness_herdr() {

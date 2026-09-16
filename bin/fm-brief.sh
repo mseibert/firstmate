@@ -230,7 +230,7 @@ IFS= read -r -d '' PARK_SECTION <<'EOF' || true
 A `done:` report whose only remainder is a merge or a decision does not have to hold your slot: firstmate may release it immediately.
 The release stops your endpoint; your worktree, branch, and every uncommitted change are preserved, and the PR or report plus the status line and backlog carry the handoff.
 You are resumed later with a short run: reconcile the merged or decided state, rebase or fix only if needed, then report done for cleanup.
-This is expected and is not a failure, so before your final `done:` commit the branch and leave the remaining step stated in the PR or report and the status line.
+This is expected and is not a failure, so before your final `done:` leave your deliverable - the committed branch for a ship, the report for a scout - and the status line stating exactly what remains open.
 EOF
 PARK_SECTION=${PARK_SECTION%$'\n'}
 

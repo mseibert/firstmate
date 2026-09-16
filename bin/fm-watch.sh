@@ -160,6 +160,10 @@ mkdir -p "$STATE"
 # (inbox_steer_check below).
 # shellcheck source=bin/fm-task-inbox-lib.sh
 . "$SCRIPT_DIR/fm-task-inbox-lib.sh"
+# The released-marker read is owned by bin/fm-park-lib.sh so the watcher, the
+# current-state reader, and the lifecycle owner agree on which markers count.
+# shellcheck source=bin/fm-park-lib.sh
+. "$SCRIPT_DIR/fm-park-lib.sh"
 
 WATCH_LOCK="$STATE/.watch.lock"
 WATCH_PATH="$SCRIPT_DIR/fm-watch.sh"
@@ -1107,10 +1111,9 @@ machine_is_idle() {  # <exclude-task>
 # the release itself. Only state=released qualifies; a `releasing` marker is an
 # unverified release whose worker may still be running.
 park_marker_released() {  # <task>
-  local marker="$STATE/$1.parked" state
-  [ -f "$marker" ] && [ ! -L "$marker" ] || return 1
-  state=$(grep '^state=' "$marker" 2>/dev/null | tail -1 | cut -d= -f2- || true)
-  [ "$state" = released ]
+  local task=$1 gen
+  gen=$(fm_meta_get "$STATE/$task.meta" spawn_gen)
+  [ "$(fm_park_marker_state "$STATE" "$task" "$gen")" = released ]
 }
 
 task_expects_live_worker() {  # <task>

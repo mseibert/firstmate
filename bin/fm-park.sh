@@ -55,27 +55,26 @@
 #           id, reason, pointer, branch, pr, epoch, incarnation, state.
 #   status  One line for one task: `parked <id> reason=... ...` (exit 0) for a
 #           released marker, `releasing <id> reason=... ...` (exit 1) for a
-#           recorded but unverified release, or `not-parked <id>` (exit 1).
+#           recorded but unverified release, `stale <id> ...` (exit 1) for a
+#           marker recorded by an earlier incarnation, or `not-parked <id>`
+#           (exit 1).
 #   sweep   Bounded session-start/heartbeat housekeeping: find eligible but
 #           unmarked tasks and park them. Silent on success apart from a manual
 #           home's owed backlog note on stderr; a failed release prints one
 #           PARK_SWEEP line so the caller can surface it. Bounded by
 #           --limit (default FM_PARK_SWEEP_LIMIT, 2) and by
-#           FM_PARK_SWEEP_BUDGET_SECS (default 20) of wall clock.
+#           FM_PARK_SWEEP_BUDGET_SECS (default 20) of wall clock, and
+#           best-effort: a sweep cut off by the startup bound leaves every task
+#           as it found it and the next session or heartbeat retries.
 #
-# The marker `state/<id>.parked` is schema fm-park.v1, one `key=value` per line:
-#   schema=fm-park.v1
-#   task=<task-id>
-#   reason=merge|decision
-#   pointer=<PR URL, key=<decision-key>, captain-hold, or captain-hold:<reason>>
-#   branch=<work branch, or ->
-#   pr=<PR URL, or ->
-#   epoch=<unix seconds at park time>
-#   incarnation=<spawn_gen of the released worker, or ->
-#   state=releasing|released
-# `releasing` means the release is recorded but the stop is not yet verified;
-# only `released` is authoritative parked state. bin/fm-crew-state.sh reads the
-# marker so the task reports `parked` with source `park-marker`, and
+# The marker `state/<id>.parked` is schema fm-park.v1; docs/park-release.md
+# owns the field table and the `releasing`/`released` semantics. Every reader
+# goes through bin/fm-park-lib.sh, so the current-state line (`parked` with
+# source `park-marker`), the watcher's expected-stop predicate, the startup
+# digest's liveness line, and this script agree on which markers count: only a
+# regular fm-park.v1 file naming this task and recording the task's CURRENT
+# incarnation is live, and a marker left by an earlier incarnation (a
+# control-plane relaunch outside this script) is stale and drops out.
 # bin/fm-fleet-snapshot.sh counts only `working` tasks as the active operating
 # point. bin/fm-teardown.sh removes the marker with the rest of the task record.
 #
@@ -90,7 +89,8 @@
 #
 # Fail-closed boundaries: an unclear state refuses loudly rather than guessing;
 # a running pipeline run is never parked; a secondmate is never parked; a stop
-# that cannot be verified is reported as a failed release, never as parked.
+# that cannot be verified is reported as a failed release, never as parked; the
+# per-task supervision lease guards the whole mutation, not only the stop.
 #
 # Environment knobs:
 #   FM_PARK_CONTROL_BIN       control-plane binary (default bin/fm-control.sh)
@@ -130,6 +130,12 @@ fm_refuse_if_gate_agent
 . "$SCRIPT_DIR/fm-backlog-transition-lib.sh"
 # shellcheck source=bin/fm-wake-lib.sh
 . "$SCRIPT_DIR/fm-wake-lib.sh"
+# shellcheck source=bin/fm-park-lib.sh
+. "$SCRIPT_DIR/fm-park-lib.sh"
+# shellcheck source=bin/fm-lease-lib.sh
+. "$SCRIPT_DIR/fm-lease-lib.sh"
+# shellcheck source=bin/fm-control-lib.sh
+. "$SCRIPT_DIR/fm-control-lib.sh"
 
 FM_PARK_CONTROL_BIN=${FM_PARK_CONTROL_BIN:-$SCRIPT_DIR/fm-control.sh}
 FM_PARK_CREW_STATE_BIN=${FM_PARK_CREW_STATE_BIN:-$SCRIPT_DIR/fm-crew-state.sh}
@@ -165,7 +171,7 @@ validate_id() {  # <task-id>
 }
 
 marker_get() {  # <marker-file> <key>
-  grep "^$2=" "$1" 2>/dev/null | tail -1 | cut -d= -f2- || true
+  fm_park_marker_field "$1" "$2"
 }
 
 # Decode one tasks-axi `show` field: a JSON string when quoted, else verbatim.
@@ -217,6 +223,9 @@ park_cleanup() {
     fm_lock_release "$PARK_LOCK" || true
     PARK_LOCK_HELD=0
   fi
+  if declare -F fm_lease_guard_release >/dev/null 2>&1; then
+    fm_lease_guard_release || true
+  fi
 }
 trap park_cleanup EXIT
 
@@ -242,6 +251,14 @@ resolve_task() {  # <task-id>
   MARKER="$STATE/$ID.parked"
   KIND=$(meta_get "$META" kind)
   [ -n "$KIND" ] || KIND=ship
+}
+
+# The release mutates the same per-task overlap set the supervision lease
+# protects (stop/relaunch, status, backlog), so every mutating verb guards it
+# exactly like the other lifecycle entrypoints; the guard is a no-op outside a
+# Pi primary home, and read-only verbs stay unguarded.
+guard_release() {
+  fm_lease_guard "$ID" "operating-point release (fm-park)"
 }
 
 # Refuse a symlinked marker rather than reading or removing whatever it points
@@ -560,6 +577,7 @@ PARK_RESULT=
 
 park_task() {  # <task-id>; prints the backlog-owed hand edit when there is one
   resolve_task "$1"
+  guard_release
   acquire_park_lock
   local rc=0
   park_task_locked || rc=$?
@@ -568,15 +586,27 @@ park_task() {  # <task-id>; prints the backlog-owed hand edit when there is one
 }
 
 park_task_locked() {
+  local marker_state current_gen
   require_regular_marker
-  if [ -e "$MARKER" ]; then
+  current_gen=$(meta_get "$META" spawn_gen)
+  marker_state=$(fm_park_marker_state "$STATE" "$ID" "$current_gen")
+  if [ -z "$marker_state" ] && [ -e "$MARKER" ]; then
+    # A valid marker from an earlier incarnation is stale: a control-plane
+    # relaunch or recovery respawn started a new worker outside fm-park, so the
+    # release no longer describes this task. A malformed marker is refused.
+    load_marker "$MARKER"
+    printf 'fm-park: dropping a stale park marker for %s (recorded incarnation %s, current %s)\n' \
+      "$ID" "$(marker_get "$MARKER" incarnation)" "${current_gen:--}" >&2
+    rm -f "$MARKER"
+  fi
+  if [ -n "$marker_state" ]; then
     load_marker "$MARKER"
     PARK_REASON=$(marker_get "$MARKER" reason)
     PARK_POINTER=$(marker_get "$MARKER" pointer)
     PARK_BRANCH=$(marker_get "$MARKER" branch)
     PARK_PR=$(marker_get "$MARKER" pr)
     PARK_INCARNATION=$(marker_get "$MARKER" incarnation)
-    case "$(marker_get "$MARKER" state)" in
+    case "$marker_state" in
       released)
         PARK_RESULT=already
         printf 'already-parked %s reason=%s pointer=%s\n' "$ID" "$PARK_REASON" "$PARK_POINTER"
@@ -593,9 +623,6 @@ park_task_locked() {
         PARK_RESULT=parked
         printf 'parked %s reason=%s pointer=%s\n' "$ID" "$PARK_REASON" "$PARK_POINTER"
         return 0
-        ;;
-      *)
-        fail "marker $MARKER has state '$(marker_get "$MARKER" state)', which is neither releasing nor released"
         ;;
     esac
   fi
@@ -618,7 +645,7 @@ resume_note_text() {
       ;;
     decision)
       if [ -n "$RESUME_NOTE" ]; then
-        printf '%s\n\nThe decision above resolves %s. Finish the open work, then report done.' "$RESUME_NOTE" "$PARK_POINTER"
+        printf '%s\n\nThe decision recorded at %s is being delivered through your instruction inbox. Apply it, finish the open work, then report done.' "$RESUME_NOTE" "$PARK_POINTER"
       else
         printf 'The decision recorded at %s is ready. Read your instruction inbox, finish the open work, then report done.' "$PARK_POINTER"
       fi
@@ -632,6 +659,7 @@ resume_note_text() {
 resume_task() {  # <task-id> <reason> [note]
   local reason=$2 note=${3:-} rc=0
   resolve_task "$1"
+  guard_release
   [ -e "$MARKER" ] || fail "task $ID is not parked (no marker at $MARKER)"
   acquire_park_lock
   resume_task_locked "$reason" "$note" || rc=$?
@@ -640,7 +668,8 @@ resume_task() {  # <task-id> <reason> [note]
 }
 
 resume_task_locked() {  # <reason> <note>
-  local reason=$1 note=$2 out
+  local reason=$1 note=$2 out recorded family
+  local -a relaunch_args=()
   require_regular_marker
   load_marker "$MARKER"
   PARK_REASON=$(marker_get "$MARKER" reason)
@@ -648,16 +677,25 @@ resume_task_locked() {  # <reason> <note>
   PARK_BRANCH=$(marker_get "$MARKER" branch)
   PARK_PR=$(marker_get "$MARKER" pr)
   PARK_INCARNATION=$(marker_get "$MARKER" incarnation)
-  case "$(marker_get "$MARKER" state)" in
+  case "$(fm_park_marker_state "$STATE" "$ID" "$(meta_get "$META" spawn_gen)")" in
     released) ;;
-    *) fail "task $ID's release is not verified (marker state '$(marker_get "$MARKER" state)'); finish the park first" ;;
+    *)
+      fail "task $ID's release is not verified for its current incarnation; finish the park first, or clear a stale marker from a worker that was relaunched outside fm-park"
+      ;;
   esac
   [ "$PARK_REASON" = "$reason" ] \
     || fail "task $ID is parked for reason=$PARK_REASON, not $reason; refusing to resume it for the wrong trigger (clear it instead if the release no longer applies)"
+  # A raw launch command records its basename, which the control plane cannot
+  # reconstruct; the replacement runs on the resolved verified adapter family,
+  # the same resolution the exit leg used.
+  recorded=$(meta_get "$META" harness)
+  if family=$(fm_control_harness_family "$recorded") && [ "$family" != "$recorded" ]; then
+    relaunch_args=(--harness "$family")
+  fi
   RESUME_NOTE=$note
   note=$(resume_note_text)
   if ! out=$(FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" FM_DATA_OVERRIDE="$DATA" \
-      "$FM_PARK_CONTROL_BIN" "$ID" relaunch --note "$note" 2>&1); then
+      "$FM_PARK_CONTROL_BIN" "$ID" relaunch ${relaunch_args[@]+"${relaunch_args[@]}"} --note "$note" 2>&1); then
     printf 'fm-park: %s could not be relaunched, so it stays parked: %s\n' "$ID" "$out" >&2
     return 1
   fi
@@ -725,18 +763,20 @@ command_clear() {
   done
   [ -z "$want" ] || fail "--$want requires a value"
   resolve_task "$id"
+  guard_release
   [ -e "$MARKER" ] || fail "task $ID is not parked (no marker at $MARKER)"
   acquire_park_lock
   require_regular_marker
-  load_marker "$MARKER"
+  # clear is the explicit drop, so it removes even a malformed or stale marker
+  # that the lifecycle verbs would refuse; that is its documented purpose.
   local state
   state=$(marker_get "$MARKER" state)
   rm -f "$MARKER"
   release_park_lock
   if [ -n "$reason" ]; then
-    printf 'cleared %s state=%s reason=%s\n' "$ID" "$state" "$reason"
+    printf 'cleared %s state=%s reason=%s\n' "$ID" "${state:-unknown}" "$reason"
   else
-    printf 'cleared %s state=%s\n' "$ID" "$state"
+    printf 'cleared %s state=%s\n' "$ID" "${state:-unknown}"
   fi
 }
 
@@ -763,7 +803,7 @@ command_list() {
 }
 
 command_status() {
-  local id=${1:-} state
+  local id=${1:-} state fields
   [ -n "$id" ] || { usage >&2; exit 2; }
   resolve_task "$id"
   if [ ! -e "$MARKER" ]; then
@@ -771,31 +811,25 @@ command_status() {
     return 1
   fi
   require_regular_marker
-  load_marker "$MARKER"
-  state=$(marker_get "$MARKER" state)
-  # Only a released marker is parked state; a releasing marker's release is not
-  # verified, so its leading token must not read as a freed slot.
-  if [ "$state" != released ]; then
-    printf 'releasing %s reason=%s pointer=%s branch=%s pr=%s epoch=%s incarnation=%s state=%s\n' \
-      "$ID" \
-      "$(marker_get "$MARKER" reason)" \
-      "$(marker_get "$MARKER" pointer)" \
-      "$(marker_get "$MARKER" branch)" \
-      "$(marker_get "$MARKER" pr)" \
-      "$(marker_get "$MARKER" epoch)" \
-      "$(marker_get "$MARKER" incarnation)" \
-      "$state"
-    return 1
+  state=$(fm_park_marker_state "$STATE" "$ID" "$(meta_get "$META" spawn_gen)")
+  if [ -z "$state" ]; then
+    # A valid marker for another incarnation is stale; a malformed one is
+    # refused loudly rather than reported as any kind of release.
+    load_marker "$MARKER"
+    state=stale
   fi
-  printf 'parked %s reason=%s pointer=%s branch=%s pr=%s epoch=%s incarnation=%s state=%s\n' \
-    "$ID" \
-    "$(marker_get "$MARKER" reason)" \
-    "$(marker_get "$MARKER" pointer)" \
-    "$(marker_get "$MARKER" branch)" \
-    "$(marker_get "$MARKER" pr)" \
-    "$(marker_get "$MARKER" epoch)" \
-    "$(marker_get "$MARKER" incarnation)" \
-    "$state"
+  # Only a released marker is parked state; a releasing marker's release is not
+  # verified and a stale marker describes an earlier worker, so neither may
+  # read as a freed slot.
+  fields="reason=$(marker_get "$MARKER" reason) pointer=$(marker_get "$MARKER" pointer) branch=$(marker_get "$MARKER" branch) pr=$(marker_get "$MARKER" pr) epoch=$(marker_get "$MARKER" epoch) incarnation=$(marker_get "$MARKER" incarnation) state=$state"
+  case "$state" in
+    released)
+      printf 'parked %s %s\n' "$ID" "$fields"
+      return 0
+      ;;
+  esac
+  printf '%s %s %s\n' "$state" "$ID" "$fields"
+  return 1
 }
 
 command_sweep() {
@@ -827,6 +861,9 @@ command_sweep() {
     fi
     kind=$(meta_get "$meta" kind)
     [ "$kind" = secondmate ] && continue
+    # Skip a task the other supervision actor is actively changing: the park
+    # guard would refuse it anyway, and its exit would abort the whole sweep.
+    fm_lease_live "$id" && continue
     if ! park_task "$id" >/dev/null; then
       case "$PARK_RESULT" in
         ineligible) ;;

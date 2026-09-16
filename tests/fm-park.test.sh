@@ -259,7 +259,7 @@ test_decision_key_parks_and_resume_carries_the_decision() {
   assert_contains "$out" "resumed t1 reason=decision" "resume did not report the task"
   grep -qF 'relaunch --note Use option B.' "$home/control.log" \
     || fail "resume did not pass the decision words as the relaunch note"
-  grep -qF 'The decision above resolves key=nm-run-fix-review2' "$home/control.log" \
+  grep -qF 'The decision recorded at key=nm-run-fix-review2 is being delivered through your instruction inbox' "$home/control.log" \
     || fail "the relaunch note did not name the decision pointer"
   [ ! -e "$home/state/t1.parked" ] || fail "resume did not remove the marker"
   pass "a keyed decision parks and resume carries the decision into the short run"
@@ -374,6 +374,41 @@ test_releasing_retry_restores_the_status_line() {
   [ "$(marker_value "$home" state)" = released ] || fail "the retry did not commit the verified release"
   [ "$(wc -l < "$home/control.log")" -eq 1 ] || fail "the retry did not stop the worker exactly once"
   pass "a releasing retry restores the status line and commits the verified release"
+}
+
+test_stale_marker_from_an_earlier_incarnation() {
+  local home out rc
+  home=$(make_case stale-marker)
+  write_task "$home" t1 "pr=https://github.com/example/demo/pull/7"
+  printf 'done: PR https://github.com/example/demo/pull/7 checks green\n' > "$home/state/t1.status"
+  # A released marker from an earlier worker: a control-plane relaunch started a
+  # new incarnation outside fm-park, so the marker must not free the slot.
+  printf 'schema=fm-park.v1\ntask=t1\nreason=merge\npointer=https://github.com/example/demo/pull/7\nbranch=fm/demo\npr=https://github.com/example/demo/pull/7\nepoch=1699999999\nincarnation=s-old\nstate=released\n' \
+    > "$home/state/t1.parked"
+  out=$(run_park "$home" status t1 2>&1); rc=$?
+  expect_code 1 "$rc" "status must not read a stale marker as parked"
+  assert_contains "$out" "stale t1" "status did not report the stale marker"
+  # A fresh park drops the stale marker and writes its own release.
+  out=$(run_park "$home" park t1 2>&1); rc=$?
+  expect_code 0 "$rc" "park must replace a stale marker with a fresh release"
+  assert_contains "$out" "parked t1 reason=merge" "the fresh park did not report the release"
+  [ "$(marker_value "$home" incarnation)" = s-t1 ] || fail "the fresh marker did not record the current incarnation"
+  [ "$(wc -l < "$home/control.log")" -eq 1 ] || fail "the fresh park must stop the worker exactly once"
+  pass "a marker from an earlier incarnation is stale and a fresh park replaces it"
+}
+
+test_resume_resolves_a_raw_launch_harness() {
+  local home out rc
+  home=$(make_case raw-harness)
+  write_task "$home" t1 "pr=https://github.com/example/demo/pull/7" "harness=grok-2"
+  printf 'done: PR https://github.com/example/demo/pull/7 checks green\n' > "$home/state/t1.status"
+  run_park "$home" park t1 >/dev/null || fail "park failed for a raw-launch harness task"
+  out=$(run_park "$home" resume t1 --reason merge); rc=$?
+  expect_code 0 "$rc" "resume must work for a raw-launch harness task"
+  assert_contains "$out" "resumed t1 reason=merge" "resume did not report the task"
+  grep -qF 'relaunch --harness grok --note' "$home/control.log" \
+    || fail "resume did not pass the resolved adapter family for a raw-launch harness"
+  pass "resume passes the resolved adapter family for a raw launch command"
 }
 
 # --- run-step gates ---------------------------------------------------------
@@ -557,6 +592,8 @@ test_park_refuses_a_secondmate
 test_park_refuses_without_a_pointer
 test_park_refuses_an_unknown_id
 test_releasing_retry_restores_the_status_line
+test_stale_marker_from_an_earlier_incarnation
+test_resume_resolves_a_raw_launch_harness
 test_decision_key_parks_and_resume_carries_the_decision
 test_captain_held_row_parks
 test_ask_user_gate_parks_as_decision

@@ -122,6 +122,7 @@ The shared no-mistakes gate refusal for fleet lifecycle entrypoints is summarize
 | `fm-control.sh`          | Agent lifecycle control plane: allowlisted `interrupt`, `exit`, and transactional `relaunch` verbs for an exact task id ([agent-control.md](agent-control.md)) |
 | `fm-control-lib.sh`      | One executable owner of the control-plane verb allowlist, per-harness interrupt/exit mechanics, and per-backend capability |
 | `fm-park.sh`             | Park a waiting task to free its operating-point slot and resume it later, with the durable marker, status line, backlog note, bounded sweep, and `list`/`status` surfaces ([park-release.md](park-release.md)) |
+| `fm-park-lib.sh`         | Single reader of the `fm-park.v1` operating-point marker: schema, task identity, and current-incarnation validation shared by the lifecycle owner, current state, the watcher, and the startup digest |
 | `fm-stop-verify.sh`      | Honest stop verification: request a stop, verify the agent is really gone, escalate with a hard interrupt instead of repeating, and log requested vs confirmed distinctly ([agent-control.md](agent-control.md)) |
 | `fm-capacity-brake-arm.sh` | Install the capacity brake under a tracked systemd --user unit with Restart=always, replace a naked loop idempotently, arm its beat-age self-report check, and report or disarm it ([configuration.md](configuration.md#capacity-brake-systemd-arming)) |
 | `fm-busy-lib.sh`         | Single owner of the semantic busy-state contract: verdicts, source attribution, and per-harness sources |

@@ -439,8 +439,7 @@ Handle actionable wakes as follows:
 3. For `check:`, act on the named poll result, including merges, Relay events, process-to-event source results, and captain inbox notes; a `check: pr-green-return` wake carries the bound-merge mandate or the hold report for a task's PR, and running its named `bin/fm-pr-merge.sh` command is how a due mandate lands; a handled inbox note is also acknowledged with `bin/fm-inbox.sh drain --ack <id>`, or it stays counted as still waiting for firstmate.
 4. For `heartbeat:`, review the whole fleet from the structured fleet view, reconcile suspicious tasks and PR state, release waiting tasks that still hold a slot with `bin/fm-park.sh sweep`, update the backlog, and never report an unchanged fleet as progress.
 
-Handle a waiting worker as part of its wake: park it (`bin/fm-park.sh park <id>`) when its report shows that only a merge or a decision remains, and resume it first (`bin/fm-park.sh resume <id> --reason merge|decision`) when that merge lands or that decision is answered, before the ordinary landing, answer, or teardown path.
-Parked tasks do not occupy the operating point (section 7; `docs/park-release.md`).
+Handle a waiting worker as part of its wake: park it (`bin/fm-park.sh park <id>`) when its report shows that only a merge or a decision remains, and resume it first (`bin/fm-park.sh resume <id> --reason merge|decision`) when that merge lands or that decision is answered (section 7; `docs/park-release.md`).
 
 When any wake reports a merged PR for a project cloned in this home, refresh that clone through the guarded fleet-sync path.
 When Relay-linked work reaches a milestone or terminal state, load `fmx-respond`; before terminal teardown, use its promised-final reconciliation when a typed public commitment exists, otherwise post the final completion follow-up so the link clears even if earlier follow-ups were spent.

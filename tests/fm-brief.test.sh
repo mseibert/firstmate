@@ -688,6 +688,8 @@ test_done_plus_park_note_is_scaffolded() {
     "ship brief lost the resume shape"
   assert_grep "This is expected and is not a failure" "$brief" \
     "ship brief lost the expectation wording"
+  assert_grep "the committed branch for a ship, the report for a scout" "$brief" \
+    "ship brief lost the deliverable-shaped closing instruction"
   FM_HOME="$home" "$ROOT/bin/fm-brief.sh" brief-park-scout some-proj --scout >/dev/null 2>&1 \
     || fail "scout scaffold failed"
   brief="$home/data/brief-park-scout/brief.md"
@@ -695,6 +697,8 @@ test_done_plus_park_note_is_scaffolded() {
     "scout brief lost the done-plus-release heading"
   assert_grep "firstmate may release it immediately" "$brief" \
     "scout brief lost the release rule"
+  assert_grep "the committed branch for a ship, the report for a scout" "$brief" \
+    "scout brief lost the deliverable-shaped closing instruction"
   FM_HOME="$home" FM_SECONDMATE_CHARTER='Supervise assigned work.' \
     "$ROOT/bin/fm-brief.sh" brief-park-mate --secondmate --no-projects >/dev/null 2>&1 \
     || fail "secondmate scaffold failed"

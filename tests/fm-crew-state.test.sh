@@ -349,6 +349,28 @@ gate:
 EOF
 }
 
+# A run-level findings table with an ask-user row must never mark the gate: the
+# authority marker comes only from the gate block's own findings table.
+run_parked_run_level_table_before_gate() {  # <branch>
+  cat <<EOF
+run:
+  id: "01RUN"
+  branch: $1
+  status: running
+  awaiting_agent: parked 1m2s
+  head: "${FM_FAKE_RUN_HEAD:-abc1234}"
+  pr: ""
+  findings[1]{id,severity,file,action,description}:
+    r1,error,b.go,ask-user,"a run-level table row"
+gate:
+  step: review
+  status: awaiting_approval
+  note: "Review auto-fix is disabled by default (\`auto_fix.review: 0\`), so blocking and ask-user review findings park for your decision rather than being silently self-fixed."
+  findings[1]{id,severity,file,action,description}:
+    r2,warning,a.go,auto-fix,"a gate table row"
+EOF
+}
+
 run_parked_scalar_gate_running() {  # <branch>
   cat <<EOF
 run:
@@ -760,6 +782,21 @@ test_review_gate_without_ask_user_action_has_no_marker() {
   assert_contains "$out" "1 finding(s)" "auto-fix-only review gate keeps its finding count"
   assert_not_contains "$out" "ask-user" "the gate note text and a description mention must not become the authority marker"
   pass "an auto-fix-only review gate carries no authority marker"
+}
+
+test_run_level_findings_table_does_not_mark_the_gate() {
+  reset_fakes
+  local d out
+  d=$(new_case parked-run-level-table)
+  make_repo_on_branch "$d/wt" fm/feat-rl
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/rl.meta" "window=fm:fm-rl" "worktree=$d/wt" "kind=ship"
+  printf 'needs-decision: review gate\n' > "$d/state/rl.status"
+  FM_FAKE_AXI_STATUS="$(run_parked_run_level_table_before_gate fm/feat-rl)"
+  out=$(run_crew_state "$d" rl)
+  assert_contains "$out" "state: parked" "the gate block still parks"
+  assert_not_contains "$out" "ask-user" "a run-level findings table must not supply the gate authority marker"
+  pass "the authority marker is scoped to the gate block's findings table"
 }
 
 test_ci_ready_done_log_beats_monitoring_run() {
@@ -1794,7 +1831,16 @@ test_park_marker_reads_parked() {
   out=$(run_crew_state "$d" parked-k)
   assert_not_contains "$out" "state: parked" "a releasing marker must not read as a verified release"
   assert_contains "$out" "state: done" "a releasing marker falls through to the ordinary read"
-  pass "the released park marker is authoritative and releasing is not"
+  # A released marker from an earlier incarnation is stale: a control-plane
+  # relaunch started a new worker outside fm-park, so the release no longer
+  # describes this task and must not free its slot.
+  fm_write_meta "$d/state/parked-k.meta" "window=fm:fm-parked-k" "worktree=$d/wt" "kind=ship" "harness=grok" "spawn_gen=s2"
+  printf 'schema=fm-park.v1\ntask=parked-k\nreason=merge\npointer=https://example.invalid/1\nbranch=fm/x\npr=https://example.invalid/1\nepoch=1\nincarnation=s1\nstate=released\n' \
+    > "$d/state/parked-k.parked"
+  out=$(run_crew_state "$d" parked-k)
+  assert_not_contains "$out" "state: parked" "a marker from an earlier incarnation must not read as parked"
+  assert_contains "$out" "state: done" "a stale marker falls through to the ordinary read"
+  pass "the released park marker is authoritative for its incarnation; releasing and stale markers are not"
 }
 
 # --- remote secondmate arm ---------------------------------------------------
@@ -2383,6 +2429,7 @@ test_genuine_parked_not_superseded
 test_scalar_gate_parked_not_superseded
 test_gate_block_parked_not_superseded
 test_review_gate_without_ask_user_action_has_no_marker
+test_run_level_findings_table_does_not_mark_the_gate
 test_ci_ready_done_log_beats_monitoring_run
 test_ci_monitoring_checks_green_surfaces_done
 test_top_level_ci_checks_green_surfaces_done

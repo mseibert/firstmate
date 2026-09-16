@@ -110,6 +110,8 @@ STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 . "$SCRIPT_DIR/fm-busy-lib.sh"
 # shellcheck source=bin/fm-nm-run-lib.sh
 . "$SCRIPT_DIR/fm-nm-run-lib.sh"
+# shellcheck source=bin/fm-park-lib.sh
+. "$SCRIPT_DIR/fm-park-lib.sh"
 
 ID=${1:-}
 [ -n "$ID" ] || { echo "usage: fm-crew-state.sh <id>" >&2; exit 2; }
@@ -161,15 +163,16 @@ fi
 # bin/fm-park.sh owns the operating-point release. Its marker is authoritative
 # current state because state=released is committed only after the control
 # plane verified the worker stopped; a `releasing` marker is a recorded but
-# unverified release and is deliberately not read here.
-PARK_MARKER="$STATE/$ID.parked"
-if [ -f "$PARK_MARKER" ] && [ ! -L "$PARK_MARKER" ]; then
-  PARK_MARKER_STATE=$(grep '^state=' "$PARK_MARKER" 2>/dev/null | tail -1 | cut -d= -f2- || true)
-  if [ "$PARK_MARKER_STATE" = released ]; then
-    PARK_REASON=$(grep '^reason=' "$PARK_MARKER" 2>/dev/null | tail -1 | cut -d= -f2- || true)
-    PARK_POINTER=$(grep '^pointer=' "$PARK_MARKER" 2>/dev/null | tail -1 | cut -d= -f2- || true)
-    emit parked park-marker "released awaiting ${PARK_REASON:-unknown} - ${PARK_POINTER:-no pointer}"
-  fi
+# unverified release and is deliberately not read here. The shared reader
+# enforces the schema, the task identity, and the marker's incarnation against
+# this task's current spawn_gen, so a marker left by an earlier worker never
+# reads as a released slot.
+PARK_MARKER_STATE=$(fm_park_marker_state "$STATE" "$ID" "$(meta_value spawn_gen)")
+if [ "$PARK_MARKER_STATE" = released ]; then
+  PARK_MARKER="$STATE/$ID.parked"
+  PARK_REASON=$(fm_park_marker_field "$PARK_MARKER" reason)
+  PARK_POINTER=$(fm_park_marker_field "$PARK_MARKER" pointer)
+  emit parked park-marker "released awaiting ${PARK_REASON:-unknown} - ${PARK_POINTER:-no pointer}"
 fi
 
 # --- status log ------------------------------------------------------------
@@ -306,7 +309,9 @@ nm_findings_count() {
 # 0 when the active gate's findings table has a row whose action column is
 # `ask-user` - the canonical authority marker. The gate note text mentions
 # ask-user on every review-step gate, so the action column is the only
-# evidence; a description that merely mentions ask-user is not.
+# evidence; a description that merely mentions ask-user is not. The parse is
+# scoped to the gate block, so a run-level or other findings table can never
+# supply the marker.
 nm_gate_has_ask_user_finding() {
   printf '%s\n' "$RUN_OUT" | awk '
     function split_row(line, out,    i, c, n, quoted, field) {
@@ -328,7 +333,11 @@ nm_gate_has_ask_user_finding() {
       out[++n] = field
       return n
     }
-    /^[[:space:]]*findings\[[0-9]+\]\{/ {
+    # Only a findings table inside the gate block counts; the run-level
+    # findings scalar and any other table must never supply the marker.
+    /^[[:space:]]*gate:[[:space:]]*$/ { in_gate = 1; next }
+    in_gate && /^[^[:space:]]/ { in_gate = 0 }
+    in_gate && /^[[:space:]]*findings\[[0-9]+\]\{/ {
       header = $0
       sub(/^[^{]*\{/, "", header)
       sub(/\}.*$/, "", header)
