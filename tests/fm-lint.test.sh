@@ -587,9 +587,9 @@ SH
   pass "fm-lint.sh CI keeps source following without the local exclusion list"
 }
 
-test_main_branch_keeps_external_sources() {
+test_main_branch_locally_drops_external_sources() {
   local tmp fakebin log flag_log out
-  tmp=$(fm_test_tmproot fm-lint-main-follow)
+  tmp=$(fm_test_tmproot fm-lint-main-local-safe)
   fakebin=$(fm_fakebin "$tmp")
   fm_lint_stub_git "$fakebin"
   log="$tmp/shellcheck.log"
@@ -600,13 +600,13 @@ test_main_branch_keeps_external_sources() {
     FM_TEST_GIT_BRANCH=main \
     FM_TEST_FLAG_LOG="$flag_log" "$LINT" 2>&1) \
     || fail "main-branch lint failed"$'\n'"$out"
-  fm_lint_assert_flag_log "$flag_log" yes none
-  pass "fm-lint.sh on main keeps source following without the local exclusion list"
+  fm_lint_assert_flag_log "$flag_log" no "SC1091,SC2034,SC2153,SC2329"
+  pass "fm-lint.sh on main locally drops source following"
 }
 
-test_merge_base_less_keeps_external_sources() {
+test_merge_base_less_locally_drops_external_sources() {
   local tmp fakebin log flag_log out
-  tmp=$(fm_test_tmproot fm-lint-nomergebase-follow)
+  tmp=$(fm_test_tmproot fm-lint-nomergebase-local-safe)
   fakebin=$(fm_fakebin "$tmp")
   fm_lint_stub_git "$fakebin"
   log="$tmp/shellcheck.log"
@@ -617,31 +617,43 @@ test_merge_base_less_keeps_external_sources() {
     FM_TEST_GIT_BRANCH=feature FM_TEST_GIT_MERGE_BASE_OK=0 \
     FM_TEST_FLAG_LOG="$flag_log" "$LINT" 2>&1) \
     || fail "merge-base-less lint failed"$'\n'"$out"
-  fm_lint_assert_flag_log "$flag_log" yes none
-  pass "fm-lint.sh without a merge-base keeps source following without the local exclusion list"
+  fm_lint_assert_flag_log "$flag_log" no "SC1091,SC2034,SC2153,SC2329"
+  pass "fm-lint.sh without a merge-base locally drops source following"
 }
 
-test_explicit_path_keeps_external_sources() {
-  local tmp fakebin log flag_log out target
-  tmp=$(fm_test_tmproot fm-lint-explicit-follow)
+test_explicit_path_locally_drops_external_sources() {
+  # The 2026-09-16 no-mistakes review ran `bin/fm-lint.sh <changed paths>`
+  # locally; explicit paths selected the full --external-sources pass and one
+  # root peaked at 2.6 GB RSS. A pipeline-style local invocation must never
+  # select that mode again, and it must stay one bounded process per root.
+  local tmp fakebin log flag_log out first second invocation_count
+  tmp=$(fm_test_tmproot fm-lint-explicit-local-safe)
   fakebin=$(fm_fakebin "$tmp")
   fm_lint_stub_git "$fakebin"
   log="$tmp/shellcheck.log"
   flag_log="$tmp/flags.log"
   fm_lint_stub_shellcheck "$fakebin" "$log"
-  target="bin/fm-install-shellcheck.sh"
+  first="bin/fm-install-shellcheck.sh"
+  second="bin/fm-lint-workflows.sh"
 
   out=$(PATH="$fakebin:$PATH" GITHUB_ACTIONS='' CI='' FM_LINT_JOBS=1 \
     FM_TEST_GIT_BRANCH=feature \
-    FM_TEST_FLAG_LOG="$flag_log" "$LINT" "$target" 2>&1) \
+    FM_TEST_FLAG_LOG="$flag_log" "$LINT" "$first" "$second" 2>&1) \
     || fail "explicit-path lint failed"$'\n'"$out"
-  fm_lint_assert_flag_log "$flag_log" yes none
-  pass "fm-lint.sh explicit paths keep source following"
+  [ "$(LC_ALL=C sort "$log")" = "$first"$'\n'"$second" ] \
+    || fail "explicit-path lint did not analyze both requested roots"$'\n'"logged: $(cat "$log")"
+  fm_lint_assert_flag_log "$flag_log" no "SC1091,SC2034,SC2153,SC2329"
+  invocation_count=$(grep -c '^external-sources=' "$flag_log" || true)
+  [ "$invocation_count" -eq 2 ] \
+    || fail "explicit-path local lint used $invocation_count ShellCheck calls for two roots"
+  assert_contains "$out" "source following disabled" \
+    "explicit-path local lint did not disclose dropped source following"
+  pass "fm-lint.sh explicit paths locally drop source following one root at a time"
 }
 
-test_fast_mode_on_a_local_branch_keeps_source_following() {
+test_fast_mode_on_a_local_branch_drops_external_sources() {
   local tmp fakebin log flag_log mode_log diff_file out target
-  tmp=$(fm_test_tmproot fm-lint-fast-follow)
+  tmp=$(fm_test_tmproot fm-lint-fast-local-safe)
   fakebin=$(fm_fakebin "$tmp")
   fm_lint_stub_git "$fakebin"
   log="$tmp/shellcheck.log"
@@ -660,8 +672,8 @@ test_fast_mode_on_a_local_branch_keeps_source_following() {
     || fail "fast local-branch lint failed"$'\n'"$out"
   [ "$(cat "$mode_log")" = off ] \
     || fail "fast local-branch lint did not disable extended analysis"
-  fm_lint_assert_flag_log "$flag_log" yes none
-  pass "fm-lint.sh --fast on a local branch keeps source following"
+  fm_lint_assert_flag_log "$flag_log" no "SC1091,SC2034,SC2153,SC2329"
+  pass "fm-lint.sh --fast on a local branch drops source following"
 }
 
 test_changed_mode_hides_cross_file_codes_that_ci_still_sees() {
@@ -703,12 +715,12 @@ SH
   assert_not_contains "$out" "SC2329" "changed-mode local lint still reported SC2329"
 
   rc=0
-  out=$("$LINT" "$fixture" 2>&1) || rc=$?
-  [ "$rc" -ne 0 ] || fail "explicit-path lint passed a cross-file-only fixture"$'\n'"$out"
-  assert_contains "$out" "SC2034" "explicit-path lint did not keep SC2034"
-  assert_contains "$out" "SC2329" "explicit-path lint did not keep SC2329"
+  out=$(CI=true GITHUB_ACTIONS=true "$LINT" "$fixture" 2>&1) || rc=$?
+  [ "$rc" -ne 0 ] || fail "CI explicit-path lint passed a cross-file-only fixture"$'\n'"$out"
+  assert_contains "$out" "SC2034" "CI explicit-path lint did not keep SC2034"
+  assert_contains "$out" "SC2329" "CI explicit-path lint did not keep SC2329"
   rm -f "$fixture"
-  pass "fm-lint.sh changed mode excludes cross-file codes that explicit paths still report"
+  pass "fm-lint.sh local changed mode excludes cross-file codes that CI explicit paths still report"
 }
 
 # One ShellCheck process per root. Passing the whole canonical set in a
@@ -1095,18 +1107,18 @@ bad_b() {
 SH
 
   rc_clean_1=0
-  out_clean_1=$(FM_LINT_JOBS=1 "$LINT" "$good" 2>&1) || rc_clean_1=$?
+  out_clean_1=$(GITHUB_ACTIONS='' CI='' FM_LINT_JOBS=1 "$LINT" "$good" 2>&1) || rc_clean_1=$?
   rc_clean_2=0
-  out_clean_2=$(FM_LINT_JOBS=2 "$LINT" "$good" 2>&1) || rc_clean_2=$?
+  out_clean_2=$(GITHUB_ACTIONS='' CI='' FM_LINT_JOBS=2 "$LINT" "$good" 2>&1) || rc_clean_2=$?
   [ "$rc_clean_1" -eq 0 ] && [ "$rc_clean_2" -eq 0 ] || fail "clean jobs=1/jobs=2 paths must both pass"
   [ "$out_clean_1" = "$out_clean_2" ] || fail "clean jobs=1/jobs=2 output differs"
 
   rc_fail_1=0
-  out_fail_1=$(FM_LINT_JOBS=1 "$LINT" "$bad_a" "$bad_b" 2>&1) || rc_fail_1=$?
+  out_fail_1=$(GITHUB_ACTIONS='' CI='' FM_LINT_JOBS=1 "$LINT" "$bad_a" "$bad_b" 2>&1) || rc_fail_1=$?
   rc_fail_2=0
-  out_fail_2=$(FM_LINT_JOBS=2 "$LINT" "$bad_a" "$bad_b" 2>&1) || rc_fail_2=$?
+  out_fail_2=$(GITHUB_ACTIONS='' CI='' FM_LINT_JOBS=2 "$LINT" "$bad_a" "$bad_b" 2>&1) || rc_fail_2=$?
   rc_fail_2b=0
-  out_fail_2b=$(FM_LINT_JOBS=2 "$LINT" "$bad_a" "$bad_b" 2>&1) || rc_fail_2b=$?
+  out_fail_2b=$(GITHUB_ACTIONS='' CI='' FM_LINT_JOBS=2 "$LINT" "$bad_a" "$bad_b" 2>&1) || rc_fail_2b=$?
   [ "$rc_fail_1" -ne 0 ] && [ "$rc_fail_1" -eq "$rc_fail_2" ] && [ "$rc_fail_2" -eq "$rc_fail_2b" ] \
     || fail "failing jobs=1/jobs=2 exit results differ: $rc_fail_1/$rc_fail_2/$rc_fail_2b"
   [ "$out_fail_1" = "$out_fail_2" ] && [ "$out_fail_2" = "$out_fail_2b" ] \
@@ -1117,11 +1129,11 @@ SH
   FM_LINT_JOBS=3 "$LINT" "$good" >/dev/null 2>&1 || rc_bad_jobs=$?
   [ "$rc_bad_jobs" -eq 2 ] || fail "the lint owner must reject unbounded worker counts"
 
-  telemetry_out=$(FM_LINT_JOBS=2 FM_LINT_TELEMETRY="$telemetry" "$LINT" "$good" 2>&1) \
+  telemetry_out=$(GITHUB_ACTIONS='' CI='' FM_LINT_JOBS=2 FM_LINT_TELEMETRY="$telemetry" "$LINT" "$good" 2>&1) \
     || fail "telemetry-enabled clean lint failed"
   [ "$telemetry_out" = "$out_clean_2" ] || fail "quiet telemetry changed routine lint output"
   assert_grep $'format\tfm-lint-telemetry-v1' "$telemetry" "telemetry format marker is missing"
-  assert_grep $'analysis_mode\tfull' "$telemetry" "telemetry did not record full analysis mode"
+  assert_grep $'analysis_mode\tlocal' "$telemetry" "telemetry did not record the local safe posture"
   assert_grep $'jobs\t2' "$telemetry" "telemetry did not record bounded jobs"
   assert_grep $'root_count\t1' "$telemetry" "telemetry did not record root count"
   assert_grep $'wall_seconds\t' "$telemetry" "telemetry did not record wall time"
@@ -1133,7 +1145,7 @@ SH
 
   cleanup_tmp="$tmp/lint-tmp"
   mkdir -p "$cleanup_tmp"
-  cleanup_out=$(TMPDIR="$cleanup_tmp" FM_LINT_JOBS=2 "$LINT" "$good" 2>&1) \
+  cleanup_out=$(GITHUB_ACTIONS='' CI='' TMPDIR="$cleanup_tmp" FM_LINT_JOBS=2 "$LINT" "$good" 2>&1) \
     || fail "cleanup fixture lint failed"
   [ "$cleanup_out" = "$out_clean_2" ] || fail "cleanup fixture changed routine diagnostics"
   [ -z "$(find "$cleanup_tmp" -mindepth 1 -maxdepth 1 -name 'fm-lint.*' -print -quit)" ] \
@@ -1274,7 +1286,7 @@ test_local_bad() {
 SH
 
   rc=0
-  out=$(FM_LINT_JOBS=2 "$LINT" "$dispatcher" "$adapter" "$owner" "$test_root" 2>&1) || rc=$?
+  out=$(CI=true GITHUB_ACTIONS=true FM_LINT_JOBS=2 "$LINT" "$dispatcher" "$adapter" "$owner" "$test_root" 2>&1) || rc=$?
   [ "$rc" -ne 0 ] || fail "seeded module-boundary defects unexpectedly passed"
   assert_contains "$out" "SC1007" "representative dispatcher defect was hidden"
   assert_contains "$out" "SC2086" "representative canonical adapter defect was hidden"
@@ -1318,9 +1330,9 @@ test_list_files_respects_changed_mode
 test_changed_mode_drops_external_sources_and_excludes_cross_file_codes
 test_changed_mode_invokes_shellcheck_once_per_root
 test_ci_keeps_external_sources_without_local_exclusions
-test_main_branch_keeps_external_sources
-test_merge_base_less_keeps_external_sources
-test_explicit_path_keeps_external_sources
-test_fast_mode_on_a_local_branch_keeps_source_following
+test_main_branch_locally_drops_external_sources
+test_merge_base_less_locally_drops_external_sources
+test_explicit_path_locally_drops_external_sources
+test_fast_mode_on_a_local_branch_drops_external_sources
 test_changed_mode_hides_cross_file_codes_that_ci_still_sees
 test_local_exclusion_list_covers_every_no_external_sources_code
