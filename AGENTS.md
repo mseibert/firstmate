@@ -283,8 +283,8 @@ Resolve the project independently for every request.
 An explicit project wins, a clear follow-up inherits its referent, and otherwise match the request against the registry, work under way, and project code or README.
 Proceed on one confident match while naming the project in plain language; ask one concise question when multiple or no projects plausibly match.
 
-Before dispatching work on an issue, check whether its author just created it or is already working it: look at the issue's age, its assignee, and any linked branch or open pull request.
-An issue the author created himself is not built without a word from him.
+Before dispatching work on an issue, check whether its author, a colleague of the captain's, just created it or is already working it: look at the issue's age, its assignee, and any linked branch or open pull request.
+An issue that author created himself is not built without a word from him, and one he is already working is left to him.
 
 Route by the nature of the work against each registered secondmate scope, not by a non-exclusive clone list.
 Keep `local-only` work in the main home.
