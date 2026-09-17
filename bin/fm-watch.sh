@@ -559,10 +559,13 @@ signal_turnend_panes_churned() {  # <file> ...
     snapshot_backends+=("$backend")
     snapshot_labels+=("$label")
   done
-  # These linear lookups deliberately support stock macOS Bash 3.2.57, enforced
-  # by macos-stock-bash, and this repository uses no associative arrays in bin/
-  # or tests/. A batch is normally one to three tasks and captures dominate its
-  # cost; indexed lookup is the upgrade path if coalesced batches grow large.
+  # These linear lookups deliberately support stock macOS Bash 3.2.57, which this
+  # repository uses no associative arrays in bin/ or tests/ to stay compatible
+  # with. The macos-stock-bash CI job that enforced that was removed on
+  # 2026-09-17, when the decision was to stop running firstmate on a Mac at all,
+  # so the constraint is now a convention rather than a gated one. A batch is
+  # normally one to three tasks and captures dominate its cost; indexed lookup is
+  # the upgrade path if coalesced batches grow large.
   for task in "${signal_tasks[@]}"; do
     task_index=-1
     for ((i = 0; i < ${#snapshot_tasks[@]}; i++)); do

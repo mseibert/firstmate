@@ -11,8 +11,10 @@
 # use `IFS= read -r -d '' VAR <<EOF || true` instead, which removes the `$(...)`
 # wrapper and eliminates the whole defect class regardless of future prose.
 # test_no_heredoc_in_command_substitution guards that structure directly.
-# Ambient `bash -n` here is Bash 5 and cannot see the bug, so the real
-# cross-version enforcement lives in the macos-stock-bash CI job.
+# Ambient `bash -n` here is Bash 5 and cannot see the bug. The macos-stock-bash
+# CI job that parsed every shell file under macOS's stock Bash 3.2.57 was the
+# cross-version enforcement; it was removed on 2026-09-17, so
+# test_no_heredoc_in_command_substitution is now the only guard for this class.
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -23,9 +25,9 @@ BRIEF_HOME="$TMP_ROOT/home"
 mkdir -p "$BRIEF_HOME/data"
 
 # The script itself must always parse under the ambient bash. That is Bash 5 in
-# CI and locally, where the issue #958/#1069 parser bug does not fire, so this
-# is a weak guard on its own; test_no_heredoc_in_command_substitution and the
-# macos-stock-bash CI job carry the real cross-version enforcement.
+# CI and locally, where the issue #958/#1069 parser bug does not fire, so this is
+# a weak guard on its own; test_no_heredoc_in_command_substitution carries the
+# real enforcement now that the macos-stock-bash job is gone (2026-09-17).
 test_script_parses() {
   local out rc
   out=$(bash -n "$ROOT/bin/fm-brief.sh" 2>&1); rc=$?

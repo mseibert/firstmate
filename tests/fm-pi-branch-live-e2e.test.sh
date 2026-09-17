@@ -82,8 +82,10 @@ ln -s "$PI_PACKAGE_DIR/node_modules/@earendil-works/pi-tui" "$repo/node_modules/
 ln -s "$PI_PACKAGE_DIR/node_modules/@earendil-works/pi-ai" "$repo/node_modules/@earendil-works/pi-ai"
 ln -s "$PI_PACKAGE_DIR/node_modules/typebox" "$repo/node_modules/typebox"
 
-# Stock macOS Bash 3.2 cannot reliably parse JavaScript template literals in a
-# heredoc nested inside command substitution, so capture through a file.
+# Stock macOS Bash 3.2 could not reliably parse JavaScript template literals in
+# a heredoc nested inside command substitution, so capture through a file. The
+# macos-stock-bash job that gated this was removed on 2026-09-17; the shape is
+# kept as a convention.
 BRANCH_PLUGIN="$repo/.pi/extensions/fm-branch-supervision.ts" \
   WATCH_PLUGIN="$repo/.pi/extensions/fm-primary-pi-watch.ts" \
   FM_HOME="$home" FM_REAL_ROOT="$ROOT" FM_WATCH_ROOT="$repo" \

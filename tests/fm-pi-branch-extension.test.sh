@@ -42,8 +42,10 @@ pi_version_at_least() {  # <version> <min-version>
   [ "$patch" -ge "$min_patch" ]
 }
 
-# Keep JavaScript heredocs outside command substitutions. Stock macOS Bash
-# 3.2 reparses quotes and template literals inside that combination.
+# Keep JavaScript heredocs outside command substitutions. Stock macOS Bash 3.2
+# reparsed quotes and template literals inside that combination; the
+# macos-stock-bash job that gated this was removed on 2026-09-17, so the shape is
+# kept as a convention.
 install_pi_branch_extension_fixture() {
   local repo=$1
   mkdir -p \

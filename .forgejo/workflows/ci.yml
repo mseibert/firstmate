@@ -63,13 +63,13 @@
 #
 # What this lane does not cover
 #
-# The GitHub file carries a `macos-stock-bash` job, "Stock macOS Bash snapshot
-# compatibility", which runs the snapshot consumers under /bin/bash to catch
-# anything that only works on the newer Bash. This instance has no macOS runner,
-# so the job is not in this lane and that check does not run here. It is a real
-# gap, not a decision: the repository supports macOS, and this lane cannot prove
-# that part of it. Whoever finishes the move has to decide whether to find a
-# macOS runner, move the check somewhere it can run, or drop it knowingly.
+# Nothing, since 2026-09-17. The GitHub file used to carry a `macos-stock-bash`
+# job - "Stock macOS Bash snapshot compatibility" - which parsed every shell file
+# and ran three suites under macOS's stock /bin/bash 3.2.57. This instance has no
+# macOS runner, so this lane never carried it. The decision was then to stop
+# running firstmate on a Mac at all, and the job was removed from the GitHub file
+# too rather than left as a check that no longer guards anything. One assurance
+# fewer, one runner fewer.
 
 name: CI
 
