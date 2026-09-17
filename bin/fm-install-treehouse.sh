@@ -54,8 +54,22 @@ TMP=$(mktemp -d "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/fm-treehouse.XXXXXX")
 trap 'rm -rf "$TMP"' EXIT
 
 printf 'fm-install-treehouse.sh: downloading %s from %s\n' "$ARCHIVE" "$URL" >&2
-curl -fsSL --max-filesize "$FM_TREEHOUSE_CI_MAX_BYTES" "$URL" -o "$TMP/$ARCHIVE" \
-  || die "download failed for $URL (bounded at $FM_TREEHOUSE_CI_MAX_BYTES bytes)"
+# Bounded retry with exponential backoff, the same shape fm-install-shellcheck.sh
+# and fm-install-actionlint.sh already use. GitHub's release downloads redirect to
+# release-assets.githubusercontent.com, and a resolver that is briefly unable to
+# answer for that host turns a single attempt into a hard failure. Measured
+# 2026-09-17 on the Forgejo CI lane: exactly that - "Could not resolve host:
+# release-assets.githubusercontent.com" - failed the whole Herdr job on a
+# download that succeeds on the next attempt.
+DOWNLOAD_ATTEMPTS=${FM_TREEHOUSE_CI_DOWNLOAD_ATTEMPTS:-6}
+download_attempt=1
+while ! curl -fsSL --max-filesize "$FM_TREEHOUSE_CI_MAX_BYTES" "$URL" -o "$TMP/$ARCHIVE"; do
+  [ "$download_attempt" -lt "$DOWNLOAD_ATTEMPTS" ] \
+    || die "download failed for $URL after $DOWNLOAD_ATTEMPTS attempts (bounded at $FM_TREEHOUSE_CI_MAX_BYTES bytes)"
+  printf 'fm-install-treehouse.sh: download attempt %s failed; retrying\n' "$download_attempt" >&2
+  sleep $((1 << (download_attempt - 1)))
+  download_attempt=$((download_attempt + 1))
+done
 
 if command -v sha256sum >/dev/null 2>&1; then
   ACTUAL_SHA256=$(sha256sum "$TMP/$ARCHIVE" | awk '{print $1}')

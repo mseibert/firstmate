@@ -59,9 +59,20 @@ TMP=$(mktemp -d "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/fm-herdr.XXXXXX")
 trap 'rm -rf "$TMP"' EXIT
 
 printf 'fm-install-herdr.sh: downloading %s from %s\n' "$ASSET" "$URL" >&2
+# Bounded retry with exponential backoff, the same shape fm-install-shellcheck.sh
+# and fm-install-actionlint.sh already use: GitHub's release downloads redirect to
+# release-assets.githubusercontent.com, and a resolver that is briefly unable to
+# answer for that host turns a single attempt into a hard failure.
+DOWNLOAD_ATTEMPTS=${FM_HERDR_CI_DOWNLOAD_ATTEMPTS:-6}
+download_attempt=1
 # --fail: HTTP errors; --location: follow redirects; --max-filesize: bound.
-curl -fsSL --max-filesize "$FM_HERDR_CI_MAX_BYTES" "$URL" -o "$TMP/$ASSET" \
-  || die "download failed for $URL (bounded at $FM_HERDR_CI_MAX_BYTES bytes)"
+while ! curl -fsSL --max-filesize "$FM_HERDR_CI_MAX_BYTES" "$URL" -o "$TMP/$ASSET"; do
+  [ "$download_attempt" -lt "$DOWNLOAD_ATTEMPTS" ] \
+    || die "download failed for $URL after $DOWNLOAD_ATTEMPTS attempts (bounded at $FM_HERDR_CI_MAX_BYTES bytes)"
+  printf 'fm-install-herdr.sh: download attempt %s failed; retrying\n' "$download_attempt" >&2
+  sleep $((1 << (download_attempt - 1)))
+  download_attempt=$((download_attempt + 1))
+done
 
 if command -v sha256sum >/dev/null 2>&1; then
   ACTUAL_SHA256=$(sha256sum "$TMP/$ASSET" | awk '{print $1}')
