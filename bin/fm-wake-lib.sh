@@ -126,14 +126,49 @@ fm_pid_start() {
   printf 'lstart=%s\n' "$out"
 }
 
+# fm_pid_is_zombie <pid>
+# True when the process with <pid> has exited and its parent has not reaped it. A
+# zombie still holds its pid, still appears in ps, still satisfies `kill -0`, and
+# cannot be killed: SIGKILL is accepted and discarded. Measured 2026-09-17 in the
+# CI job container, whose PID 1 is `tail -f /dev/null` and therefore never calls
+# wait - a child whose reaper died first stays a zombie for the container's whole
+# life, which is long enough to read as a live process forever.
+#
+# The state field is the only thing that separates the two. It is field 3 of
+# /proc/<pid>/stat, read the same way fm_pid_start reads the start time: strip up
+# to the last ')' so a comm containing spaces or parens cannot shift the fields.
+# An unreadable state is not a proven zombie, so it answers false.
+fm_pid_is_zombie() {  # <pid>
+  local pid=$1 proc_root stat_line rest state
+  case "$pid" in
+    ''|*[!0-9]*) return 1 ;;
+  esac
+  proc_root=${FM_PROC_ROOT_OVERRIDE:-/proc}
+  if [ -r "$proc_root/$pid/stat" ]; then
+    stat_line=$(cat "$proc_root/$pid/stat" 2>/dev/null) || return 1
+    rest=${stat_line##*)}
+    state=$(printf '%s' "$rest" | awk '{print $1}')
+    [ "$state" = Z ]
+    return $?
+  fi
+  state=$(COLUMNS=10000 LC_ALL=C ps -p "$pid" -o stat= 2>/dev/null) || return 1
+  state=$(printf '%s' "$state" | tr -d ' \t')
+  [ -n "$state" ] || return 1
+  case "$state" in *Z*) return 0 ;; esac
+  return 1
+}
+
 # fm_pid_start_matches <pid> <recorded-start>
 # True only when the live process with <pid> still carries exactly the recorded
-# start-time identity. A recycled pid, a dead pid, an unreadable identity, and
-# an empty recorded value all answer false, so callers signal or reclaim only on
-# a proven match.
+# start-time identity. A recycled pid, a dead pid, a ZOMBIE, an unreadable
+# identity, and an empty recorded value all answer false, so callers signal or
+# reclaim only on a proven match. A zombie is not a live process: it cannot be
+# signalled, and its start time is still readable, so without this check a corpse
+# whose parent never reaped it would answer true forever.
 fm_pid_start_matches() {
   local current
   [ -n "${2:-}" ] || return 1
+  fm_pid_is_zombie "$1" && return 1
   current=$(fm_pid_start "$1") || return 1
   [ "$current" = "$2" ]
 }

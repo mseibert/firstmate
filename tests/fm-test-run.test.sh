@@ -9,6 +9,8 @@ set -u
 
 # shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+# shellcheck source=bin/fm-wake-lib.sh
+. "$ROOT/bin/fm-wake-lib.sh"
 
 RUNNER="$ROOT/bin/fm-test-run.sh"
 
@@ -1224,20 +1226,15 @@ SH
     || fail "the bounded run did not report a complete summary: $(cat "$tmp/out")"
   [ -s "$grandchild_pid" ] || fail "the hanging fixture did not record its grandchild"
   grandchild=$(cat "$grandchild_pid")
-  # Liveness is read as an identity, not as a bare pid. On a container that has
-  # spawned thousands of processes a recycled pid makes `kill -0` succeed for a
-  # stranger, and this repository already fixed exactly that misread in the
-  # production code (#14, pid plus start time). The check below compares the
-  # recorded start identity as well, so a survivor is only reported when the same
-  # process is still there. Measured 2026-09-16: the Forgejo lane reported a
-  # survivor twice while 30 quiet runs in the same image leaked none, and the
-  # diagnostic line added here named a process whose elapsed time fitted both
-  # readings, so the identity is what settles it.
-  grandchild_identity=$(ps -p "$grandchild" -o lstart=,comm= 2>/dev/null | tr -s ' ') || grandchild_identity=
+  # Liveness comes from the repository's single owner of that question. It answers
+  # false for a recycled pid AND for a zombie, both of which a bare `kill -0`
+  # reports as alive. This grandchild ignores TERM, so it dies by SIGKILL from the
+  # timeout library, and the shell that would have reaped it is gone by then - on
+  # a container whose PID 1 never calls wait it stays a zombie, which SIGKILL
+  # cannot touch and `kill -0` happily accepts.
+  grandchild_identity=$(fm_pid_start "$grandchild" 2>/dev/null || true)
   fm_grandchild_alive() {
-    local now
-    now=$(ps -p "$grandchild" -o lstart=,comm= 2>/dev/null | tr -s ' ') || return 1
-    [ -n "$grandchild_identity" ] && [ "$now" = "$grandchild_identity" ]
+    fm_pid_start_matches "$grandchild" "$grandchild_identity"
   }
   waited=0
   while fm_grandchild_alive && [ "$waited" -lt 150 ]; do
@@ -1245,7 +1242,7 @@ SH
     waited=$((waited + 1))
   done
   if fm_grandchild_alive; then
-    survivor=$(ps -p "$grandchild" -o pid=,etime=,ppid=,comm= 2>/dev/null | tr -s ' ')
+    survivor=$(ps -p "$grandchild" -o pid=,etime=,ppid=,pgid=,stat=,comm= 2>/dev/null | tr -s ' ')
     kill -KILL "$grandchild" 2>/dev/null || true
     fail "the timed-out script left grandchild $grandchild running${survivor:+: $survivor}"
   fi

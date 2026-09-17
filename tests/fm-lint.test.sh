@@ -18,6 +18,16 @@ set -u
 
 # shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+# fm_pid_start_matches is the repository's single owner of "this pid is still the
+# process it was" - it already answers false for a recycled pid, and it now also
+# answers false for a ZOMBIE. The survivor check below used to read liveness
+# itself and got the zombie case wrong: `kill -0` accepts a zombie, SIGKILL does
+# nothing to it, and the CI job container's PID 1 is `tail -f /dev/null`, which
+# never calls wait - so a child whose reaper died first stays a zombie for the
+# container's whole life and reads as a survivor forever.
+# shellcheck source=bin/fm-wake-lib.sh
+. "$ROOT/bin/fm-wake-lib.sh"
+
 
 LINT="$ROOT/bin/fm-lint.sh"
 INSTALLER="$ROOT/bin/fm-install-shellcheck.sh"
@@ -152,6 +162,7 @@ pinned_ready() {
   command -v shellcheck >/dev/null 2>&1 || return 1
   [ "$(shellcheck --version | awk '/^version:/ {print $2; exit}')" = "$REQUIRED" ]
 }
+
 
 test_help_reports_the_complete_interface() {
   local help
@@ -1242,15 +1253,9 @@ SH
         fail "jobs=$jobs telemetry=$telemetry did not start ShellCheck"
       }
       shellcheck_pid=$(cat "$pid_file")
-      # Identity, not a bare pid: on a container that has spawned thousands of
-      # processes a recycled pid makes `kill -0` succeed for a stranger. This
-      # repository fixed that misread in the production code (#14, pid plus start
-      # time); the check here reads the same two fields.
-      shellcheck_identity=$(ps -p "$shellcheck_pid" -o lstart=,comm= 2>/dev/null | tr -s ' ') || shellcheck_identity=
+      shellcheck_identity=$(fm_pid_start "$shellcheck_pid" 2>/dev/null || true)
       fm_fake_shellcheck_alive() {
-        local now
-        now=$(ps -p "$shellcheck_pid" -o lstart=,comm= 2>/dev/null | tr -s ' ') || return 1
-        [ -n "$shellcheck_identity" ] && [ "$now" = "$shellcheck_identity" ]
+        fm_pid_start_matches "$shellcheck_pid" "$shellcheck_identity"
       }
       kill -TERM "$parent_pid" 2>/dev/null \
         || fail "jobs=$jobs telemetry=$telemetry parent could not be interrupted"
@@ -1271,7 +1276,7 @@ SH
         # survivor from a recycled one on a busy container. The pgid is in the
         # line because the parent's cleanup kills the WORKER's process group, so
         # whether this survivor sat in that group is the first thing to read.
-        survivor_detail=$(ps -p "$shellcheck_pid" -o pid=,etime=,ppid=,pgid=,comm= 2>/dev/null | tr -s ' ')
+        survivor_detail=$(ps -p "$shellcheck_pid" -o pid=,etime=,ppid=,pgid=,stat=,comm= 2>/dev/null | tr -s ' ')
         kill -KILL "$shellcheck_pid" 2>/dev/null || true
       fi
       [ "$parent_rc" -eq 143 ] \

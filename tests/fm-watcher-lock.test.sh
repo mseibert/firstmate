@@ -1001,10 +1001,10 @@ SH
   pass "fm_pid_identity is locale-invariant across LC_ALL/LC_TIME"
 }
 
-write_fake_proc_identity() {
-  local proc_root=$1 pid=$2 starttime=$3
+write_fake_proc_identity() {  # <proc-root> <pid> <starttime> [<state>]
+  local proc_root=$1 pid=$2 starttime=$3 state=${4:-S}
   mkdir -p "$proc_root/$pid"
-  printf '%s\n' "$pid (watcher ) with spaces) S 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 $starttime 20 21 22" > "$proc_root/$pid/stat"
+  printf '%s\n' "$pid (watcher ) with spaces) $state 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 $starttime 20 21 22" > "$proc_root/$pid/stat"
   printf 'bash\0/path with spaces/fm-watch.sh\0--flag\0' > "$proc_root/$pid/cmdline"
 }
 
@@ -1037,6 +1037,39 @@ test_proc_pid_identity_ignores_wall_clock_and_detects_pid_reuse() {
     || fail "could not read reused fake /proc pid identity"
   [ "$after_pid_reuse" != "$before" ] || fail "/proc process identity missed changed starttime for reused pid"
   pass "/proc process identity detects pid reuse"
+}
+
+# A zombie is not a live process. It has exited and its parent has not reaped it,
+# so it still holds its pid, its start time is still readable, and `kill -0`
+# accepts it - while SIGKILL is accepted and discarded. Measured 2026-09-17 on the
+# Forgejo CI lane, whose job container has `tail -f /dev/null` as PID 1 and
+# therefore never calls wait: a child whose reaper died first stays a zombie for
+# the container's whole life and read as a survivor on three consecutive runs
+# while every quiet local run passed.
+test_pid_start_identity_rejects_a_zombie() {
+  local dir state proc_root pid recorded rc
+  dir=$(make_case pid-start-zombie)
+  state="$dir/state"
+  proc_root="$dir/proc"
+  pid=4242
+  mkdir -p "$proc_root"
+  write_fake_proc_identity "$proc_root" "$pid" 987654
+  recorded=$(FM_PROC_ROOT_OVERRIDE="$proc_root" FM_STATE_OVERRIDE="$state" bash -c '. "$1"; fm_pid_start "$2"' _ "$LIB" "$pid") \
+    || fail "could not read the fake process start identity"
+  FM_PROC_ROOT_OVERRIDE="$proc_root" FM_STATE_OVERRIDE="$state" bash -c \
+    '. "$1"; fm_pid_start_matches "$2" "$3"' _ "$LIB" "$pid" "$recorded" \
+    || fail "a live fake process with its recorded start time was rejected"
+
+  # Same pid, same start time, state Z: the only difference is that it is dead.
+  write_fake_proc_identity "$proc_root" "$pid" 987654 Z
+  rc=0
+  FM_PROC_ROOT_OVERRIDE="$proc_root" FM_STATE_OVERRIDE="$state" bash -c \
+    '. "$1"; fm_pid_start_matches "$2" "$3"' _ "$LIB" "$pid" "$recorded" || rc=$?
+  [ "$rc" -ne 0 ] || fail "a zombie with a matching start time was treated as a live process"
+  FM_PROC_ROOT_OVERRIDE="$proc_root" FM_STATE_OVERRIDE="$state" bash -c \
+    '. "$1"; fm_pid_is_zombie "$2"' _ "$LIB" "$pid" \
+    || fail "fm_pid_is_zombie did not recognise a Z state"
+  pass "pid start identity rejects a zombie even when its start time still matches"
 }
 
 test_pid_start_identity_rejects_a_recycled_pid() {
@@ -1183,6 +1216,7 @@ test_singleton_start
 test_pid_identity_is_locale_invariant
 test_proc_pid_identity_ignores_wall_clock_and_detects_pid_reuse
 test_pid_start_identity_rejects_a_recycled_pid
+test_pid_start_identity_rejects_a_zombie
 test_pid_helpers_use_the_portable_ps_fallback
 test_msys_pid_identity_uses_proc
 test_stale_watch_lock_reclaimed
