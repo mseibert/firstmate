@@ -93,6 +93,9 @@ env:
   # workstation, and its 10s default is why a Herdr-dependent test failed here
   # while the same test passed locally.
   FM_HERDR_SERVER_ENSURE_TIMEOUT_SECS: '60'
+  # The same reasoning for the presentation session lock: its 5s default is a
+  # guard sized for a fast machine, and the lane failed a recovery on it.
+  FM_HERDR_PRESENTATION_LOCK_TIMEOUT_SECS: '60'
 
 permissions:
   contents: read

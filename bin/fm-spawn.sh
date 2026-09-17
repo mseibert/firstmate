@@ -1014,12 +1014,23 @@ trap spawn_abort_cleanup EXIT
 # <session> is required so secondmate and primary spawns serialize against the
 # same session without writing any other home's state directory.
 spawn_herdr_presentation_order_lock_acquire() {
-  local session=${1:-} attempt lock_path
+  local session=${1:-} attempt lock_path attempts timeout
   [ -n "$session" ] || session=$(fm_backend_herdr_session)
   lock_path=$(fm_backend_herdr_presentation_session_lock_path "$session") || return 1
   HERDR_PRESENTATION_ORDER_LOCK="$lock_path"
+  # The bound is a guard, not a target: the lock is held only across a short
+  # critical section, so a healthy acquire succeeds on the first or second try.
+  # It is overridable because a loaded CI runner can take far longer to schedule
+  # the holder's next step - measured 2026-09-17, process creation on the Forgejo
+  # runner is 6x slower than on a Mac, and the hardcoded 5s bound failed a Herdr
+  # presentation recovery there while the same suite passed locally.
+  timeout=${FM_HERDR_PRESENTATION_LOCK_TIMEOUT_SECS:-5}
+  case "$timeout" in
+    '' | *[!0-9]* | 0) timeout=5 ;;
+  esac
+  attempts=$((timeout * 10))
   attempt=0
-  while [ "$attempt" -lt 50 ]; do
+  while [ "$attempt" -lt "$attempts" ]; do
     if fm_lock_try_acquire "$HERDR_PRESENTATION_ORDER_LOCK"; then
       HERDR_PRESENTATION_ORDER_LOCK_HELD=1
       return 0
