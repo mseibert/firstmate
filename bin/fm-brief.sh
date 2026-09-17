@@ -68,6 +68,13 @@
 # whose only remainder is a merge or a decision may have its slot released,
 # with the worktree and uncommitted work preserved and a short resume run later
 # (bin/fm-park.sh owns the mechanics).
+# Ship and scout briefs carry the machine constraints (heap cap on node steps
+# on a memory-tight host, heavy checks sequentially per workspace, build token
+# for anything that starts a node toolchain or runs longer than a few seconds)
+# so a fresh worker cannot exhaust the host's memory; the inline bullets are
+# authoritative for the brief and the pointer to the active home's
+# data/captain.md and data/learnings.md is emitted only for the records that
+# home keeps.
 # Ship tasks include a project-memory section so durable project-intrinsic
 # learnings can be committed to AGENTS.md through the project's delivery path;
 # it carries the AGENTS.md authoring bar (widely useful knowledge only, pointers
@@ -234,6 +241,39 @@ This is expected and is not a failure, so before your final `done:` leave your d
 EOF
 PARK_SECTION=${PARK_SECTION%$'\n'}
 
+# The machine constraints every ship and scout brief carries: short,
+# non-negotiable rules for heavy node work. The fleet spans the primary build
+# host and larger remote homes, so the section states the rules and leaves the
+# host classification to the worker's own check. The inline bullets are
+# authoritative for the brief, and the home records named by the pointer carry
+# the detail and history where that home keeps them; a captain rule change in
+# those records is propagated to these tracked bullets through the repo's
+# normal change path. The build-token bullet falls back to one heavy step at a
+# time because a home without the token has no machine-wide serializer to name.
+MACHINE_HOME_FILES=""
+for machine_record in "$DATA/captain.md" "$DATA/learnings.md"; do
+  [ -f "$machine_record" ] || continue
+  if [ -n "$MACHINE_HOME_FILES" ]; then
+    MACHINE_HOME_FILES="$MACHINE_HOME_FILES and $machine_record"
+  else
+    MACHINE_HOME_FILES="$machine_record"
+  fi
+done
+MACHINE_HOME_POINTER=""
+if [ -n "$MACHINE_HOME_FILES" ]; then
+  MACHINE_HOME_POINTER=" This home's records carry more detail and the history behind them where they keep them; read them before heavy work: $MACHINE_HOME_FILES."
+fi
+IFS= read -r -d '' MACHINE_CONSTRAINTS_SECTION <<EOF || true
+# Machine constraints
+The primary build host is small and heavy node steps there have starved other lanes before; this fleet also runs on larger hosts, so check your own host's memory and cores before choosing limits.
+- On a memory-tight host (about 4 GB RAM or less), cap the heap of every node step: \`NODE_OPTIONS="--max-old-space-size=2048"\` (1536 when other heavy work is already running), never 4096 or larger; a host with memory to spare sets its own capacity.
+- Run heavy checks - lint, tsc, test suites, builds - strictly sequentially per workspace; never two at once.
+- If this home provides the machine-wide build token (\`$STATE/build-token.sh\`), take it before anything that starts a node toolchain or runs longer than a few seconds: pnpm install, prisma generate, every build, every test suite; wait while it is held. A dev server takes it only for its start, never while it runs; follow the tool's header for the mode. Otherwise run one heavy step at a time.
+- Stop a dev server as soon as the step that needed it ends.
+The bullets above are authoritative for this brief.$MACHINE_HOME_POINTER
+EOF
+MACHINE_CONSTRAINTS_SECTION=${MACHINE_CONSTRAINTS_SECTION%$'\n'}
+
 if [ "$KIND" = secondmate ]; then
 SECONDMATE_PROJECTS=""
 idx=1
@@ -389,6 +429,8 @@ This is a SCOUT task: the deliverable is a written report, not a PR.
 The worktree is your laboratory - install, run, edit, and make scratch commits freely; all of it is discarded at teardown.
 The report is the only thing that survives, so anything worth keeping must be in it.
 
+$MACHINE_CONSTRAINTS_SECTION
+
 # Rules
 1. Never push to any remote and never open a PR.
 2. Stay inside this worktree; the only files you may write outside it are the report and the status file below.
@@ -477,6 +519,8 @@ The path check is authoritative: \`git rev-parse --git-dir\` and \`git rev-parse
 If the top-level path is the primary checkout or not the worktree you were launched in, STOP - do not branch or commit here - append \`blocked: launched in primary checkout, not an isolated worktree\` to the status file and stop.
 
 1. First action: create your branch: \`git checkout -b fm/$ID\`$SETUP2
+
+$MACHINE_CONSTRAINTS_SECTION
 
 # Rules
 $RULE1
