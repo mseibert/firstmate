@@ -115,12 +115,12 @@ park_seam_env() {  # <home> [ambient]
   local crew_state='done' crew_source=run-step crew_detail=fixture axi_held=no
   local hold_kind='' hold_reason=''
   if [ "$mode" = ambient ]; then
-    crew_state=${FM_FAKE_CREW_STATE:-done}
-    crew_source=${FM_FAKE_CREW_SOURCE:-run-step}
-    crew_detail=${FM_FAKE_CREW_DETAIL:-fixture}
-    axi_held=${FAKE_AXI_HELD:-no}
-    hold_kind=${FAKE_AXI_HOLD_KIND:-}
-    hold_reason=${FAKE_AXI_HOLD_REASON:-}
+    crew_state=${FM_FAKE_CREW_STATE:-$crew_state}
+    crew_source=${FM_FAKE_CREW_SOURCE:-$crew_source}
+    crew_detail=${FM_FAKE_CREW_DETAIL:-$crew_detail}
+    axi_held=${FAKE_AXI_HELD:-$axi_held}
+    hold_kind=${FAKE_AXI_HOLD_KIND:-$hold_kind}
+    hold_reason=${FAKE_AXI_HOLD_REASON:-$hold_reason}
   fi
   PARK_SEAM_ENV=(
     "PATH=$home/fakebin:$PATH"
